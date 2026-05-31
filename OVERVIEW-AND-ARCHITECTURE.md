@@ -1,0 +1,93 @@
+# Overview and Architecture
+
+## Architecture overview
+
+```mermaid
+flowchart LR
+  subgraph ingest
+    A[Tokenize] --> B[Corpus / IDF]
+    B --> C[Finalize RRI]
+    C --> D[enriched_vecs_q int8]
+    C --> E[doc_vectors_q int8]
+    C --> F[inverted index]
+  end
+  subgraph query
+    Q[Query tokens] --> R[Query vector]
+    R --> S{Search path}
+    S -->|fast / tfidf| T[inverted index → candidates]
+    T --> U[RI rerank top-k]
+    S -->|bruteforce| V[int8 dot product, serial]
+    S -->|simple_rank| W[RI-only scoring]
+  end
+  D --> U
+  E --> V
+  F --> T
+```
+
+**Current state:** All doc vectors and enriched vocabulary vectors are int8.
+`doc_vectors_q_inv_mag` stores per-doc reciprocal magnitudes. Brute-force is
+static-chunked parallel (2 workers, ~3 ms). Fast/tfidf paths use inverted
+index candidates + RI rerank.
+
+| Layer | Role | Quality |
+|-------|------|---------|
+| `semantic.c` | TF-IDF, RRI, scoring, ranking, corpus | Strong; large but coherent |
+| `foundation/` | Hash table, threads, platform | Clean abstractions |
+| `pipeline/worker_pool.c` | `parallel_for` | Simple; thread churn (see M6) |
+| `java/…/fast_code_embed_jni.c` | JNI | Above average hygiene |
+| `tests/test_semantic.c` | 58 unit tests | Good coverage; gaps below |
+
+---
+
+## Performance analysis
+
+### Hot paths (measured, 193 K docs)
+
+| Operation | Complexity | Notes |
+|-----------|------------|-------|
+| `fce_sem_random_index` | O(768) lookup or O(8) sparse fallback | Pretrained int8 → float; good |
+| `fce_sem_corpus_finalize` | O(tokens × window × docs) parallelized | Dominates ingest; int8 pipeline complete |
+| `fce_sem_search_query` (fast) | O(N_inverted + k×768) | 1–3 ms; architectural recall limit (1.2/10 overlap) |
+| `fce_sem_search_query_tfidf` | O(N_inverted + k×768) | 1–2 ms; same recall limitation |
+| `fce_sem_search_query_bruteforce` | O(N × 768) | 3–5 ms; RAM-bandwidth floor |
+| `fce_sem_simple_rank` | O(N × 768) | RI-only; no TF-IDF in simple/flat API |
+
+### Memory model (large corpus)
+
+For `V` vocabulary tokens, `D` documents (measured at 193 K docs, ~1 M vocab):
+
+| Array | Bytes/entry | Footprint @ 193 K docs |
+|-------|-------------|------------------------|
+| `enriched_vecs_q` (int8, 768/token) | 768 | ~750 MB |
+| `doc_vectors_q` (int8, 768/doc) | 768 | ~149 MB |
+| `doc_vectors_q_inv_mag` (float32) | 4 | ~0.8 MB |
+| Inverted index | — | ~50–150 MB |
+
+**Post-build RSS: 1.1 GB.** Peak during finalize: ~4.9 GB (transient). After
+`malloc_trim`: converges to live set (~1.1 GB).
+
+---
+
+## Java / JNI layer
+
+- Batch APIs (`nAddDocsBatch`, `nAddDocsTokenized`, `nTokenizeBatch`,
+  `nSimpleRankFlat`).
+- Exception checks and cleanup labels.
+- Array size validation in flat rank.
+- TF-IDF index validation in `sparse_tfidf_cosine`.
+- Critical native arrays used where GC pressure is a concern.
+- `fce_log` used on pass2 OOM; should extend to finalize failures and
+  ht insert failures.
+
+---
+
+## Security considerations
+
+- **No network attack surface** — library is fully offline; no I/O beyond file
+    loading of the pretrained blob.
+- **DoS via corpus size** — Partially mitigated (512 tok/doc, 1B occurrence cap).
+    Host should still cap document count (`D`) and vocabulary size (`V`).
+- **JNI** — Untrusted Java can pass large arrays. `nSimpleRankFlat` validates
+    lengths; other entry points validate array bounds before native dispatch.
+- **No secrets** in the repository; the pretrained embedding blob contains only
+    public model weights (Apache 2.0).

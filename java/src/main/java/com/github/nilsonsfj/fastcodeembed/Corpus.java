@@ -1,0 +1,391 @@
+package com.github.nilsonsfj.fastcodeembed;
+
+/**
+ * Wraps a native {@code fce_sem_corpus_t} for building IDF weights and
+ * enriched Random Indexing vectors from a collection of tokenized documents.
+ *
+ * <p>Workflow: create → add docs → {@link #complete()} → query.</p>
+ *
+ * <h2>Example</h2>
+ * <pre>{@code
+ * try (Corpus corp = new Corpus()) {
+ *     corp.addDocsBatch(new String[][]{
+ *         {"handle", "request", "parse"},
+ *         {"validate", "user", "check"},
+ *         {"handle", "response", "send"}
+ *     });
+ *     corp.complete();
+ *
+ *     float idf = corp.getIdf("handle");      // log(N/df)
+ *     float[] vec = corp.getRiVec("handle");   // enriched 768d vector
+ *
+ *     FuncDescriptor a = corp.buildFunc("src/handler.c", new String[]{"handle", "request"});
+ *     FuncDescriptor b = corp.buildFunc("src/auth.c", new String[]{"validate", "user"});
+ *     float score = FastCodeEmbed.simpleScore(a, b);
+ * }
+ * }</pre>
+ *
+ * <p>Implements {@link AutoCloseable} for try-with-resources.</p>
+ *
+ * @since 0.0.1
+ */
+public class Corpus implements AutoCloseable {
+    private long handle;
+    private boolean finalized;
+    private final java.util.ArrayList<String> docPaths = new java.util.ArrayList<>();
+
+    /**
+     * Create a new empty corpus.
+     *
+     * @throws UnsatisfiedLinkError if native library is not loaded
+     */
+    public Corpus() {
+        this.handle = FastCodeEmbed.createCorpus();
+        this.finalized = false;
+    }
+
+    /**
+     * Add a single document's tokens to the corpus.
+     * Can be called multiple times before {@link #complete()}.
+     *
+     * @param tokens array of token strings for this document
+     * @throws IllegalStateException if corpus is closed
+     */
+    public void addDoc(String[] tokens) {
+        checkNotClosed();
+        FastCodeEmbed.addDoc(handle, tokens);
+        docPaths.add("");
+    }
+
+    /**
+     * Add a single document's tokens with a file path.
+     * The path is tracked for use in search result display.
+     *
+     * @param tokens array of token strings for this document
+     * @param filePath source file path for this document
+     * @throws IllegalStateException if corpus is closed
+     */
+    public void addDoc(String[] tokens, String filePath) {
+        checkNotClosed();
+        FastCodeEmbed.addDoc(handle, tokens);
+        docPaths.add(filePath != null ? filePath : "");
+    }
+
+    /**
+     * Batch-add documents. More efficient than repeated {@link #addDoc} calls.
+     * All docs are internally padded to the length of the longest doc.
+     *
+     * @param docs array of token arrays, one per document
+     * @throws IllegalStateException if corpus is closed
+     */
+    public void addDocsBatch(String[][] docs) {
+        checkNotClosed();
+        int maxLen = 0;
+        for (String[] doc : docs) {
+            if (doc.length > maxLen) maxLen = doc.length;
+        }
+        FastCodeEmbed.addDocsBatch(handle, docs, maxLen);
+        for (int i = 0; i < docs.length; i++) docPaths.add("");
+    }
+
+    /**
+     * Batch-add documents with file paths. Paths are tracked for search result display.
+     *
+     * @param docs array of token arrays, one per document
+     * @param paths per-document file paths
+     * @throws IllegalStateException if corpus is closed
+     * @throws IllegalArgumentException if docs.length != paths.length
+     */
+    public void addDocsBatch(String[][] docs, String[] paths) {
+        checkNotClosed();
+        if (docs.length != paths.length) {
+            throw new IllegalArgumentException("docs.length (" + docs.length + ") != paths.length (" + paths.length + ")");
+        }
+        int maxLen = 0;
+        for (String[] doc : docs) {
+            if (doc.length > maxLen) maxLen = doc.length;
+        }
+        FastCodeEmbed.addDocsBatch(handle, docs, maxLen);
+        for (String p : paths) docPaths.add(p != null ? p : "");
+    }
+
+    /**
+     * Batch-add documents by raw names. Tokenization happens in C (one JNI call).
+     * Much faster than tokenizeBatch + addDocsBatch for large corpora.
+     *
+     * @param names raw identifiers/names to tokenize and index
+     */
+    public void addDocsTokenized(String[] names) {
+        checkNotClosed();
+        FastCodeEmbed.addDocsTokenized(handle, names);
+        for (int i = 0; i < names.length; i++) docPaths.add("");
+    }
+
+    /**
+     * Batch-add documents by raw names with file paths.
+     *
+     * @param names raw identifiers/names to tokenize and index
+     * @param paths per-document file paths
+     */
+    public void addDocsTokenized(String[] names, String[] paths) {
+        checkNotClosed();
+        if (names.length != paths.length) {
+            throw new IllegalArgumentException("names.length != paths.length");
+        }
+        FastCodeEmbed.addDocsTokenized(handle, names);
+        for (String p : paths) docPaths.add(p != null ? p : "");
+    }
+
+    /**
+     * Read source files, chunk by } boundaries, tokenize, and add to corpus.
+     * All work happens in C — no intermediate Java String objects created.
+     * This is the fastest way to build a corpus from source files.
+     *
+     * @param paths file paths to read and index
+     * @param chunkSize target bytes per chunk (chunks split at } boundaries)
+     * @param maxTokensPerChunk max tokens per chunk (0 = 512 default)
+     * @return number of documents added, or -1 on error
+     */
+    public int addFiles(String[] paths, int chunkSize, int maxTokensPerChunk) {
+        checkNotClosed();
+        int[] fileDocCounts = new int[paths.length];
+        int result = FastCodeEmbed.addFiles(handle, paths, chunkSize, fileDocCounts, maxTokensPerChunk);
+        /* Build docPaths: one entry per document (chunk), using file path. */
+        for (int i = 0; i < paths.length; i++) {
+            String p = paths[i] != null ? paths[i] : "";
+            for (int d = 0; d < fileDocCounts[i]; d++) {
+                docPaths.add(p);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Read source files with default max tokens per chunk (512).
+     */
+    public int addFiles(String[] paths, int chunkSize) {
+        return addFiles(paths, chunkSize, 0);
+    }
+
+    /**
+     * Finalize the corpus: compute IDF weights and enriched RI vectors.
+     * Must be called before any querying. Idempotent.
+     *
+     * @throws IllegalStateException if corpus is closed
+     */
+    public void complete() {
+        checkNotClosed();
+        if (!FastCodeEmbed.finalizeCorpus(handle)) {
+            throw new IllegalStateException("Corpus finalization failed (out of memory)");
+        }
+        this.finalized = true;
+    }
+
+    /**
+     * Get IDF weight for a token. Returns 0.0 for unknown tokens
+     * and for tokens that appear in every document (IDF = log(1) = 0).
+     *
+     * @param token the token to look up
+     * @return IDF weight ≥ 0.0
+     * @throws IllegalStateException if {@link #complete()} has not been called
+     */
+    public float getIdf(String token) {
+        checkFinalized();
+        return FastCodeEmbed.getIdf(handle, token);
+    }
+
+    /**
+     * Get the enriched Random Indexing vector for a token (after co-occurrence).
+     *
+     * @param token the token to look up
+     * @return 768-dimensional float array, or null if token is unknown
+     * @throws IllegalStateException if {@link #complete()} has not been called
+     */
+    public float[] getRiVec(String token) {
+        checkFinalized();
+        return FastCodeEmbed.getRiVec(handle, token);
+    }
+
+    /**
+     * Number of documents registered in the corpus.
+     *
+     * @return document count
+     */
+    public int getDocCount() {
+        checkNotClosed();
+        return FastCodeEmbed.getDocCount(handle);
+    }
+
+    /**
+     * Number of unique tokens (vocabulary size) after finalization.
+     *
+     * @return vocabulary size
+     */
+    public int getTokenCount() {
+        checkNotClosed();
+        return FastCodeEmbed.getTokenCount(handle);
+    }
+
+    /**
+     * Clear tracked file paths to free memory.
+     * Call after finalization if paths are no longer needed.
+     */
+    public void clearDocPaths() {
+        docPaths.clear();
+        docPaths.trimToSize();
+    }
+
+/**
+     * Build a FuncDescriptor for querying against this corpus.
+     * Tokens not in the corpus get IDF = 0.0 and zero RI vectors.
+     * <p>
+     * Note: the TF-IDF indices in the resulting FuncDescriptor are positional
+     * (0, 1, 2, …) rather than corpus vocabulary IDs. This is safe for use
+     * with simpleSearch and simpleRank (which use RI-based scoring), but
+     * the TF-IDF cosine component will not produce meaningful results with
+     * struct-based scoring APIs. Use extractFlat/simpleRankBatch for the
+     * intended flat-array scoring path.
+     *
+     * @param filePath file path for the function
+     * @param tokens   token strings for this function
+     * @return a ready-to-score FuncDescriptor
+     * @throws IllegalStateException if {@link #complete()} has not been called
+     */
+    public FuncDescriptor buildFunc(String filePath, String[] tokens) {
+        checkFinalized();
+        int[] indices = new int[tokens.length];
+        float[] weights = new float[tokens.length];
+        float[] riVec = new float[768]; // FCE_SEM_DIM
+
+        for (int i = 0; i < tokens.length; i++) {
+            indices[i] = i;
+            weights[i] = getIdf(tokens[i]);
+            float[] rv = getRiVec(tokens[i]);
+            if (rv != null) {
+                for (int d = 0; d < 768; d++) {
+                    riVec[d] += rv[d];
+                }
+            }
+        }
+
+        FuncDescriptor fd = new FuncDescriptor(filePath);
+        fd.setTfidf(indices, weights);
+        fd.setRiVec(riVec);
+        return fd;
+    }
+
+    /**
+     * Extract flat arrays from FuncDescriptors for use with
+     * {@link FastCodeEmbed#simpleRankBatch}. Call once after building
+     * all FuncDescriptors; reuse the result across multiple queries.
+     *
+     * @param funcs array of built FuncDescriptors
+     * @return flat arrays ready for batch ranking
+     */
+    public static FlatCorpus extractFlat(FuncDescriptor[] funcs) {
+        int maxTokens = 0;
+        for (FuncDescriptor f : funcs) {
+            if (f.getTfidfLen() > maxTokens) maxTokens = f.getTfidfLen();
+        }
+
+        int n = funcs.length;
+        float[] allWeights = new float[n * maxTokens];
+        int[] allIndices = new int[n * maxTokens];
+        int[] tfidfLens = new int[n];
+        float[] allRiVecs = new float[n * 768];
+        String[] filePaths = new String[n];
+
+        for (int f = 0; f < n; f++) {
+            FuncDescriptor fd = funcs[f];
+            filePaths[f] = fd.getFilePath();
+            tfidfLens[f] = fd.getTfidfLen();
+
+            int[] idx = fd.getTfidfIndices();
+            float[] w = fd.getTfidfWeights();
+            if (idx != null && w != null) {
+                System.arraycopy(idx, 0, allIndices, f * maxTokens, idx.length);
+                System.arraycopy(w, 0, allWeights, f * maxTokens, w.length);
+            }
+
+            float[] ri = fd.getRiVec();
+            if (ri != null) {
+                System.arraycopy(ri, 0, allRiVecs, f * 768, 768);
+            }
+        }
+
+        return new FlatCorpus(allWeights, allIndices, tfidfLens, allRiVecs, filePaths, maxTokens);
+    }
+
+    /**
+     * Get the file path for a document by its corpus index.
+     *
+     * @param index document index (0-based)
+     * @return file path, or empty string if not set
+     */
+    public String getDocPath(int index) {
+        if (index < 0 || index >= docPaths.size()) return "";
+        return docPaths.get(index);
+    }
+
+    /**
+     * Get all tracked file paths (one per document, in corpus order).
+     *
+     * @return array of file paths
+     */
+    public String[] getDocPaths() {
+        return docPaths.toArray(new String[0]);
+    }
+
+    /**
+     * Get the native corpus handle (for JNI use).
+     *
+     * @return native handle
+     */
+    long getHandle() {
+        return handle;
+    }
+
+    /** Free native resources. Safe to call multiple times. */
+    public void close() {
+        if (handle != 0) {
+            FastCodeEmbed.freeCorpus(handle);
+            handle = 0;
+        }
+    }
+
+    private void checkNotClosed() {
+        if (handle == 0) throw new IllegalStateException("Corpus is closed");
+    }
+
+    private void checkFinalized() {
+        checkNotClosed();
+        if (!finalized) throw new IllegalStateException("Call complete() before querying");
+    }
+
+    /**
+     * Pre-extracted flat arrays for batch ranking.
+     * Created by {@link #extractFlat(FuncDescriptor[])}.
+     * Reusable across multiple queries.
+     */
+    public static class FlatCorpus {
+        public final float[] allWeights;
+        public final int[] allIndices;
+        public final int[] tfidfLens;
+        public final float[] allRiVecs;
+        public final String[] filePaths;
+        public final int maxTokens;
+
+        FlatCorpus(float[] allWeights, int[] allIndices, int[] tfidfLens,
+                   float[] allRiVecs, String[] filePaths, int maxTokens) {
+            this.allWeights = allWeights;
+            this.allIndices = allIndices;
+            this.tfidfLens = tfidfLens;
+            this.allRiVecs = allRiVecs;
+            this.filePaths = filePaths;
+            this.maxTokens = maxTokens;
+        }
+
+        /** Number of functions in this corpus. */
+        public int size() { return filePaths.length; }
+    }
+}
