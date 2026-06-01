@@ -310,6 +310,15 @@ public class FastCodeEmbedTest {
 
         System.out.println("\nProximity:");
         test("same file → 1.10", () -> {
+            /* Why 1.10? The proximity algorithm counts path components that
+             * match between the two paths. For "src/handler.c" vs itself:
+             *   - "src" matches → shared_dirs = 1
+             *   - filename "handler.c" matches → shared_dirs = 2
+             *   - total_dirs (max slashes) = 1, so max_dirs + 1 = 2
+             *   - ratio = shared_dirs / (max_dirs + 1) = 2 / 2 = 1.0
+             *   - proximity = 1.0 + 1.0 * 0.10 (PROX_MAX_BOOST) = 1.10
+             * Different prefixes ("src/handler.c" vs "lib/utils.c") share
+             * zero path components → ratio = 0 → proximity = 1.0. */
             float p = FastCodeEmbed.proximity("src/handler.c", "src/handler.c");
             assertEquals(1.10f, p, 0.001f, "proximity");
         });

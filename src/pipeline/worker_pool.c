@@ -14,6 +14,7 @@ enum { WP_TRUE = 1, WP_MIN = 1, WP_STEP = 1 };
 
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <errno.h>
 
 /* Embedding workloads need far less stack than AST recursion (tree-sitter).
  * Default 1 MB; override via FCE_STACK_SIZE env var (in bytes). */
@@ -63,8 +64,11 @@ static void run_pthreads_static(int count, fce_parallel_fn fn, void *ctx, int nw
     char env_buf[32];
     const char *env_val = fce_safe_getenv("FCE_STACK_SIZE", env_buf, sizeof(env_buf), "");
     if (env_val && env_val[0]) {
-        unsigned long v = strtoul(env_val, NULL, 10);
-        if (v >= 65536 && v <= (unsigned long)64 * FCE_SZ_1K * FCE_SZ_1K) {
+        char *endptr;
+        errno = 0;
+        unsigned long v = strtoul(env_val, &endptr, 10);
+        if (errno == 0 && endptr != env_val && *endptr == '\0' &&
+            v >= 65536 && v <= (unsigned long)64 * FCE_SZ_1K * FCE_SZ_1K) {
             stack_size = (size_t)v;
         }
     }
@@ -144,8 +148,11 @@ static void run_pthreads(int count, fce_parallel_fn fn, void *ctx, int nworkers)
     char env_buf[32];
     const char *env_val = fce_safe_getenv("FCE_STACK_SIZE", env_buf, sizeof(env_buf), "");
     if (env_val && env_val[0]) {
-        unsigned long v = strtoul(env_val, NULL, 10);
-        if (v >= 65536 && v <= (unsigned long)64 * FCE_SZ_1K * FCE_SZ_1K) {
+        char *endptr;
+        errno = 0;
+        unsigned long v = strtoul(env_val, &endptr, 10);
+        if (errno == 0 && endptr != env_val && *endptr == '\0' &&
+            v >= 65536 && v <= (unsigned long)64 * FCE_SZ_1K * FCE_SZ_1K) {
             stack_size = (size_t)v;
         }
     }

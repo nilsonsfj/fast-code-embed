@@ -26,6 +26,12 @@
 #include <stdint.h>
 #include "version.h"
 
+/* C8 (review 0002-0002 §3.8): 64-bit-only guard. On 32-bit builds with the
+ * full 5 M-vocab / 1 M-doc caps, size_t products (e.g. entry_count * 768)
+ * overflow and under-allocate → heap overflow. Enforce 64-bit at compile time. */
+_Static_assert(sizeof(void *) >= 8,
+               "fast-code-embed requires a 64-bit target (size_t overflow on 32-bit)");
+
 /* ── Configuration ───────────────────────────────────────────────── */
 
 /* Random Indexing dimension. 256 is sufficient for <500K functions. */
@@ -51,6 +57,15 @@ enum { FCE_SEM_MAX_EDGES = 10 };
  * nesting, expression types, literals, data flow, Halstead). */
 enum { FCE_SEM_AST_PROFILE_DIMS = 25 };
 
+/* Query path selection: runtime mode for dispatching search calls.
+ * FCE_QUERY_AUTO is the default — preserves current behavior with no regression. */
+typedef enum {
+    FCE_QUERY_AUTO   = 0,  /* use fast path, fall back to brute if no inv index */
+    FCE_QUERY_BRUTE  = 1,  /* always brute-force scan all docs */
+    FCE_QUERY_FAST   = 2,  /* inverted index + rerank, fall back to brute if < top_k */
+    FCE_QUERY_TFIDF  = 3,  /* TF-IDF candidate retrieval + RI rerank */
+} fce_query_mode_t;
+
 /* Applied weights sum to ~0.85; proximity is a multiplier on top. */
 typedef struct {
     float w_tfidf;
@@ -61,6 +76,7 @@ typedef struct {
     float w_struct_profile;
     float threshold;
     int max_edges;
+    fce_query_mode_t query_mode;
 } fce_sem_config_t;
 
 /* Get default config (can be overridden via env vars). */
@@ -76,7 +92,10 @@ enum { FCE_SEM_MAX_TOKENS = 512 };
 
 /* Split a name into tokens: camelCase, snake_case, dot.separated.
  * Writes up to max_out tokens into out. Returns token count.
- * Tokens are lowercased. Caller must free each token. */
+ * Tokens are lowercased. Caller must free each token.
+ * I1 (review 0003 §I1): shares the no-concurrent-shutdown requirement
+ * with fce_sem_random_index — reads g_abbrev_ht without the reader-count
+ * bracket. */
 int fce_sem_tokenize(const char *name, char **out, int max_out);
 
 /* Batch tokenize: tokenize count names in one call.
@@ -154,31 +173,48 @@ typedef struct fce_sem_corpus fce_sem_corpus_t;
 /* Create a new corpus from function data. */
 fce_sem_corpus_t *fce_sem_corpus_new(void);
 
-/* Register a function's tokens in the corpus (for IDF counting). */
+/* Register a function's tokens in the corpus (for IDF counting).
+ * THREAD-SAFETY: not thread-safe. Concurrent calls from multiple threads to
+ * any of fce_sem_corpus_add_doc / fce_sem_corpus_add_docs_batch /
+ * fce_sem_corpus_finalize / fce_sem_corpus_free on the same corpus will
+ * corrupt the corpus (hash-table resize races, realloc races, torn writes
+ * to doc_count). Externalise synchronization if needed. The corpus and the
+ * underlying fce_ht_* are designed for single-threaded batch building, then
+ * concurrent read-only queries (search/rank). */
 void fce_sem_corpus_add_doc(fce_sem_corpus_t *corpus, const char **tokens, int count);
 
 /* Batch-build the corpus from pre-tokenized documents (PARALLEL variant).
  * `all_tokens` layout: all_tokens[f * max_tokens_per_doc + t] = token pointer.
  * `token_counts[f]` = number of tokens in document f.
- * This replaces a loop of fce_sem_corpus_add_doc() calls. */
+ * This replaces a loop of fce_sem_corpus_add_doc() calls.
+ * THREAD-SAFETY: not thread-safe — see fce_sem_corpus_add_doc. */
 void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
                                    const int *token_counts, int doc_count, int max_tokens_per_doc);
 
 /* Finalize: compute IDF, build enriched token vectors via co-occurrence.
- * Returns 0 on success, -1 on failure (OOM). Corpus is NOT marked finalized
- * on failure — caller may free and retry. */
+ * Returns 0 on success, -1 on failure (OOM). On failure the corpus is NOT
+ * marked finalized and internal buffers allocated before the failure are
+ * left attached — the caller MUST free the corpus (fce_sem_corpus_free) and
+ * must NOT call finalize again on the same handle (retry leaks memory).
+ * Review 0007 §M2: the previous wording "caller may free and retry" was
+ * ambiguous; clarified that retry is only safe after a full free+new. */
 int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus);
 
 /* Get IDF weight for a token. Returns 0.0 for unknown tokens. */
 float fce_sem_corpus_idf(const fce_sem_corpus_t *corpus, const char *token);
 
 /* Get the enriched Random Indexing vector for a token (after co-occurrence).
- * WARNING: when the corpus stores int8 enriched vectors (the normal path),
- * this dequantizes into a _Thread_local scratch buffer. The returned pointer
- * is only valid until the next call to this function from the SAME thread.
+ * WARNING: BORROWED POINTER — when the corpus stores int8 enriched vectors
+ * (the normal path), this dequantizes into a _Thread_local scratch buffer.
+ * The returned pointer is only valid until the next call to this function
+ * from the SAME thread.
+ *   - DO NOT cache the pointer across calls
+ *   - DO NOT hold two ri_vec pointers simultaneously (the second call
+ *     overwrites the first)
+ *   - DO NOT pass the pointer to a function that may itself call ri_vec
  * Each function has its own _Thread_local scratch, so calling
  * fce_sem_corpus_token_at() does NOT invalidate a pointer from this function.
- * Do not store the pointer or hold two ri_vec pointers simultaneously. */
+ * If you need a stable copy, fce_sem_dup_ri_vec() (or just memcpy) the data. */
 const fce_sem_vec_t *fce_sem_corpus_ri_vec(const fce_sem_corpus_t *corpus, const char *token);
 
 /* Get the total document count. */
@@ -209,7 +245,20 @@ void fce_sem_corpus_add_docs_tokenized(fce_sem_corpus_t *corpus,
  * file_doc_counts[i] receives the number of chunks produced by file i.
  * Pass NULL if not needed.
  * max_tokens_per_chunk caps tokens per chunk (0 = FCE_SEM_MAX_TOKENS).
- * Returns total documents added, or -1 on error. */
+ * Returns total documents added, or -1 on error.
+ *
+ * DoS BOUNDS (review 0002 §4.4):
+ *   - per-file: 64 MB default, configurable via FCE_MAX_FILE_SIZE env var
+ *     (subject to errno=ERANGE rejection, so LONG_MAX is never accepted)
+ *   - per-doc: 512 tokens (FCE_SEM_MAX_TOKENS) hard limit
+ *   - per-batch: 5000 documents buffered at a time, then flushed to the corpus
+ *   - corpus total vocab: 5 M tokens (FCE_SEM_MAX_ENTRY_COUNT)
+ *   - corpus total doc count: 1 M documents (FCE_SEM_MAX_DOC_COUNT)
+ *   The library is offline-only and trusts the caller.
+ *
+ *   file_doc_counts: caller-allocated array of at least path_count ints.
+ *   On return, file_doc_counts[fi] is the number of documents contributed
+ *   by paths[fi]. Passing a shorter array is undefined behavior. */
 int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
                               const char **paths, int path_count,
                               int chunk_size, int *file_doc_counts,
@@ -252,7 +301,9 @@ void fce_sem_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
  * 0.0 = unrelated, 1.0 = identical. */
 float fce_sem_simple_score(fce_sem_func_t *a, fce_sem_func_t *b);
 
-/* Rank corpus by simple score. */
+/* Rank corpus by simple score (exhaustive RI-cosine scan over all docs).
+ * No inverted-index fast path — every corpus entry is scored. For large
+ * corpora with a batch API, use simple_rank_flat instead. */
 void fce_sem_simple_rank(fce_sem_func_t *query, fce_sem_func_t *corpus,
                           uint32_t corpus_size, uint32_t top_k,
                           fce_sem_ranked_t *results_out, uint32_t *count_out);
@@ -272,9 +323,22 @@ void fce_sem_simple_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
  * IMPORTANT: all_tfidf_indices and q_tfidf_indices MUST be sorted ascending
  * per-document (row). The sparse TF-IDF cosine merge relies on this invariant.
  *
- * NOTE: the flat API scores TF-IDF + RI only (no module proximity signal),
- * since no query file path is available. For proximity-weighted results,
- * use fce_sem_simple_search with fce_sem_func_t structs.
+ * SCORING (review 0002 §5.2): this function intentionally uses RI-only
+ * scoring (cosine of the random-index vectors). The TF-IDF weights and
+ * indices in the flat layout are accepted as input for layout symmetry
+ * with the structured API, but they are NOT consumed by the scorer.
+ * Rationale: the flat path is intended for the Corpus.extractFlat +
+ * simpleRankBatch flow, where query tokens are passed in their *original*
+ * order and the corpus-side indices are positional (0..N) within a row —
+ * not global corpus vocabulary IDs. Computing a sparse TF-IDF cosine
+ * merge with positional indices would silently produce wrong (under-)
+ * scores. To get a TF-IDF-aware score, use fce_sem_simple_search with
+ * fce_sem_func_t structs that carry real vocabulary IDs (see Corpus
+ * .buildFunc in the Javadoc for the equivalent Java wrapper).
+ *
+ * No module-proximity signal is available either, since no query file
+ * path is passed in (proximity is always 1.0). For proximity-weighted
+ * results, use fce_sem_simple_search with fce_sem_func_t structs.
  *
  * Corpus layout (flat, row-major):
  *   all_tfidf_weights[f * max_tokens + t]  — IDF weight for token t in func f
@@ -317,6 +381,11 @@ void fce_sem_simple_rank_flat(
  * with RI cosine similarity. Falls back to brute-force if the inverted
  * index is unavailable or yields too few candidates.
  *
+ * cfg controls the search path: FCE_QUERY_AUTO (default) tries the fast
+ * path first; FCE_QUERY_BRUTE always scans all docs; FCE_QUERY_FAST
+ * forces the inverted-index path; FCE_QUERY_TFIDF forces TF-IDF candidates.
+ * Pass NULL to use AUTO (backward compatible).
+ *
  * NOTE: Documents that are semantically related through Random-Indexing
  * synonym bridging but share NO literal tokens with the query will NOT
  * appear in results (the inverted index only finds documents containing
@@ -326,7 +395,8 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
                            const char *query,
                            uint32_t top_k,
                            fce_sem_ranked_t *results_out,
-                           uint32_t *count_out);
+                           uint32_t *count_out,
+                           const fce_sem_config_t *cfg);
 
 /* Brute-force search: scans ALL document vectors with cosine similarity.
  * Slower but guaranteed to find the global top-k. Use when the inverted
@@ -339,12 +409,15 @@ void fce_sem_search_query_bruteforce(const fce_sem_corpus_t *corpus,
 
 /* TF-IDF hybrid search: uses TF-IDF sparse cosine for candidate retrieval,
  * then reranks with RI cosine. Better candidate quality than the keyword
- * approach but slightly slower candidate scoring. */
+ * approach but slightly slower candidate scoring.
+ * cfg controls the search path (same semantics as fce_sem_search_query).
+ * Pass NULL to use AUTO (backward compatible). */
 void fce_sem_search_query_tfidf(const fce_sem_corpus_t *corpus,
                                  const char *query,
                                  uint32_t top_k,
                                  fce_sem_ranked_t *results_out,
-                                 uint32_t *count_out);
+                                 uint32_t *count_out,
+                                 const fce_sem_config_t *cfg);
 
 /* Return the number of candidates the inverted index would retrieve
  * for a given query. Useful for understanding search selectivity. */
@@ -354,7 +427,15 @@ int fce_sem_search_candidate_count(const fce_sem_corpus_t *corpus,
 /* ── Graph diffusion ─────────────────────────────────────────────── */
 
 /* Apply one iteration of graph diffusion to a combined embedding.
- * Blends with mean of top-k neighbor embeddings (α=0.3). */
+ * Blends with mean of top-k neighbor embeddings (α=0.3).
+ *
+ * CONTRACT: `combined` MUST NOT alias any entry in `neighbors[]`. The
+ * internal `mean` accumulator reads each `neighbors[n].v` once before any
+ * write to `combined`, so today an aliased call is accidentally safe, but
+ * the function depends on this contract for correctness — future refactors
+ * that read `combined` after the mean loop would silently produce
+ * self-blended (corrupted) results. An assert enforces the contract in
+ * debug builds. */
 void fce_sem_diffuse(fce_sem_vec_t *combined, const fce_sem_vec_t *neighbors, int neighbor_count,
                      float alpha);
 

@@ -6,21 +6,25 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 
-static FCELogLevel g_log_level = FCE_LOG_INFO;
-static fce_log_sink_fn g_log_sink = NULL;
+/* C-2 (review 0002 §3.1): g_log_level and g_log_sink are _Atomic so concurrent
+ * fce_log / fce_log_set_level / fce_log_set_sink from different threads do
+ * not constitute a data race (UB on weakly-ordered architectures). */
+static _Atomic FCELogLevel g_log_level = FCE_LOG_INFO;
+static _Atomic fce_log_sink_fn g_log_sink = NULL;
 
 void fce_log_set_sink(fce_log_sink_fn fn) {
-    g_log_sink = fn;
+    atomic_store_explicit(&g_log_sink, fn, memory_order_release);
 }
 
 void fce_log_set_level(FCELogLevel level) {
-    g_log_level = level;
+    atomic_store_explicit(&g_log_level, level, memory_order_release);
 }
 
 FCELogLevel fce_log_get_level(void) {
-    return g_log_level;
+    return atomic_load_explicit(&g_log_level, memory_order_acquire);
 }
 
 static const char *level_str(FCELogLevel level) {
@@ -39,11 +43,15 @@ static const char *level_str(FCELogLevel level) {
 }
 
 void fce_log(FCELogLevel level, const char *msg, ...) {
-    if (level < g_log_level) {
+    if (level < atomic_load_explicit(&g_log_level, memory_order_acquire)) {
         return;
     }
 
-    /* Build the log line into a buffer ONCE — no double va_list iteration */
+    /* Build the log line into a buffer ONCE — no double va_list iteration.
+     * Silently truncates at FCE_SZ_512 bytes (review 0002 §5.6). This is
+     * acceptable for the structured-key=value format because the loss is
+     * always in the last value, and the keys/values passed are typically
+     * short (pass=defs elapsed_ms=42, etc.). */
     char line_buf[FCE_SZ_512];
     int pos =
         snprintf(line_buf, sizeof(line_buf), "level=%s msg=%s", level_str(level), msg ? msg : "");
@@ -66,16 +74,19 @@ void fce_log(FCELogLevel level, const char *msg, ...) {
     va_end(args);
 
     /* When a sink is registered it takes over all output (exclusive).
-     * Otherwise write structured log to stderr. */
-    if (g_log_sink) {
-        g_log_sink(line_buf);
+     * Snapshot the sink pointer atomically; calling through a stale
+     * non-NULL pointer is fine because the sink contract is "lives for the
+     * whole process lifetime" (C-2 review 0002 §7.3). */
+    fce_log_sink_fn sink = atomic_load_explicit(&g_log_sink, memory_order_acquire);
+    if (sink) {
+        sink(line_buf);
     } else {
         (void)fprintf(stderr, "%s\n", line_buf);
     }
 }
 
 void fce_log_int(FCELogLevel level, const char *msg, const char *key, int64_t value) {
-    if (level < g_log_level) {
+    if (level < atomic_load_explicit(&g_log_level, memory_order_acquire)) {
         return;
     }
 
@@ -83,8 +94,9 @@ void fce_log_int(FCELogLevel level, const char *msg, const char *key, int64_t va
     snprintf(line_buf, sizeof(line_buf), "level=%s msg=%s %s=%" PRId64, level_str(level),
              msg ? msg : "", key ? key : "?", value);
 
-    if (g_log_sink) {
-        g_log_sink(line_buf);
+    fce_log_sink_fn sink = atomic_load_explicit(&g_log_sink, memory_order_acquire);
+    if (sink) {
+        sink(line_buf);
     } else {
         (void)fprintf(stderr, "%s\n", line_buf);
     }

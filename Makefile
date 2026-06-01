@@ -8,7 +8,11 @@
 #   make extract    — Regenerate nomic vectors (requires Python + torch)
 #
 CC      ?= cc
-CFLAGS  ?= -O2 -Wall -Wextra -Wpedantic -std=c11 -mtune=native
+# -Wgnu-zero-variadic-macro-arguments is suppressed because fce_log_* macros
+# rely on the GNU `, ##__VA_ARGS__` extension (C-2 review 0002 §5.8:
+# __VA_OPT__ is C23 and rejected by -std=c11). All other pedantic warnings
+# remain on.
+CFLAGS  ?= -O2 -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11 -mtune=native
 AR      ?= ar
 ARFLAGS ?= rcs
 
@@ -69,8 +73,18 @@ $(TEST_BIN): $(TEST_SRC) $(LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed -lpthread -lm -o $@
 
+# ── Benchmark ────────────────────────────────────────────────────
+BENCH_SRC  = bench_mem_query.c
+BENCH_BIN  = $(BUILDDIR)/bench_mem_query
+
+bench: $(BENCH_BIN)
+
+$(BENCH_BIN): $(BENCH_SRC) $(LIB)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed -lpthread -lm -o $@
+
 # ASan/UBSan build — reproducible from Makefile, no committed binary needed
-ASAN_CFLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -std=c11
+ASAN_CFLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11
 ASAN_BIN = $(BUILDDIR)/test_asan
 LIB_ASAN = $(BUILDDIR)/libfast_code_embed_asan.a
 OBJS_ASAN = $(SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/asan/%.o)

@@ -23,7 +23,8 @@ make -j4 lib
 
 echo ""
 echo "=== Compiling JNI native code ==="
-cc -shared -fPIC -O2 -Wall \
+cc -shared -fPIC -O2 -Wall -Wextra \
+   -Werror=uninitialized -Werror=sometimes-uninitialized \
    -I"$PROJECT_ROOT/src" \
    -I"$JNI_INCLUDE" -I"$JNI_DARWIN" \
    "$SCRIPT_DIR/src/main/native/fast_code_embed_jni.c" \

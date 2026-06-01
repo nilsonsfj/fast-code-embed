@@ -62,7 +62,17 @@ static char *read_file(const char *path, size_t *out_len) {
     if (!buf) { perror("malloc"); fclose(f); return NULL; }
 
     size_t nread = fread(buf, 1, len, f);
+    /* Check ferror BEFORE fclose (fclose invalidates the handle). A short
+     * read with ferror set is an I/O error; we surface that to the caller
+     * so it doesn't index corrupted/truncated data. */
+    int read_err = (nread != len && ferror(f));
     fclose(f);
+    if (read_err) {
+        fprintf(stderr, "%s: read error after %zu/%zu bytes\n",
+                path, nread, len);
+        free(buf);
+        return NULL;
+    }
     *out_len = nread;
     return buf;
 }
@@ -97,6 +107,7 @@ static void walk_dir(const char *root, file_list_t *list) {
     char **dir_stack = (char **)malloc((size_t)stack_cap * sizeof(char *));
     if (!dir_stack) return;
     dir_stack[stack_len++] = strdup(root);
+    if (!dir_stack[0]) { free(dir_stack); return; }
 
     while (stack_len > 0) {
         char *dirpath = dir_stack[--stack_len];
@@ -119,7 +130,9 @@ static void walk_dir(const char *root, file_list_t *list) {
                     if (!grown) continue;
                     dir_stack = grown;
                 }
-                dir_stack[stack_len++] = strdup(fullpath);
+                dir_stack[stack_len] = strdup(fullpath);
+                if (!dir_stack[stack_len]) continue;  /* L4: don't bump stack_len on strdup failure */
+                stack_len++;
             } else if (S_ISREG(st.st_mode) && should_include(fullpath)) {
                 file_list_add(list, fullpath);
             }
@@ -192,6 +205,14 @@ int main(int argc, char **argv) {
     int files_processed = 0;
 
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    if (!corp) {
+        fprintf(stderr, "Failed to create corpus (OOM)\n");
+        for (int i = 0; i < files.count; i++) free(files.paths[i]);
+        free(files.paths);
+        free(all_tokens);
+        free(token_counts);
+        return 1;
+    }
 
     for (int f = 0; f < files.count; f++) {
         size_t len;
@@ -216,7 +237,7 @@ int main(int argc, char **argv) {
 
             /* Null-terminate the chunk for tokenization */
             char *chunk = (char *)malloc(chunk_len + 1);
-            if (!chunk) continue;  /* Skip chunk on malloc failure */
+            if (!chunk) { offset = end; continue; }  /* M1: advance to prevent infinite loop */
             memcpy(chunk, content + offset, chunk_len);
             chunk[chunk_len] = '\0';
 
@@ -287,7 +308,8 @@ int main(int argc, char **argv) {
     printf("  Vocabulary:      %d tokens\n", fce_sem_corpus_token_count(corp));
     printf("  Documents:       %d\n", fce_sem_corpus_doc_count(corp));
     printf("  Total time:      %.1f ms\n", total_ms);
-    printf("  Throughput:      %.0f chunks/sec\n", total_chunks / (total_ms / 1000.0));
+    double tput = total_ms > 0.0 ? total_chunks / (total_ms / 1000.0) : 0.0;
+    printf("  Throughput:      %.0f chunks/sec\n", tput);
 
     /* ── Cleanup ──────────────────────────────────────────────── */
     for (int i = 0; i < files.count; i++) free(files.paths[i]);

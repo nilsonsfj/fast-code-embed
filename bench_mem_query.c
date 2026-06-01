@@ -44,7 +44,12 @@ static char *read_file(const char *path, size_t *out_len) {
     char *buf = (char *)malloc((size_t)st.st_size);
     if (!buf) { fclose(f); return NULL; }
     size_t nread = fread(buf, 1, (size_t)st.st_size, f);
+    /* check ferror BEFORE fclose, mirroring the hardened
+     * pattern in semantic.c:551-557 and index_dir.c. A short read with
+     * ferror set means I/O error (not EOF); discard truncated data. */
+    int read_err = (nread != (size_t)st.st_size && ferror(f));
     fclose(f);
+    if (read_err) { free(buf); *out_len = 0; return NULL; }
     *out_len = nread;
     return buf;
 }
@@ -120,14 +125,19 @@ static long get_current_rss_bytes(void) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <directory> [chunk_size]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <directory> [chunk_size] [--brute-only]\n", argv[0]);
         return 1;
     }
     const char *root_dir = argv[1];
     int chunk_size = DEFAULT_CHUNK_SIZE;
+    int brute_only = 0;
     for (int i = 2; i < argc; i++) {
-        chunk_size = atoi(argv[i]);
-        if (chunk_size <= 0) chunk_size = DEFAULT_CHUNK_SIZE;
+        if (strcmp(argv[i], "--brute-only") == 0) {
+            brute_only = 1;
+        } else {
+            chunk_size = atoi(argv[i]);
+            if (chunk_size <= 0) chunk_size = DEFAULT_CHUNK_SIZE;
+        }
     }
 
     struct timespec t_total, t0, t1;
@@ -136,7 +146,8 @@ int main(int argc, char **argv) {
     printf("fast-code-embed memory + query benchmark\n");
     printf("================================================\n");
     printf("Directory: %s\n", root_dir);
-    printf("Chunk size: %d bytes\n\n", chunk_size);
+    printf("Chunk size: %d bytes\n", chunk_size);
+    printf("Mode: %s\n\n", brute_only ? "brute-only (skip inverted index + enriched quantization)" : "normal");
 
     /* ── 1. Walk directory ────────────────────────────────────── */
     clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -173,6 +184,15 @@ int main(int argc, char **argv) {
     int doc_path_count = 0;
 
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    if (!corp) {
+        fprintf(stderr, "fce_sem_corpus_new failed (OOM)\n");
+        free(doc_paths);
+        free(all_tokens);
+        free(token_counts);
+        for (int i = 0; i < files.count; i++) free(files.paths[i]);
+        free(files.paths);
+        return 1;
+    }
 
     for (int f = 0; f < files.count; f++) {
         size_t len;
@@ -234,6 +254,7 @@ int main(int argc, char **argv) {
            ms_since(t0), total_chunks, files_processed);
 
     /* ── 3. Finalize corpus ─────────────────────────────────────── */
+    if (brute_only) setenv("FCE_SEM_SKIP_INV_INDEX", "1", 1);
     long rss_before_finalize = get_current_rss_bytes();
     clock_gettime(CLOCK_MONOTONIC, &t0);
     fce_sem_corpus_finalize(corp);
@@ -258,6 +279,15 @@ int main(int argc, char **argv) {
     /* ── 4. Query benchmarks ──────────────────────────────────── */
     printf("\n");
     printf("  ── Query Benchmarks ───────────────────────\n");
+
+    fce_sem_config_t fast_cfg = fce_sem_get_config();
+    fce_sem_config_t tfidf_cfg = fce_sem_get_config();
+    fce_sem_config_t brute_cfg = fce_sem_get_config();
+    brute_cfg.query_mode = FCE_QUERY_BRUTE;
+    if (brute_only) {
+        fast_cfg.query_mode = FCE_QUERY_BRUTE;
+        tfidf_cfg.query_mode = FCE_QUERY_BRUTE;
+    }
 
     const char *queries[] = {
         "gpu display drivers",
@@ -287,8 +317,8 @@ int main(int argc, char **argv) {
             uint32_t fast_count = 0, tfidf_count = 0, brute_count = 0;
 
             /* Warm up all paths */
-            fce_sem_search_query(corp, qstr, top_k, fast_results, &fast_count);
-            fce_sem_search_query_tfidf(corp, qstr, top_k, tfidf_results, &tfidf_count);
+            fce_sem_search_query(corp, qstr, top_k, fast_results, &fast_count, &fast_cfg);
+            fce_sem_search_query_tfidf(corp, qstr, top_k, tfidf_results, &tfidf_count, &tfidf_cfg);
             fce_sem_search_query_bruteforce(corp, qstr, top_k, brute_results, &brute_count);
 
             int ncand = fce_sem_search_candidate_count(corp, qstr);
@@ -298,14 +328,14 @@ int main(int argc, char **argv) {
             /* Benchmark fast path (inverted index + IDF sum) */
             clock_gettime(CLOCK_MONOTONIC, &t1);
             for (int iter = 0; iter < iters; iter++)
-                fce_sem_search_query(corp, qstr, top_k, fast_results, &fast_count);
+                fce_sem_search_query(corp, qstr, top_k, fast_results, &fast_count, &fast_cfg);
             double fast_ms = ms_since(t1) / iters;
             total_fast_ms += fast_ms;
 
             /* Benchmark TF-IDF hybrid path */
             clock_gettime(CLOCK_MONOTONIC, &t1);
             for (int iter = 0; iter < iters; iter++)
-                fce_sem_search_query_tfidf(corp, qstr, top_k, tfidf_results, &tfidf_count);
+                fce_sem_search_query_tfidf(corp, qstr, top_k, tfidf_results, &tfidf_count, &tfidf_cfg);
             double tfidf_ms = ms_since(t1) / iters;
             total_tfidf_ms += tfidf_ms;
 
@@ -316,12 +346,17 @@ int main(int argc, char **argv) {
             double brute_ms = ms_since(t1) / iters;
             total_brute_ms += brute_ms;
 
-            /* Count overlaps with brute-force */
+            /* Count overlaps with brute-force.
+             * iterate only over returned counts, not top_k,
+             * to avoid reading uninitialized slots when a path returns
+             * fewer results. */
             int overlap_fast = 0, overlap_tfidf = 0;
-            for (int i = 0; i < (int)top_k; i++) {
+            for (int i = 0; i < (int)fast_count; i++) {
                 for (int j = 0; j < (int)brute_count; j++) {
                     if (fast_results[i].index == brute_results[j].index) { overlap_fast++; break; }
                 }
+            }
+            for (int i = 0; i < (int)tfidf_count; i++) {
                 for (int j = 0; j < (int)brute_count; j++) {
                     if (tfidf_results[i].index == brute_results[j].index) { overlap_tfidf++; break; }
                 }

@@ -76,10 +76,10 @@ uint64_t fce_now_ns(void) {
     return (uint64_t)count.QuadPart * 1000000000ULL / (uint64_t)freq.QuadPart;
 }
 
-#define FCE_USEC_PER_SEC 1000000ULL
-
 uint64_t fce_now_ms(void) {
-    return fce_now_ns() / FCE_USEC_PER_SEC;
+    /* FCE_NSEC_PER_MSEC is defined in constants.h. The local FCE_USEC_PER_SEC
+     * was a misleadingly-named alias for the same value (1,000,000). */
+    return fce_now_ns() / FCE_NSEC_PER_MSEC;
 }
 
 int fce_nprocs(void) {
@@ -191,10 +191,9 @@ uint64_t fce_now_ns(void) {
 }
 #endif
 
-#define FCE_USEC_PER_SEC 1000000ULL
-
 uint64_t fce_now_ms(void) {
-    return fce_now_ns() / FCE_USEC_PER_SEC;
+    /* FCE_NSEC_PER_MSEC is defined in constants.h. */
+    return fce_now_ns() / FCE_NSEC_PER_MSEC;
 }
 
 /* ── System info ───────────────────────────────────────────────── */
@@ -269,12 +268,21 @@ extern char **environ;
 /* Safe getenv: iterates environ directly (NOT safe with concurrent setenv/putenv).
  * Only call from single-threaded initialization paths. Writes result to buf. */
 const char *fce_safe_getenv(const char *name, char *buf, size_t buf_sz, const char *fallback) {
+    if (buf_sz == 0) return NULL;  /* L4 (review 0003 §L4): prevent underflow */
     char **env = FCE_ENVIRON;
     if (env) {
         size_t nlen = strlen(name);
         for (; *env; env++) {
             if (strncmp(*env, name, nlen) == 0 && (*env)[nlen] == '=') {
-                snprintf(buf, buf_sz, "%s", *env + nlen + 1);
+                const char *val = *env + nlen + 1;
+                snprintf(buf, buf_sz, "%s", val);
+                /* C8: detect truncation — if the source
+                 * value is longer than the buffer can hold, reject it to
+                 * prevent strtol/strtod from parsing a truncated number. */
+                if (strlen(val) >= buf_sz - 1) {
+                    buf[0] = '\0';
+                    return NULL;
+                }
                 return buf;
             }
         }

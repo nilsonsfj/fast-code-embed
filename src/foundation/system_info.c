@@ -170,6 +170,13 @@ fce_system_info_t fce_system_info(void) {
 }
 
 int fce_default_worker_count(bool initial) {
+    /* L-2 (review 0002 §3.6): fce_system_info() is thread-safe by way of
+     * the underlying fce_once(&info_once, init_system_info). After the
+     * one-time init, the returned `cached_info` is a plain struct copy
+     * (by value), so concurrent reads on this path cannot tear. Calls
+     * before the first init race benignly — every racing thread runs
+     * init_system_info, which is idempotent in practice (the sysctl/grpc
+     * calls produce the same data). */
     fce_system_info_t info = fce_system_info();
     if (initial) {
         /* Use all cores for initial indexing — user is waiting */

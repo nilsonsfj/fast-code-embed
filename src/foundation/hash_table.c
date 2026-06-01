@@ -11,7 +11,64 @@
  */
 #include "foundation/hash_table.h"
 #include "foundation/constants.h"
-#include <stdlib.h> // arc4random
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdbool.h>
+/* C7: getentropy() is declared in <unistd.h> on Linux/BSD. */
+#if defined(__linux__) || defined(__OpenBSD__) || defined(__FreeBSD__)
+#include <unistd.h>
+#endif
+
+#if defined(__APPLE__)
+/* arc4random is in <stdlib.h> on macOS / *BSD. */
+#elif defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 36))
+/* glibc 2.36+ exposes arc4random in <stdlib.h> without libbsd. */
+#elif defined(__linux__) || defined(__unix__)
+/* Older glibc, musl, and other Unix libc: try getentropy first for better
+ * hash-flood resistance, then fall back to clock-based seeding. On a
+ * freshly-booted container the monotonic clock starts near zero, so
+ * getentropy (which reads from /dev/urandom or getrandom syscall) is
+ * strictly better when available. */
+#include <time.h>
+static uint32_t ht_random_seed(void) {
+    uint32_t seed;
+#if defined(__linux__) && defined(__GLIBC__) && \
+    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 25))
+    if (getentropy(&seed, sizeof(seed)) == 0) return seed;
+#elif defined(__OpenBSD__) || defined(__FreeBSD__)
+    if (getentropy(&seed, sizeof(seed)) == 0) return seed;
+#endif
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint32_t s = (uint32_t)ts.tv_sec;
+    uint32_t ns = (uint32_t)ts.tv_nsec;
+    return s ^ (ns * 2654435761U) ^ 0x9E3779B9U;
+}
+#define arc4random ht_random_seed
+#else
+/* Last-resort fallback: try getentropy (glibc 2.25+ / musl) for better
+ * hash-flood resistance, then fall back to time-based seeding. */
+#include <time.h>
+static uint32_t ht_random_seed_fallback(void) {
+    uint32_t seed;
+    /* C7 (review 0002-0002 §3.7): getentropy provides OS-level entropy
+     * (read from /dev/urandom or getrandom syscall) on modern POSIX.
+     * Available on glibc 2.25+, musl, BSDs. Much harder to guess than
+     * clock-based seeding for hash-flood mitigation. */
+#if defined(__linux__) && defined(__GLIBC__) && \
+    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 25))
+    if (getentropy(&seed, sizeof(seed)) == 0) return seed;
+#elif defined(__OpenBSD__) || defined(__FreeBSD__)
+    if (getentropy(&seed, sizeof(seed)) == 0) return seed;
+#endif
+    static uint32_t counter = 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)ts.tv_nsec ^ (uint32_t)ts.tv_sec ^ (++counter);
+}
+#define arc4random ht_random_seed_fallback
+#endif
 
 enum {
     HT_MIN_CAP = 8,     /* minimum hash table capacity */
@@ -24,10 +81,6 @@ enum {
     HT_SHIFT_8 = 8,
     HT_SHIFT_16 = 16,
 };
-#include <stdbool.h>
-#include <stdint.h> // uint32_t
-#include <stdlib.h>
-#include <string.h>
 
 /* FNV-1a hash constants (published by Fowler/Noll/Vo) */
 #define FNV_OFFSET_BASIS 2166136261U
@@ -126,25 +179,46 @@ static bool ht_resize(FCEHashTable *ht) {
     return true;
 }
 
-void *fce_ht_set(FCEHashTable *ht, const char *key, void *value) {
+void *fce_ht_set(FCEHashTable *ht, const char *key, void *value, bool *inserted) {
+    if (inserted) *inserted = false;
     if (!ht || !key) return NULL;
-    /* Resize at 75% load */
-    if ((uint64_t)ht->count * HT_LOAD_DEN >= (uint64_t)ht->capacity * HT_LOAD_NUM) {
-        if (!ht_resize(ht)) return NULL;  /* OOM: insert fails */
-    }
 
     uint32_t h = fnv1a_with_seed(key, ht->seed);
     uint32_t idx = h & ht->mask;
     FCEHTEntry cur = {.key = key, .value = value, .hash = h, .psl = HT_INITIAL_PSL};
     void *prev_value = NULL;
 
+    /* Probe first to check whether the key already exists.  Only resize
+     * when we actually need to insert a new entry.  This avoids:
+     *   1. Spurious growth on update-heavy workloads (count doesn't increase).
+     *   2. Silently dropping an update when ht_resize OOMs (the in-place
+     *      update requires no new memory at all). */
     for (uint32_t probe = 0; probe < ht->capacity; probe++) {
         FCEHTEntry *slot = &ht->entries[idx];
 
         if (slot->psl == 0) {
-            /* Empty slot — insert here */
+            /* Empty slot — key not found, so this is a new insert.
+             * Now honor the load factor. */
+            if ((uint64_t)ht->count * HT_LOAD_DEN >= (uint64_t)ht->capacity * HT_LOAD_NUM) {
+            if (!ht_resize(ht)) return NULL;
+            /* H1 (review 0009 §H1): After a Robin Hood steal, cur may hold a
+             * *displaced* entry E (not the original key). Using cur.hash is
+             * correct in both cases: when no steal occurred, cur.hash ==
+             * fnv1a_with_seed(key); when a steal occurred, cur.hash is the
+             * hash of whatever key is now in cur (which is what we must
+             * re-insert into the resized table). Recomputing from the parameter
+             * `key` would stamp the wrong hash onto a displaced entry, silently
+             * losing it. */
+            idx = cur.hash & ht->mask;
+            cur.psl = HT_INITIAL_PSL;
+            /* L1 (review 0009 §L1): probe = -1 so that probe++ makes it 0,
+             * correctly restarting the probe sequence from the top. */
+            probe = (uint32_t)-1;
+            continue;
+            }
             *slot = cur;
             ht->count++;
+            if (inserted) *inserted = true;
             return prev_value;
         }
 

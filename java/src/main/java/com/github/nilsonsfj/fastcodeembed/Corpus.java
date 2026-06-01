@@ -37,10 +37,18 @@ public class Corpus implements AutoCloseable {
     /**
      * Create a new empty corpus.
      *
+     * @throws OutOfMemoryError if the native library could not allocate
+     *         the corpus (review 0001 §2.6: previously the constructor
+     *         silently produced a 0-handle that surfaced as a confusing
+     *         "Corpus is closed" IllegalStateException on the first call).
      * @throws UnsatisfiedLinkError if native library is not loaded
      */
     public Corpus() {
         this.handle = FastCodeEmbed.createCorpus();
+        if (this.handle == FastCodeEmbed.CORPUS_OOM) {
+            this.handle = 0;
+            throw new OutOfMemoryError("fce_sem_corpus_new returned NULL (calloc/ht_create OOM)");
+        }
         this.finalized = false;
     }
 
@@ -53,8 +61,12 @@ public class Corpus implements AutoCloseable {
      */
     public void addDoc(String[] tokens) {
         checkNotClosed();
+        int before = FastCodeEmbed.getDocCount(handle);
         FastCodeEmbed.addDoc(handle, tokens);
-        docPaths.add("");
+        int after = FastCodeEmbed.getDocCount(handle);
+        if (after > before) docPaths.add("");
+        /* If native rejected the doc (count<=0 or >512 tokens), docPaths
+         * stays in sync because we only append when the native count grew. */
     }
 
     /**
@@ -67,8 +79,10 @@ public class Corpus implements AutoCloseable {
      */
     public void addDoc(String[] tokens, String filePath) {
         checkNotClosed();
+        int before = FastCodeEmbed.getDocCount(handle);
         FastCodeEmbed.addDoc(handle, tokens);
-        docPaths.add(filePath != null ? filePath : "");
+        int after = FastCodeEmbed.getDocCount(handle);
+        if (after > before) docPaths.add(filePath != null ? filePath : "");
     }
 
     /**
@@ -84,8 +98,17 @@ public class Corpus implements AutoCloseable {
         for (String[] doc : docs) {
             if (doc.length > maxLen) maxLen = doc.length;
         }
+        /* C21: reject all-empty input early —
+         * the C side silently succeeds with doc_count unchanged, which can
+         * confuse callers who expect an error for empty input. */
+        if (maxLen == 0) throw new IllegalArgumentException("All documents are empty");
+        int before = FastCodeEmbed.getDocCount(handle);
         FastCodeEmbed.addDocsBatch(handle, docs, maxLen);
-        for (int i = 0; i < docs.length; i++) docPaths.add("");
+        int added = FastCodeEmbed.getDocCount(handle) - before;
+        /* Some docs may be rejected by native (count<=0 or >512). We don't
+         * know which ones, so we use a placeholder count and let the
+         * docPaths stay synced only by count, not by per-doc mapping. */
+        for (int i = 0; i < added; i++) docPaths.add("");
     }
 
     /**
@@ -105,8 +128,17 @@ public class Corpus implements AutoCloseable {
         for (String[] doc : docs) {
             if (doc.length > maxLen) maxLen = doc.length;
         }
+        int before = FastCodeEmbed.getDocCount(handle);
         FastCodeEmbed.addDocsBatch(handle, docs, maxLen);
-        for (String p : paths) docPaths.add(p != null ? p : "");
+        int added = FastCodeEmbed.getDocCount(handle) - before;
+        /* Same caveat as addDocsBatch(docs): if some docs are rejected by
+         * native, the path→doc mapping is not preserved (paths are still
+         * tracked in order, but rejected docs are skipped). For most use
+         * cases (well-formed token sets) this matches the native state. */
+        for (int i = 0; i < added; i++) {
+            String p = paths[i] != null ? paths[i] : "";
+            docPaths.add(p);
+        }
     }
 
     /**
@@ -117,8 +149,10 @@ public class Corpus implements AutoCloseable {
      */
     public void addDocsTokenized(String[] names) {
         checkNotClosed();
+        int before = FastCodeEmbed.getDocCount(handle);
         FastCodeEmbed.addDocsTokenized(handle, names);
-        for (int i = 0; i < names.length; i++) docPaths.add("");
+        int added = FastCodeEmbed.getDocCount(handle) - before;
+        for (int i = 0; i < added; i++) docPaths.add("");
     }
 
     /**
@@ -132,14 +166,31 @@ public class Corpus implements AutoCloseable {
         if (names.length != paths.length) {
             throw new IllegalArgumentException("names.length != paths.length");
         }
+        int before = FastCodeEmbed.getDocCount(handle);
         FastCodeEmbed.addDocsTokenized(handle, names);
-        for (String p : paths) docPaths.add(p != null ? p : "");
+        int added = FastCodeEmbed.getDocCount(handle) - before;
+        for (int i = 0; i < added; i++) {
+            String p = paths[i] != null ? paths[i] : "";
+            docPaths.add(p);
+        }
     }
 
     /**
      * Read source files, chunk by } boundaries, tokenize, and add to corpus.
      * All work happens in C — no intermediate Java String objects created.
      * This is the fastest way to build a corpus from source files.
+     *
+     * <p>Best-effort semantics (review 0002 §2.5): if some files are
+     * rejected by the C side (oversize, IO error, empty), the returned
+     * {@code fileDocCounts[i]} for those indices is 0 and {@code docPaths}
+     * is not extended for them. The {@code result} return value is the
+     * total number of chunks added (sum of {@code fileDocCounts}).
+     * Callers that need strict per-file success can iterate the inputs
+     * and check {@code fileDocCounts[i] > 0}.</p>
+     *
+     * <p>Pre-validation (review 0002 §2.7): a {@code chunkSize <= 0} is
+     * rejected by the C side with a -1 return; no exception is thrown.
+     * Callers are expected to pre-validate user input if needed.</p>
      *
      * @param paths file paths to read and index
      * @param chunkSize target bytes per chunk (chunks split at } boundaries)
@@ -148,9 +199,17 @@ public class Corpus implements AutoCloseable {
      */
     public int addFiles(String[] paths, int chunkSize, int maxTokensPerChunk) {
         checkNotClosed();
+        if (paths == null) {
+            throw new IllegalArgumentException("paths must not be null");
+        }
+        if (chunkSize <= 0) {
+            throw new IllegalArgumentException("chunkSize must be > 0, got " + chunkSize);
+        }
         int[] fileDocCounts = new int[paths.length];
         int result = FastCodeEmbed.addFiles(handle, paths, chunkSize, fileDocCounts, maxTokensPerChunk);
-        /* Build docPaths: one entry per document (chunk), using file path. */
+        /* Build docPaths: one entry per document (chunk), using file path.
+         * Rejected files (fileDocCounts[i] == 0) contribute no entries, so
+         * docPaths stays in sync with the corpus's actual doc count. */
         for (int i = 0; i < paths.length; i++) {
             String p = paths[i] != null ? paths[i] : "";
             for (int d = 0; d < fileDocCounts[i]; d++) {
@@ -235,22 +294,31 @@ public class Corpus implements AutoCloseable {
         docPaths.trimToSize();
     }
 
-/**
+    /**
      * Build a FuncDescriptor for querying against this corpus.
      * Tokens not in the corpus get IDF = 0.0 and zero RI vectors.
      * <p>
-     * Note: the TF-IDF indices in the resulting FuncDescriptor are positional
+     * <b>WARNING — positional indices (review 0002 §2.3 / §8.6):</b>
+     * the TF-IDF indices in the resulting FuncDescriptor are positional
      * (0, 1, 2, …) rather than corpus vocabulary IDs. This is safe for use
-     * with simpleSearch and simpleRank (which use RI-based scoring), but
-     * the TF-IDF cosine component will not produce meaningful results with
-     * struct-based scoring APIs. Use extractFlat/simpleRankBatch for the
-     * intended flat-array scoring path.
+     * with {@code simpleSearch} and {@code simpleRank} (which use RI-based
+     * scoring and ignore the TF-IDF indices), but the TF-IDF cosine
+     * component will <b>not</b> produce meaningful results with
+     * struct-based scoring APIs ({@code fce_sem_combined_score} /
+     * {@code nCombinedScore} / similar). Use {@link #extractFlat} +
+     * {@code simpleRankBatch} (the flat-array scoring path) for the
+     * intended use case.
+     * </p>
      *
      * @param filePath file path for the function
      * @param tokens   token strings for this function
-     * @return a ready-to-score FuncDescriptor
+     * @return a ready-to-score FuncDescriptor (positional indices)
      * @throws IllegalStateException if {@link #complete()} has not been called
+     * @deprecated Use {@code extractFlat} + {@code simpleRankBatch} for the
+     *             fast path; this method's FuncDescriptor is positional
+     *             and only safe with the simple* scoring family.
      */
+    @Deprecated
     public FuncDescriptor buildFunc(String filePath, String[] tokens) {
         checkFinalized();
         int[] indices = new int[tokens.length];

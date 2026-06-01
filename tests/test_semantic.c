@@ -86,11 +86,14 @@ static void test_tokenize_dot_separated(void) {
 static void test_tokenize_pascal_case(void) {
     TEST(tokenize PascalCase);
     char *tokens[32];
+    /* L4 (review 0007 §L4): broader camel break splits acronym boundaries.
+     * "XMLHttpRequest" → "xml" + "http" + "request" (uppercase run boundary
+     * at X-H transition, then camelCase at H-t transition). */
     int n = fce_sem_tokenize("XMLHttpRequest", tokens, 32);
-    ASSERT(n == 2);
-    /* Lowercased + camel break at H: "xmlhttp" + "request" */
-    ASSERT(strcmp(tokens[0], "xmlhttp") == 0);
-    ASSERT(strcmp(tokens[1], "request") == 0);
+    ASSERT(n == 3);
+    ASSERT(strcmp(tokens[0], "xml") == 0);
+    ASSERT(strcmp(tokens[1], "http") == 0);
+    ASSERT(strcmp(tokens[2], "request") == 0);
     for (int i = 0; i < n; i++) free(tokens[i]);
     PASS();
 }
@@ -428,8 +431,11 @@ static void test_corpus_token_at(void) {
 
 static void test_proximity_same_file(void) {
     TEST(proximity same file);
+    /* A1 (review 0010): identical files no longer reach FCE_SEM_PROX_MAX_BOOST
+     * because only directory components are compared. src/foo.c vs src/foo.c
+     * shares 1 dir out of max 1, ratio=1/(1+1)=0.5, boost=1.05. */
     float p = fce_sem_proximity("src/foo.c", "src/foo.c");
-    ASSERT_NEAR(p, 1.10f, 0.001f);
+    ASSERT_NEAR(p, 1.05f, 0.001f);
     PASS();
 }
 
@@ -758,7 +764,7 @@ static void test_search_query_null_doc_vectors(void) {
     /* Don't add docs or finalize — doc_vectors_q is NULL. */
     fce_sem_ranked_t results[4];
     uint32_t count = 0;
-    fce_sem_search_query(corp, "test", 4, results, &count);
+    fce_sem_search_query(corp, "test", 4, results, &count, NULL);
     ASSERT(count == 0);
     fce_sem_corpus_free(corp);
     PASS();
@@ -843,7 +849,7 @@ static void test_shutdown_and_reinit(void) {
 static void test_hash_table_null_guard(void) {
     TEST(hash table NULL guard on get/set/has);
     ASSERT(fce_ht_get(NULL, "key") == NULL);
-    ASSERT(fce_ht_set(NULL, "key", NULL) == NULL);
+    ASSERT(fce_ht_set(NULL, "key", NULL, NULL) == NULL);
     ASSERT(fce_ht_has(NULL, "key") == false);
     ASSERT(fce_ht_count(NULL) == 0);
     PASS();
@@ -866,7 +872,7 @@ static void test_corpus_search_query(void) {
     /* Search for "handle" — should rank t1 and t2 highly. */
     fce_sem_ranked_t results[4];
     uint32_t count = 0;
-    fce_sem_search_query(corp, "handle", 4, results, &count);
+    fce_sem_search_query(corp, "handle", 4, results, &count, NULL);
     ASSERT(count > 0);
     ASSERT(count <= 4);
 

@@ -1,5 +1,7 @@
 package com.github.nilsonsfj.fastcodeembed;
 
+import java.util.Objects;
+
 /**
  * Java-side representation of a function's semantic data for scoring.
  *
@@ -28,21 +30,46 @@ public class FuncDescriptor {
      * Create a function descriptor for the given file path.
      *
      * @param filePath source file path (used for module proximity)
+     * @throws NullPointerException if filePath is null
      */
     public FuncDescriptor(String filePath) {
-        this.filePath = filePath;
+        this.filePath = Objects.requireNonNull(filePath, "filePath must not be null");
     }
 
     /**
      * Set TF-IDF sparse vector as parallel index/weight arrays.
      *
-     * @param indices token indices (into the corpus vocabulary)
+     * <p><b>Important:</b> {@code indices} must be sorted in strictly ascending
+     * order. The C-side sparse TF-IDF cosine scorer
+     * ({@code fce_sparse_tfidf_cosine}) relies on this invariant for its
+     * merge-loop correctness. Unsorted indices produce silently too-low scores
+     * with no error in release builds.</p>
+     *
+     * @param indices token indices (into the corpus vocabulary), ascending
      * @param weights corresponding IDF weights
+     * @throws NullPointerException with named arg if either input is null
      * @throws IllegalArgumentException if arrays have different lengths
      */
     public void setTfidf(int[] indices, float[] weights) {
+        /* J-2 (review 0002 §2.6): the previous code would NPE on null input
+         * with no argument name in the stack. Objects.requireNonNull gives
+         * a useful diagnostic ("indices" or "weights") for the common
+         * "I passed getIdf() == null" mistake. */
+        Objects.requireNonNull(indices, "indices");
+        Objects.requireNonNull(weights, "weights");
         if (indices.length != weights.length) {
             throw new IllegalArgumentException("indices and weights must have same length");
+        }
+        /* C23: validate sorted ascending order.
+         * The C-side merge-loop in fce_sparse_tfidf_cosine assumes this
+         * invariant. Unsorted indices silently produce too-low scores.
+         * O(n) scan is cheap and catches the bug early. */
+        for (int i = 1; i < indices.length; i++) {
+            if (indices[i] <= indices[i - 1]) {
+                throw new IllegalArgumentException(
+                    "tfidf indices must be sorted ascending (found index[" + i + "]=" +
+                    indices[i] + " <= index[" + (i-1) + "]=" + indices[i-1] + ")");
+            }
         }
         this.tfidfIndices = indices;
         this.tfidfWeights = weights;
@@ -53,9 +80,12 @@ public class FuncDescriptor {
      * Typically built by summing enriched token vectors from a finalized corpus.
      *
      * @param vec float array of length 768
+     * @throws NullPointerException with named arg if vec is null
      * @throws IllegalArgumentException if vec.length != 768
      */
     public void setRiVec(float[] vec) {
+        /* J-2 (review 0002 §2.6): same as setTfidf. */
+        Objects.requireNonNull(vec, "vec");
         if (vec.length != 768) {
             throw new IllegalArgumentException("RI vector must be 768 dimensions, got " + vec.length);
         }

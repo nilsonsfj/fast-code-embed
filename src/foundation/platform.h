@@ -18,7 +18,16 @@
 /* ── Safe memory ──────────────────────────────────────────────── */
 
 /* Safe realloc: frees old pointer on failure instead of leaking it.
- * Returns NULL on allocation failure (old memory is freed). */
+ * Returns NULL on allocation failure (old memory is freed).
+ *
+ * WARNING: This is only safe for arrays whose elements do NOT own additional
+ * heap memory. If `ptr` points to an array of heap-allocated pointers
+ * (e.g. char *[]) and the realloc fails, every string the old array owned
+ * is leaked — safe_realloc frees the array itself but not the strings
+ * each element points at. For such cases, use a manual
+ *     tmp = realloc(ptr, new_size);
+ *     if (!tmp) { / * keep ptr, free individual elements * / }
+ * pattern instead. The safe_grow macro below inherits this restriction. */
 static inline void *safe_realloc(void *ptr, size_t size) {
     enum { SAFE_REALLOC_MIN = 1 };
     if (size == 0) {
@@ -66,7 +75,8 @@ static inline void safe_buf_free_impl(void **buf, size_t *count) {
 /* Safe grow: doubles capacity and reallocs when count reaches cap.
  * Note: uses safe_realloc which frees the old buffer on failure, so this is
  * only appropriate for arrays whose elements don't own additional heap memory.
- * For arrays of heap-allocated pointers, prefer a manual realloc+cleanup pattern.
+ * For arrays of heap-allocated pointers (e.g. char *[]), use a manual
+ * realloc+cleanup pattern instead — see warning on safe_realloc above.
  * Usage: safe_grow(arr, count, cap, growth_factor)
  * After the call, arr is the new buffer (NULL on OOM). */
 #define safe_grow(arr, n, cap, factor)                                                             \
@@ -118,7 +128,15 @@ int fce_default_worker_count(bool initial);
 
 /* Thread-safe getenv: copies the value into a caller-provided buffer.
  * Returns buf on success, or fallback if the variable is unset.
- * Returns NULL when the variable is unset and fallback is NULL. */
+ * Returns NULL when the variable is unset and fallback is NULL.
+ *
+ * THREAD-SAFETY (review 0002 §3.7): this function reads the process `environ`
+ * array directly (not via glibc getenv), so it's safe to call concurrently
+ * with other fce_safe_getenv calls. It is NOT safe to call concurrently
+ * with setenv/putenv that may reallocate the environ array itself; only
+ * call from single-threaded initialization paths OR use a copy of environ.
+ * The `add_files` hot path uses this function precisely because the raw
+ * `getenv` is not thread-safe per man 3 getenv. */
 const char *fce_safe_getenv(const char *name, char *buf, size_t buf_sz, const char *fallback);
 
 /* ── Home directory ─────────────────────────────────────────────── */

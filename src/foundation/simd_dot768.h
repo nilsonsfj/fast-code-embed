@@ -222,11 +222,44 @@ static inline void fce_quantize_f32_768_avx2(int8_t * restrict out,
     __m256 scale = _mm256_set1_ps(127.0f);
     __m256 lo = _mm256_set1_ps(-127.0f);
     __m256 hi = _mm256_set1_ps(127.0f);
+    __m256 zero = _mm256_setzero_ps();
     for (int i = 0; i < FCE_DOT768_DIM; i += 32) {
         __m256 v0 = _mm256_mul_ps(_mm256_loadu_ps(src + i), scale);
         __m256 v1 = _mm256_mul_ps(_mm256_loadu_ps(src + i + 8), scale);
         __m256 v2 = _mm256_mul_ps(_mm256_loadu_ps(src + i + 16), scale);
         __m256 v3 = _mm256_mul_ps(_mm256_loadu_ps(src + i + 24), scale);
+        /* M1 (review 0003 §M1): sanitize NaN and ±Inf → 0 before clamp to match
+         * the scalar path. NaN comparisons are always false, and Inf is ordered,
+         * so neither the NaN-only mask nor clamp alone catches both. Use a
+         * combined mask: NaN (v!=v) or Inf (|v| == Inf). */
+        {
+            __m256 nan_mask = _mm256_cmp_ps(v0, v0, _CMP_UNORD_Q);
+            __m256 inf_mask = _mm256_or_ps(
+                _mm256_cmp_ps(v0, _mm256_set1_ps(INFINITY), _CMP_EQ_OQ),
+                _mm256_cmp_ps(v0, _mm256_set1_ps(-INFINITY), _CMP_EQ_OQ));
+            v0 = _mm256_blendv_ps(v0, zero, _mm256_or_ps(nan_mask, inf_mask));
+        }
+        {
+            __m256 nan_mask = _mm256_cmp_ps(v1, v1, _CMP_UNORD_Q);
+            __m256 inf_mask = _mm256_or_ps(
+                _mm256_cmp_ps(v1, _mm256_set1_ps(INFINITY), _CMP_EQ_OQ),
+                _mm256_cmp_ps(v1, _mm256_set1_ps(-INFINITY), _CMP_EQ_OQ));
+            v1 = _mm256_blendv_ps(v1, zero, _mm256_or_ps(nan_mask, inf_mask));
+        }
+        {
+            __m256 nan_mask = _mm256_cmp_ps(v2, v2, _CMP_UNORD_Q);
+            __m256 inf_mask = _mm256_or_ps(
+                _mm256_cmp_ps(v2, _mm256_set1_ps(INFINITY), _CMP_EQ_OQ),
+                _mm256_cmp_ps(v2, _mm256_set1_ps(-INFINITY), _CMP_EQ_OQ));
+            v2 = _mm256_blendv_ps(v2, zero, _mm256_or_ps(nan_mask, inf_mask));
+        }
+        {
+            __m256 nan_mask = _mm256_cmp_ps(v3, v3, _CMP_UNORD_Q);
+            __m256 inf_mask = _mm256_or_ps(
+                _mm256_cmp_ps(v3, _mm256_set1_ps(INFINITY), _CMP_EQ_OQ),
+                _mm256_cmp_ps(v3, _mm256_set1_ps(-INFINITY), _CMP_EQ_OQ));
+            v3 = _mm256_blendv_ps(v3, zero, _mm256_or_ps(nan_mask, inf_mask));
+        }
         v0 = _mm256_max_ps(_mm256_min_ps(v0, hi), lo);
         v1 = _mm256_max_ps(_mm256_min_ps(v1, hi), lo);
         v2 = _mm256_max_ps(_mm256_min_ps(v2, hi), lo);
@@ -386,19 +419,60 @@ static inline void fce_quantize_f32_768_neon(int8_t * restrict out,
     float32x4_t scale = vdupq_n_f32(127.0f);
     float32x4_t lo = vdupq_n_f32(-127.0f);
     float32x4_t hi = vdupq_n_f32(127.0f);
+    float32x4_t zero = vdupq_n_f32(0.0f);
     for (int i = 0; i < FCE_DOT768_DIM; i += 16) {
         float32x4_t v0 = vmulq_f32(vld1q_f32(src + i), scale);
         float32x4_t v1 = vmulq_f32(vld1q_f32(src + i + 4), scale);
         float32x4_t v2 = vmulq_f32(vld1q_f32(src + i + 8), scale);
         float32x4_t v3 = vmulq_f32(vld1q_f32(src + i + 12), scale);
+        /* M1 (review 0003 §M1): sanitize NaN and ±Inf → 0 before clamp to match
+         * the scalar path. vceqq_f32(v,v) yields 0 for NaN (NaN != NaN) and
+         * all-ones for finite/Inf. Then mask out ±Inf via comparison against
+         * INFINITY / -INFINITY constants. */
+        {
+            uint32x4_t fin_mask = vceqq_f32(v0, v0);
+            uint32x4_t inf_mask = vorrq_u32(
+                vceqq_f32(v0, vdupq_n_f32(INFINITY)),
+                vceqq_f32(v0, vdupq_n_f32(-INFINITY)));
+            v0 = vbslq_f32(vandq_u32(vorrq_u32(fin_mask, inf_mask),
+                                      vmvnq_u32(inf_mask)), v0, zero);
+        }
+        {
+            uint32x4_t fin_mask = vceqq_f32(v1, v1);
+            uint32x4_t inf_mask = vorrq_u32(
+                vceqq_f32(v1, vdupq_n_f32(INFINITY)),
+                vceqq_f32(v1, vdupq_n_f32(-INFINITY)));
+            v1 = vbslq_f32(vandq_u32(vorrq_u32(fin_mask, inf_mask),
+                                      vmvnq_u32(inf_mask)), v1, zero);
+        }
+        {
+            uint32x4_t fin_mask = vceqq_f32(v2, v2);
+            uint32x4_t inf_mask = vorrq_u32(
+                vceqq_f32(v2, vdupq_n_f32(INFINITY)),
+                vceqq_f32(v2, vdupq_n_f32(-INFINITY)));
+            v2 = vbslq_f32(vandq_u32(vorrq_u32(fin_mask, inf_mask),
+                                      vmvnq_u32(inf_mask)), v2, zero);
+        }
+        {
+            uint32x4_t fin_mask = vceqq_f32(v3, v3);
+            uint32x4_t inf_mask = vorrq_u32(
+                vceqq_f32(v3, vdupq_n_f32(INFINITY)),
+                vceqq_f32(v3, vdupq_n_f32(-INFINITY)));
+            v3 = vbslq_f32(vandq_u32(vorrq_u32(fin_mask, inf_mask),
+                                      vmvnq_u32(inf_mask)), v3, zero);
+        }
         v0 = vmaxq_f32(vminq_f32(v0, hi), lo);
         v1 = vmaxq_f32(vminq_f32(v1, hi), lo);
         v2 = vmaxq_f32(vminq_f32(v2, hi), lo);
         v3 = vmaxq_f32(vminq_f32(v3, hi), lo);
-        int32x4_t i0 = vcvtq_s32_f32(v0);
-        int32x4_t i1 = vcvtq_s32_f32(v1);
-        int32x4_t i2 = vcvtq_s32_f32(v2);
-        int32x4_t i3 = vcvtq_s32_f32(v3);
+        /* M2 (review 0001-0001 §4): use vcvtnq_s32_f32 (FCVTNS, round-to-nearest)
+         * to match the scalar nearbyintf and AVX2 _mm256_cvtps_epi32 behavior.
+         * The original vcvtq_s32_f32 (FCVTZS) truncates toward zero, producing
+         * different int8 values on ARM vs x86 for the same float input. */
+        int32x4_t i0 = vcvtnq_s32_f32(v0);
+        int32x4_t i1 = vcvtnq_s32_f32(v1);
+        int32x4_t i2 = vcvtnq_s32_f32(v2);
+        int32x4_t i3 = vcvtnq_s32_f32(v3);
         int16x4_t n0 = vmovn_s32(i0);
         int16x4_t n1 = vmovn_s32(i1);
         int16x4_t n2 = vmovn_s32(i2);
@@ -484,11 +558,26 @@ static inline void fce_quantize_f32_768_scalar(int8_t * restrict out,
                                                 const float * restrict src) {
     for (int i = 0; i < FCE_DOT768_DIM; i++) {
         float v = src[i] * 127.0f;
+        /* C2 (review 0002-0002 §2.2): sanitize NaN/Inf before clamp.
+         * NaN comparisons are always false, so the clamp does not catch NaN,
+         * and (int8_t)nearbyintf(NaN) is undefined behavior in C. This
+         * guard matches the isfinite sweep in the float32 fallback worker. */
+        if (!isfinite(v)) v = 0.0f;
         if (v > 127.0f) v = 127.0f;
         if (v < -127.0f) v = -127.0f;
-        /* IEEE 754 round-to-nearest-even, consistent with NEON vcvtq_s32_f32
-         * and AVX2 _mm256_cvtps_epi32. */
-        out[i] = (int8_t)roundf(v);
+        /* Review 0001 §5.5: use nearbyintf (round-to-nearest-even per
+         * IEEE 754 default rounding), matching NEON vcvtnq_s32_f32 (FCVTNS)
+         * and AVX2 _mm256_cvtps_epi32 (round-to-nearest-even via MXCSR).
+         * The previous `roundf` is round half-away-from-zero, which differs
+         * by 1 ULP at exact .5 values (rare for unit-magnitude vectors, but
+         * possible for 1/127 * x with x a half-integer).
+         * Review 0007 §5.3 / review 0001-0001 §4: assumes the process FP
+         * rounding mode is the default (round-to-nearest-even). If an
+         * embedding application calls fesetround() to change the mode, the
+         * scalar path and the SIMD paths (which use fixed round-to-nearest
+         * conversions) would diverge, producing platform-dependent int8
+         * vectors. The library never changes the rounding mode itself. */
+        out[i] = (int8_t)nearbyintf(v);
     }
 }
 

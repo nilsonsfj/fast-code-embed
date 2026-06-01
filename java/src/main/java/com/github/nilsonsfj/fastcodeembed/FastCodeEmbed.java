@@ -227,6 +227,11 @@ public final class FastCodeEmbed {
 
     // ── JNI internals (called from C, not user-facing) ────────────
 
+    /** Review 0001 §2.6: -1 is the OOM sentinel from nCreateCorpus. The
+     *  Corpus constructor converts it to an OutOfMemoryError; callers
+     *  that reach this method directly see the raw -1. */
+    static final long CORPUS_OOM = -1L;
+
     static long createCorpus() { return nCreateCorpus(); }
     static void freeCorpus(long handle) { nFreeCorpus(handle); }
     static void addDoc(long handle, String[] tokens) { nAddDoc(handle, tokens); }
@@ -267,7 +272,6 @@ public final class FastCodeEmbed {
 
     private static native SearchResult[] nSearchQueryBruteforce(long handle,
         String query, int topK);
-    private static native SearchResult[] nSearchQueryBruteforce(long handle, String[] docPaths,
-                                                               String query, int topK);
+
     private static native int nSearchCandidateCount(long handle, String query);
 }
