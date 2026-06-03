@@ -124,16 +124,23 @@ static long get_current_rss_bytes(void) {
 }
 
 int main(int argc, char **argv) {
+    setbuf(stdout, NULL);  /* Disable buffering for incremental output */
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <directory> [chunk_size] [--brute-only]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <directory> [chunk_size] [--brute-only] [--sparse[=N]]\n", argv[0]);
         return 1;
     }
     const char *root_dir = argv[1];
     int chunk_size = DEFAULT_CHUNK_SIZE;
     int brute_only = 0;
+    int sparse_nnz = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--brute-only") == 0) {
             brute_only = 1;
+        } else if (strcmp(argv[i], "--sparse") == 0) {
+            sparse_nnz = 32;  /* default top-32 NNZ */
+        } else if (strncmp(argv[i], "--sparse=", 9) == 0) {
+            sparse_nnz = atoi(argv[i] + 9);
+            if (sparse_nnz <= 0) sparse_nnz = 32;
         } else {
             chunk_size = atoi(argv[i]);
             if (chunk_size <= 0) chunk_size = DEFAULT_CHUNK_SIZE;
@@ -147,7 +154,12 @@ int main(int argc, char **argv) {
     printf("================================================\n");
     printf("Directory: %s\n", root_dir);
     printf("Chunk size: %d bytes\n", chunk_size);
-    printf("Mode: %s\n\n", brute_only ? "brute-only (skip inverted index + enriched quantization)" : "normal");
+    if (sparse_nnz > 0)
+        printf("Mode: sparse (nnz=%d)\n\n", sparse_nnz);
+    else if (brute_only)
+        printf("Mode: brute-only\n\n");
+    else
+        printf("Mode: normal\n\n");
 
     /* ── 1. Walk directory ────────────────────────────────────── */
     clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -255,6 +267,7 @@ int main(int argc, char **argv) {
 
     /* ── 3. Finalize corpus ─────────────────────────────────────── */
     if (brute_only) setenv("FCE_SEM_SKIP_INV_INDEX", "1", 1);
+    if (sparse_nnz > 0) fce_sem_corpus_set_sparse(corp, sparse_nnz);
     long rss_before_finalize = get_current_rss_bytes();
     clock_gettime(CLOCK_MONOTONIC, &t0);
     fce_sem_corpus_finalize(corp);
@@ -263,6 +276,7 @@ int main(int argc, char **argv) {
     long peak_rss = get_peak_rss_bytes();
 
     printf("  Corpus finalize:          %8.1f ms\n", build_ms);
+    fflush(stdout);
     printf("\n");
     printf("  ── Memory ──────────────────────────────────\n");
     printf("  RSS before finalize:      %8.1f GB\n", rss_before_finalize / 1073741824.0);
@@ -279,6 +293,7 @@ int main(int argc, char **argv) {
     /* ── 4. Query benchmarks ──────────────────────────────────── */
     printf("\n");
     printf("  ── Query Benchmarks ───────────────────────\n");
+    fflush(stdout);
 
     fce_sem_config_t fast_cfg = fce_sem_get_config();
     fce_sem_config_t tfidf_cfg = fce_sem_get_config();

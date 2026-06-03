@@ -83,32 +83,30 @@ $(BENCH_BIN): $(BENCH_SRC) $(LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed -lpthread -lm -o $@
 
-# ASan/UBSan build — reproducible from Makefile, no committed binary needed
-ASAN_CFLAGS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11
-ASAN_BIN = $(BUILDDIR)/test_asan
-LIB_ASAN = $(BUILDDIR)/libfast_code_embed_asan.a
-OBJS_ASAN = $(SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/asan/%.o)
-OBJS_ASAN := $(OBJS_ASAN:$(SRCDIR)/%.S=$(BUILDDIR)/asan/%.o)
+# ── Reduced-dimension build (256 dims, ~640 MB less memory) ─────
+LIB256    = $(BUILDDIR)/libfast_code_embed_256.a
+OBJS256   = $(SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/dim256/%.o)
+OBJS256   := $(OBJS256:$(SRCDIR)/%.S=$(BUILDDIR)/dim256/%.o)
+BENCH256  = $(BUILDDIR)/bench_mem_query_256
 
-test-asan: $(ASAN_BIN)
-	$(ASAN_BIN)
-
-$(BUILDDIR)/asan/%.o: $(SRCDIR)/%.c
+$(BUILDDIR)/dim256/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(ASAN_CFLAGS) -I$(INCDIR) -c $< -o $@
+	$(CC) $(CFLAGS) -DFCE_SEM_DIM_256 -I$(INCDIR) -c $< -o $@
 
-$(BUILDDIR)/asan/%.o: $(SRCDIR)/%.S
+$(BUILDDIR)/dim256/%.o: $(SRCDIR)/%.S
 	@mkdir -p $(dir $@)
-	$(CC) $(ASAN_CFLAGS) -c $< -o $@
+	$(CC) -c $< -o $@
 
-$(LIB_ASAN): $(OBJS_ASAN)
+$(LIB256): $(OBJS256)
 	@mkdir -p $(dir $@)
 	$(AR) $(ARFLAGS) $@ $^
-	@echo "Built $@ (ASan)"
+	@echo "Built $@ (256-dim)"
 
-$(ASAN_BIN): $(TEST_SRC) $(LIB_ASAN)
+$(BENCH256): $(BENCH_SRC) $(LIB256)
 	@mkdir -p $(dir $@)
-	$(CC) $(ASAN_CFLAGS) -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed_asan -lpthread -lm -o $@
+	$(CC) $(CFLAGS) -DFCE_SEM_DIM_256 -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed_256 -lpthread -lm -o $@
+
+bench-256: $(BENCH256)
 
 # ── Auto-generated dependency files ─────────────────────────────
 -include $(OBJS:.o=.d)

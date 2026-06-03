@@ -35,8 +35,15 @@ _Static_assert(sizeof(void *) >= 8,
 /* ── Configuration ───────────────────────────────────────────────── */
 
 /* Random Indexing dimension. 256 is sufficient for <500K functions. */
-/* 768 = nomic-embed-code embedding dimension.  Matches FCE_PRETRAINED_DIM. */
+/* 768 = nomic-embed-code embedding dimension.  Matches FCE_PRETRAINED_DIM.
+ * FCE_SEM_DIM_256: compile with -DFCE_SEM_DIM_256 to use 256 dims instead.
+ * Saves ~640 MB memory (enriched_vecs_q + doc_vectors_q) at the cost of
+ * lower embedding quality. All SIMD kernels adapt automatically. */
+#ifdef FCE_SEM_DIM_256
+enum { FCE_SEM_DIM = 256 };
+#else
 enum { FCE_SEM_DIM = 768 };
+#endif
 
 /* Random Indexing: non-zero entries per sparse random vector. */
 enum { FCE_SEM_SPARSE_NNZE = 8 };
@@ -66,6 +73,11 @@ typedef enum {
     FCE_QUERY_TFIDF  = 3,  /* TF-IDF candidate retrieval + RI rerank */
 } fce_query_mode_t;
 
+/* Sparse vector storage: keep top-K non-zero elements per vector.
+ * Enriched vectors are naturally sparse (built from 8-entry RI vectors).
+ * Top-32 gives 12x compression (768→64 bytes/vector) with minimal quality loss. */
+enum { FCE_SPARSE_NNZ_DEFAULT = 32 };
+
 /* Applied weights sum to ~0.85; proximity is a multiplier on top. */
 typedef struct {
     float w_tfidf;
@@ -77,6 +89,8 @@ typedef struct {
     float threshold;
     int max_edges;
     fce_query_mode_t query_mode;
+    bool sparse_vectors;     /* use sparse storage for enriched/doc vectors */
+    int sparse_nnz;          /* non-zero entries per vector (default 32) */
 } fce_sem_config_t;
 
 /* Get default config (can be overridden via env vars). */
@@ -199,6 +213,12 @@ void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
  * Review 0007 §M2: the previous wording "caller may free and retry" was
  * ambiguous; clarified that retry is only safe after a full free+new. */
 int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus);
+
+/* Configure sparse vector storage. Must be called before finalize.
+ * When enabled, enriched and doc vectors are stored as top-K non-zero
+ * entries per vector (sorted index+value pairs), saving ~60-70% memory.
+ * nnz=0 disables sparse mode (dense, default). */
+void fce_sem_corpus_set_sparse(fce_sem_corpus_t *corpus, int nnz);
 
 /* Get IDF weight for a token. Returns 0.0 for unknown tokens. */
 float fce_sem_corpus_idf(const fce_sem_corpus_t *corpus, const char *token);
