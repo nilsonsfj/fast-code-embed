@@ -63,25 +63,56 @@ static void file_list_add(file_list_t *list, const char *path) {
         list->paths = grown;
         list->capacity = new_cap;
     }
-    list->paths[list->count++] = strdup(path);
+    list->paths[list->count] = strdup(path);
+    if (!list->paths[list->count]) return;  /* C5: skip on OOM */
+    list->count++;
 }
 
-static void walk_dir(const char *dirpath, file_list_t *list) {
-    DIR *dir = opendir(dirpath);
-    if (!dir) return;
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
-        char fullpath[MAX_PATH_LEN];
-        int written = snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, entry->d_name);
-        if (written < 0 || (size_t)written >= sizeof(fullpath)) continue;
-        struct stat st;
-        if (lstat(fullpath, &st) != 0) continue;
-        if (S_ISLNK(st.st_mode)) continue;
-        if (S_ISDIR(st.st_mode)) walk_dir(fullpath, list);
-        else if (S_ISREG(st.st_mode) && should_include(fullpath)) file_list_add(list, fullpath);
+/* C5 (review 2004): iterative directory walk — prevents stack overflow
+ * on deep directory trees.  Mirrors the hardened walk_dir in index_dir.c. */
+static void walk_dir(const char *root, file_list_t *list) {
+    int stack_cap = 256;
+    int stack_len = 0;
+    char **dir_stack = (char **)malloc((size_t)stack_cap * sizeof(char *));
+    if (!dir_stack) return;
+    dir_stack[stack_len++] = strdup(root);
+    if (!dir_stack[0]) { free(dir_stack); return; }
+
+    while (stack_len > 0) {
+        char *dirpath = dir_stack[--stack_len];
+        DIR *dir = opendir(dirpath);
+        if (!dir) { free(dirpath); continue; }
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (entry->d_name[0] == '.') continue;
+            char fullpath[MAX_PATH_LEN];
+            int written = snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, entry->d_name);
+            if (written < 0 || (size_t)written >= sizeof(fullpath)) continue;
+            struct stat st;
+            if (lstat(fullpath, &st) != 0) continue;
+            if (S_ISLNK(st.st_mode)) continue;
+            if (S_ISDIR(st.st_mode)) {
+                if (stack_len == stack_cap) {
+                    int new_cap = stack_cap * 2;
+                    char **grown = (char **)realloc(dir_stack, (size_t)new_cap * sizeof(char *));
+                    if (!grown) {
+                        fprintf(stderr, "warning: dir_stack realloc OOM, skipping subtree under %s\n", fullpath);
+                        continue;
+                    }
+                    dir_stack = grown;
+                    stack_cap = new_cap;
+                }
+                dir_stack[stack_len] = strdup(fullpath);
+                if (!dir_stack[stack_len]) continue;  /* C5: don't bump on OOM */
+                stack_len++;
+            } else if (S_ISREG(st.st_mode) && should_include(fullpath)) {
+                file_list_add(list, fullpath);
+            }
+        }
+        closedir(dir);
+        free(dirpath);
     }
-    closedir(dir);
+    free(dir_stack);
 }
 
 static double ms_since(struct timespec start) {
@@ -117,7 +148,9 @@ static long get_current_rss_bytes(void) {
         if (sscanf(line, "VmRSS: %ld kB", &rss_kb) == 1) break;
     }
     fclose(f);
-    return rss_kb * 1024;
+    /* L-3 (review 0007 §L-3): return -1 on parse failure, not -1024.
+     * rss_kb stays -1 if no VmRSS line was found. */
+    return rss_kb > 0 ? rss_kb * 1024 : -1;
 #else
     return -1;
 #endif
@@ -225,12 +258,18 @@ int main(int argc, char **argv) {
             }
             size_t chunk_len = end - offset;
             char *chunk = (char *)malloc(chunk_len + 1);
-            if (!chunk) continue;
+            if (!chunk) { offset = end; continue; }
             memcpy(chunk, content + offset, chunk_len);
             chunk[chunk_len] = '\0';
             char *tok_buf[MAX_TOKENS_PER_CHUNK];
             int ntok = fce_sem_tokenize(chunk, tok_buf, MAX_TOKENS_PER_CHUNK);
             free(chunk);
+
+            /* C6 (review 2004): skip zero-token chunks — they are rejected by
+             * add_docs_batch (doc_map[d] = -1) so recording a doc_paths entry
+             * would misalign the index mapping. */
+            if (ntok == 0) { offset = end; continue; }
+
             int base = batch_used * MAX_TOKENS_PER_CHUNK;
             for (int t = 0; t < ntok; t++) all_tokens[base + t] = tok_buf[t];
             token_counts[batch_used] = ntok;
@@ -243,7 +282,16 @@ int main(int argc, char **argv) {
             total_chunks++;
             offset = end;
             if (batch_used >= BATCH_SIZE) {
+                /* L-4 (review 0007 §L-4): track how many docs the batch actually
+                 * accepted so doc_paths stays aligned with the corpus doc index.
+                 * Rejected docs (vocab cap, doc cap, OOM rollback) don't appear in
+                 * the corpus, so their path entries must be removed. */
+                int before = fce_sem_corpus_doc_count(corp);
                 fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, batch_used, MAX_TOKENS_PER_CHUNK);
+                int accepted = fce_sem_corpus_doc_count(corp) - before;
+                if (accepted < batch_used && doc_path_count >= (batch_used - accepted)) {
+                    doc_path_count -= (batch_used - accepted);
+                }
                 for (int i = 0; i < batch_used; i++) {
                     int base2 = i * MAX_TOKENS_PER_CHUNK;
                     for (int t = 0; t < token_counts[i]; t++) free(all_tokens[base2 + t]);
@@ -254,7 +302,12 @@ int main(int argc, char **argv) {
         free(content);
     }
     if (batch_used > 0) {
+        int before = fce_sem_corpus_doc_count(corp);
         fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, batch_used, MAX_TOKENS_PER_CHUNK);
+        int accepted = fce_sem_corpus_doc_count(corp) - before;
+        if (accepted < batch_used && doc_path_count >= (batch_used - accepted)) {
+            doc_path_count -= (batch_used - accepted);
+        }
         for (int i = 0; i < batch_used; i++) {
             int base = i * MAX_TOKENS_PER_CHUNK;
             for (int t = 0; t < token_counts[i]; t++) free(all_tokens[base + t]);
@@ -329,6 +382,13 @@ int main(int argc, char **argv) {
             fce_sem_ranked_t *fast_results = (fce_sem_ranked_t *)malloc(top_k * sizeof(fce_sem_ranked_t));
             fce_sem_ranked_t *tfidf_results = (fce_sem_ranked_t *)malloc(top_k * sizeof(fce_sem_ranked_t));
             fce_sem_ranked_t *brute_results = (fce_sem_ranked_t *)malloc(top_k * sizeof(fce_sem_ranked_t));
+            /* L-1 (review 0007 §L-1): check all three malloc results before
+             * passing them to search functions which write directly into them. */
+            if (!fast_results || !tfidf_results || !brute_results) {
+                fprintf(stderr, "OOM allocating result buffers, skipping query %d\n", qi);
+                free(fast_results); free(tfidf_results); free(brute_results);
+                continue;
+            }
             uint32_t fast_count = 0, tfidf_count = 0, brute_count = 0;
 
             /* Warm up all paths */

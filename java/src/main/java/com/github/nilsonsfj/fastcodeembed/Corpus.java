@@ -27,12 +27,42 @@ package com.github.nilsonsfj.fastcodeembed;
  *
  * <p>Implements {@link AutoCloseable} for try-with-resources.</p>
  *
+ * <h2>Thread safety</h2>
+ * <p><b>close() must not race with any query or mutation method.</b>  The native
+ * handle table uses per-slot refcounts to protect against use-after-free during
+ * long-running parallel operations (search, finalize), but the close() method
+ * blocks until all in-flight operations complete.  In practice this means:
+ * close from the same thread that last used the corpus, or use the
+ * try-with-resources pattern which serializes access.  Calling close() from
+ * a different thread while search/finalize is running will block that thread
+ * until the operation completes.</p>
+ *
  * @since 0.0.1
  */
 public class Corpus implements AutoCloseable {
-    private long handle;
+    /* H-1 (review 0007 §H-1): volatile so that a racing close() is visible to
+     * query threads.  close() is synchronized to guarantee atomic test-and-clear
+     * — only one thread can ever observe a non-zero handle and free it. */
+    private volatile long handle;
     private boolean finalized;
     private final java.util.ArrayList<String> docPaths = new java.util.ArrayList<>();
+
+    /* L-2 (review 0007 §L-2): Cleaner backstop. If the caller forgets
+     * close() / try-with-resources, the Cleaner reclaims native memory on
+     * GC.  close() clears `handle` before freeing, so the action sees 0
+     * and becomes a no-op — no double-free. */
+    private static final java.lang.ref.Cleaner CLEANER = java.lang.ref.Cleaner.create();
+    private final java.lang.ref.Cleaner.Cleanable cleanable;
+    private final CloseAction closeAction;
+
+    /** Action registered with the Cleaner. Holds the native handle only. */
+    private static final class CloseAction implements Runnable {
+        private volatile long h;
+        CloseAction(long handle) { this.h = handle; }
+        @Override public void run() {
+            if (h != 0) { FastCodeEmbed.freeCorpus(h); h = 0; }
+        }
+    }
 
     /**
      * Create a new empty corpus.
@@ -50,6 +80,12 @@ public class Corpus implements AutoCloseable {
             throw new OutOfMemoryError("fce_sem_corpus_new returned NULL (calloc/ht_create OOM)");
         }
         this.finalized = false;
+        /* L-2 (review 0007 §L-2): register Cleaner backstop. CloseAction holds
+         * a private copy of the handle; close() clears both `this.handle` and
+         * `closeAction.h` before freeing, so if GC runs the action after close(),
+         * it sees h==0 and skips. */
+        this.closeAction = new CloseAction(this.handle);
+        this.cleanable = CLEANER.register(this, closeAction);
     }
 
     /**
@@ -413,12 +449,29 @@ public class Corpus implements AutoCloseable {
         return handle;
     }
 
-    /** Free native resources. Safe to call multiple times. */
-    public void close() {
-        if (handle != 0) {
-            FastCodeEmbed.freeCorpus(handle);
-            handle = 0;
-        }
+    /**
+     * Free native resources. Safe to call multiple times.
+     *
+     * <p><b>Must not be called concurrently with any query or mutation method</b>
+     * on the same Corpus instance.  The native handle table does not prevent
+     * use-after-free when close() races with a query (see class Thread safety
+     * section).  Use try-with-resources or ensure all queries complete before
+     * calling close.</p>
+     *
+     * <p>H-1 (review 0007 §H-1): clears both the field handle and the
+     * Cleaner action's handle, then frees via the Cleaner (idempotent).
+     * The volatile write to closeAction.h ensures the Cleaner thread
+     * sees 0 and skips if it races with this call.</p>
+     */
+    public synchronized void close() {
+        long h = handle;
+        handle = 0;
+        closeAction.h = 0;
+        if (h != 0) FastCodeEmbed.freeCorpus(h);
+        /* Deregister the Cleaner so it doesn't run during JVM shutdown.
+         * Without this, the Cleaner thread may attempt to call into native
+         * code after the JNI library is being unloaded, causing SIGTRAP. */
+        cleanable.clean();
     }
 
     private void checkNotClosed() {

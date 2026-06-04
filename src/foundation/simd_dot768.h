@@ -20,6 +20,7 @@
 
 #include <stdint.h>
 #include <math.h>
+#include <fenv.h>
 
 enum {
 #ifdef FCE_SEM_DIM_256
@@ -28,6 +29,13 @@ enum {
     FCE_SIMD_DIM = 768
 #endif
 };
+
+/* L-6 (review 0011 §L-6 + review 0011-0001 §L-6): the AVX2 quantizer
+ * (fce_quantize_f32_768_avx2) strides 32 floats per iteration.  Both
+ * supported dims (768, 256) satisfy this; a future dim that satisfies the
+ * documented "divisible by 8" but not 32 would walk off the buffer. */
+_Static_assert(FCE_SIMD_DIM % 32 == 0,
+               "FCE_SIMD_DIM must be divisible by 32 for AVX2 quantizer stride");
 
 /* ── AVX2 (x86_64) ─────────────────────────────────────────────── */
 
@@ -227,6 +235,14 @@ static inline int32_t fce_dot768_i8_avx2(const int8_t * restrict a,
 __attribute__((target("avx2,fma")))
 static inline void fce_quantize_f32_768_avx2(int8_t * restrict out,
                                               const float * restrict src) {
+    /* H-2 (review 0005 §H-2): pin FP rounding mode to FE_TONEAREST so the AVX2
+     * path (via _mm256_cvtps_epi32) agrees with the scalar path regardless of
+     * the ambient MXCSR. fesetround sets both x87 and SSE rounding on x86.
+     * FENV_ACCESS pragma ensures the compiler does not reorder FP ops across
+     * the rounding-mode change. */
+#pragma STDC FENV_ACCESS ON
+    int saved_round = fegetround();
+    if (saved_round != FE_TONEAREST) fesetround(FE_TONEAREST);
     __m256 scale = _mm256_set1_ps(127.0f);
     __m256 lo = _mm256_set1_ps(-127.0f);
     __m256 hi = _mm256_set1_ps(127.0f);
@@ -284,7 +300,9 @@ static inline void fce_quantize_f32_768_avx2(int8_t * restrict out,
             _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7));
         _mm256_storeu_si256((__m256i*)(out + i), i8);
     }
+    if (saved_round != FE_TONEAREST) fesetround(saved_round);
 }
+#pragma STDC FENV_ACCESS OFF
 
 #endif /* FCE_HAS_AVX2 */
 #endif /* x86_64 */
@@ -564,6 +582,13 @@ static inline int32_t fce_dot768_i8_scalar(const int8_t * restrict a,
 
 static inline void fce_quantize_f32_768_scalar(int8_t * restrict out,
                                                 const float * restrict src) {
+    /* H-2 (review 0005 §H-2): pin rounding mode to FE_TONEAREST for the
+     * duration of quantization so scalar and SIMD paths agree regardless
+     * of the ambient fenv. FENV_ACCESS pragma ensures the compiler does not
+     * reorder FP ops across the rounding-mode change. */
+#pragma STDC FENV_ACCESS ON
+    int saved_round = fegetround();
+    if (saved_round != FE_TONEAREST) fesetround(FE_TONEAREST);
     for (int i = 0; i < FCE_SIMD_DIM; i++) {
         float v = src[i] * 127.0f;
         /* C2 (review 0002-0002 §2.2): sanitize NaN/Inf before clamp.
@@ -576,18 +601,13 @@ static inline void fce_quantize_f32_768_scalar(int8_t * restrict out,
         /* Review 0001 §5.5: use nearbyintf (round-to-nearest-even per
          * IEEE 754 default rounding), matching NEON vcvtnq_s32_f32 (FCVTNS)
          * and AVX2 _mm256_cvtps_epi32 (round-to-nearest-even via MXCSR).
-         * The previous `roundf` is round half-away-from-zero, which differs
-         * by 1 ULP at exact .5 values (rare for unit-magnitude vectors, but
-         * possible for 1/127 * x with x a half-integer).
-         * Review 0007 §5.3 / review 0001-0001 §4: assumes the process FP
-         * rounding mode is the default (round-to-nearest-even). If an
-         * embedding application calls fesetround() to change the mode, the
-         * scalar path and the SIMD paths (which use fixed round-to-nearest
-         * conversions) would diverge, producing platform-dependent int8
-         * vectors. The library never changes the rounding mode itself. */
+         * L4: with the mode pinned above, this matches SIMD even if the
+         * host process changed the rounding mode. */
         out[i] = (int8_t)nearbyintf(v);
     }
+    if (saved_round != FE_TONEAREST) fesetround(saved_round);
 }
+#pragma STDC FENV_ACCESS OFF
 
 /* ── Dispatch ──────────────────────────────────────────────────── */
 

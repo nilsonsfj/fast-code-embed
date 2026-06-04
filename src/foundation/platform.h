@@ -133,10 +133,10 @@ int fce_default_worker_count(bool initial);
  * THREAD-SAFETY (review 0002 §3.7): this function reads the process `environ`
  * array directly (not via glibc getenv), so it's safe to call concurrently
  * with other fce_safe_getenv calls. It is NOT safe to call concurrently
- * with setenv/putenv that may reallocate the environ array itself; only
- * call from single-threaded initialization paths OR use a copy of environ.
- * The `add_files` hot path uses this function precisely because the raw
- * `getenv` is not thread-safe per man 3 getenv. */
+ * with setenv/putenv that may reallocate the environ array itself.  Safe for
+ * init paths and infrequent calls.  NOT safe for hot concurrent paths —
+ * cache the result at init via pthread_once instead.  See FCE_BRUTE_WORKERS
+ * / FCE_STACK_SIZE in semantic.c / worker_pool.c for examples. */
 const char *fce_safe_getenv(const char *name, char *buf, size_t buf_sz, const char *fallback);
 
 /* ── Home directory ─────────────────────────────────────────────── */

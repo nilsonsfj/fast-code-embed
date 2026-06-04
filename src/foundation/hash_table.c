@@ -43,7 +43,10 @@ static uint32_t ht_random_seed(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint32_t s = (uint32_t)ts.tv_sec;
     uint32_t ns = (uint32_t)ts.tv_nsec;
-    return s ^ (ns * 2654435761U) ^ 0x9E3779B9U;
+    /* L-4 (review 0006 §L-4): mix in getpid() — on a freshly-booted container
+     * CLOCK_MONOTONIC starts near zero, so the seed is weakly guessable.
+     * getpid() is cheap and adds PID-space entropy. */
+    return s ^ (ns * 2654435761U) ^ 0x9E3779B9U ^ (uint32_t)getpid();
 }
 #define arc4random ht_random_seed
 #else
@@ -65,7 +68,9 @@ static uint32_t ht_random_seed_fallback(void) {
     static uint32_t counter = 0;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint32_t)ts.tv_nsec ^ (uint32_t)ts.tv_sec ^ (++counter);
+    /* L-4 (review 0006 §L-4): mix in getpid() for PID-space entropy on
+     * fresh containers where CLOCK_MONOTONIC starts near zero. */
+    return (uint32_t)ts.tv_nsec ^ (uint32_t)ts.tv_sec ^ (++counter) ^ (uint32_t)getpid();
 }
 #define arc4random ht_random_seed_fallback
 #endif
@@ -182,40 +187,39 @@ static bool ht_resize(FCEHashTable *ht) {
 void *fce_ht_set(FCEHashTable *ht, const char *key, void *value, bool *inserted) {
     if (inserted) *inserted = false;
     if (!ht || !key) return NULL;
+    /* N2 (review 2004 §N2): values MUST be non-NULL.  NULL is the sentinel
+     * for "absent" — fce_ht_get returns NULL when a key is not found, so
+     * storing a real NULL payload is indistinguishable from a miss.  Enforce
+     * the contract rather than silently losing the entry. */
+    if (!value) return NULL;
+
+    /* H-1 (review 0011 §H-1): Check load factor BEFORE any probing.
+     * Robin Hood steals during probing mutate the table in-place; if a
+     * subsequent ht_resize OOMs, stolen entries are lost and the caller's
+     * key may be double-freed.  Checking + resizing here ensures the table
+     * is unmutated when OOM occurs, making the caller's free(key) correct
+     * and no live entry is ever dropped.  The cost is a potentially
+     * unnecessary resize on update-heavy workloads, which is acceptable
+     * for memory-safety.
+     * L5 (review 0002 §L5): on an UPDATE of an existing key, count does not
+     * grow, so the resize here is wasted work.  A future optimization could
+     * probe first to check for an existing key, but that reintroduces the
+     * Robin Hood mutation before the OOM check.  The current design trades
+     * unnecessary allocation on updates for unconditional memory-safety. */
+    if ((uint64_t)ht->count * HT_LOAD_DEN >= (uint64_t)ht->capacity * HT_LOAD_NUM) {
+        if (!ht_resize(ht)) return NULL;
+    }
 
     uint32_t h = fnv1a_with_seed(key, ht->seed);
     uint32_t idx = h & ht->mask;
     FCEHTEntry cur = {.key = key, .value = value, .hash = h, .psl = HT_INITIAL_PSL};
     void *prev_value = NULL;
 
-    /* Probe first to check whether the key already exists.  Only resize
-     * when we actually need to insert a new entry.  This avoids:
-     *   1. Spurious growth on update-heavy workloads (count doesn't increase).
-     *   2. Silently dropping an update when ht_resize OOMs (the in-place
-     *      update requires no new memory at all). */
     for (uint32_t probe = 0; probe < ht->capacity; probe++) {
         FCEHTEntry *slot = &ht->entries[idx];
 
         if (slot->psl == 0) {
-            /* Empty slot — key not found, so this is a new insert.
-             * Now honor the load factor. */
-            if ((uint64_t)ht->count * HT_LOAD_DEN >= (uint64_t)ht->capacity * HT_LOAD_NUM) {
-            if (!ht_resize(ht)) return NULL;
-            /* H1 (review 0009 §H1): After a Robin Hood steal, cur may hold a
-             * *displaced* entry E (not the original key). Using cur.hash is
-             * correct in both cases: when no steal occurred, cur.hash ==
-             * fnv1a_with_seed(key); when a steal occurred, cur.hash is the
-             * hash of whatever key is now in cur (which is what we must
-             * re-insert into the resized table). Recomputing from the parameter
-             * `key` would stamp the wrong hash onto a displaced entry, silently
-             * losing it. */
-            idx = cur.hash & ht->mask;
-            cur.psl = HT_INITIAL_PSL;
-            /* L1 (review 0009 §L1): probe = -1 so that probe++ makes it 0,
-             * correctly restarting the probe sequence from the top. */
-            probe = (uint32_t)-1;
-            continue;
-            }
+            /* Empty slot — key not found, insert here. */
             *slot = cur;
             ht->count++;
             if (inserted) *inserted = true;
@@ -241,8 +245,7 @@ void *fce_ht_set(FCEHashTable *ht, const char *key, void *value, bool *inserted)
         cur.psl++;
         idx = (idx + 1) & ht->mask;
     }
-    /* Should never reach here — load factor < 1 guarantees empty slot exists.
-     * Guard against infinite loop if resize OOMs repeatedly. */
+    /* Should never reach here — load factor < 1 guarantees empty slot exists. */
     return NULL;
 }
 

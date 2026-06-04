@@ -12,7 +12,8 @@ CC      ?= cc
 # rely on the GNU `, ##__VA_ARGS__` extension (C-2 review 0002 §5.8:
 # __VA_OPT__ is C23 and rejected by -std=c11). All other pedantic warnings
 # remain on.
-CFLAGS  ?= -O2 -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11 -mtune=native
+CFLAGS       ?= -O2 -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11 -mtune=native -DNDEBUG
+CFLAGS_DEBUG ?= -O0 -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11 -g -fsanitize=address -fno-omit-frame-pointer
 AR      ?= ar
 ARFLAGS ?= rcs
 
@@ -72,6 +73,32 @@ test: $(TEST_BIN)
 $(TEST_BIN): $(TEST_SRC) $(LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed -lpthread -lm -o $@
+
+# ── ASan/UBSan build (no NDEBUG — asserts remain live) ──────────
+LIB_ASAN   = $(BUILDDIR)/libfast_code_embed_asan.a
+OBJS_ASAN  = $(SRCS:$(SRCDIR)/%.c=$(BUILDDIR)/asan/%.o)
+OBJS_ASAN  := $(OBJS_ASAN:$(SRCDIR)/%.S=$(BUILDDIR)/asan/%.o)
+TEST_ASAN  = $(BUILDDIR)/test_semantic_asan
+
+$(BUILDDIR)/asan/%.o: $(SRCDIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_DEBUG) -MMD -MP -I$(INCDIR) -c $< -o $@
+
+$(BUILDDIR)/asan/%.o: $(SRCDIR)/%.S
+	@mkdir -p $(dir $@)
+	$(CC) -c $< -o $@
+
+$(LIB_ASAN): $(OBJS_ASAN)
+	@mkdir -p $(dir $@)
+	$(AR) $(ARFLAGS) $@ $^
+	@echo "Built $@ (ASan)"
+
+$(TEST_ASAN): $(TEST_SRC) $(LIB_ASAN)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_DEBUG) -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed_asan -lpthread -lm -o $@
+
+test-asan: $(TEST_ASAN)
+	$(TEST_ASAN)
 
 # ── Benchmark ────────────────────────────────────────────────────
 BENCH_SRC  = bench_mem_query.c

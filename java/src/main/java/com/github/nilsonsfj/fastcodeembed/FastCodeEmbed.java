@@ -156,11 +156,16 @@ public final class FastCodeEmbed {
      * enriched token vectors, return top-k ranked results.
      * Fast path: uses inverted index for candidate retrieval, then reranks
      * with RI cosine similarity.
+     * <p><b>NOTE:</b> When the query tokens are rare (fewer than {@code topK}
+     * documents match in the inverted index), this method may return fewer
+     * than {@code topK} results.  It does <b>not</b> fall back to brute-force
+     * to top up.  Use {@link #searchQueryBruteforce} or
+     * {@link #searchQueryTfidf} when completeness is important.
      *
      * @param corpus finalized corpus to search
      * @param query  natural language query string
      * @param topK   maximum results
-     * @return ranked results sorted by score descending
+     * @return ranked results sorted by score descending (may be fewer than topK)
      */
     public static SearchResult[] searchQuery(Corpus corpus,
                                              String query, int topK) {

@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -118,17 +119,25 @@ static void walk_dir(const char *root, file_list_t *list) {
             if (entry->d_name[0] == '.') continue;
             char fullpath[MAX_PATH_LEN];
             int written = snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, entry->d_name);
-            if (written < 0 || (size_t)written >= sizeof(fullpath)) continue;
+            if (written < 0 || (size_t)written >= sizeof(fullpath)) {
+                fprintf(stderr, "warning: path truncated (max %zu chars), skipping %s/%s\n",
+                        sizeof(fullpath) - 1, dirpath, entry->d_name);
+                continue;
+            }
 
             struct stat st;
             if (lstat(fullpath, &st) != 0) continue;
             if (S_ISLNK(st.st_mode)) continue;
             if (S_ISDIR(st.st_mode)) {
                 if (stack_len == stack_cap) {
-                    stack_cap *= 2;
-                    char **grown = (char **)realloc(dir_stack, (size_t)stack_cap * sizeof(char *));
-                    if (!grown) continue;
+                    int new_cap = stack_cap * 2;
+                    char **grown = (char **)realloc(dir_stack, (size_t)new_cap * sizeof(char *));
+                    if (!grown) {
+                        fprintf(stderr, "warning: dir_stack realloc OOM, skipping subtree under %s\n", fullpath);
+                        continue;
+                    }
                     dir_stack = grown;
+                    stack_cap = new_cap;
                 }
                 dir_stack[stack_len] = strdup(fullpath);
                 if (!dir_stack[stack_len]) continue;  /* L4: don't bump stack_len on strdup failure */
@@ -160,8 +169,18 @@ int main(int argc, char **argv) {
         return 1;
     }
     const char *root_dir = argv[1];
-    int chunk_size = argc > 2 ? atoi(argv[2]) : DEFAULT_CHUNK_SIZE;
-    int batch_size = argc > 3 ? atoi(argv[3]) : DEFAULT_BATCH_SIZE;
+    /* L-1 (review 0011-0001 §L-1): use strtol instead of atoi for error
+     * detection and overflow safety. atoi has undefined behavior on overflow
+     * and no error indication for garbage input. */
+    /* L-8 (review 0004 §L-8): validate endp to reject trailing garbage
+     * (e.g., "2048xyz" silently parsed as 2048). */
+    char *endp;
+    long chunk_long = argc > 2 ? strtol(argv[2], &endp, 10) : DEFAULT_CHUNK_SIZE;
+    if (argc > 2 && endp == argv[2]) chunk_long = DEFAULT_CHUNK_SIZE; /* no digits parsed */
+    long batch_long = argc > 3 ? strtol(argv[3], &endp, 10) : DEFAULT_BATCH_SIZE;
+    if (argc > 3 && endp == argv[3]) batch_long = DEFAULT_BATCH_SIZE;
+    int chunk_size = chunk_long > 0 && chunk_long <= INT_MAX ? (int)chunk_long : DEFAULT_CHUNK_SIZE;
+    int batch_size = batch_long > 0 && batch_long <= INT_MAX ? (int)batch_long : DEFAULT_BATCH_SIZE;
     if (chunk_size <= 0) chunk_size = DEFAULT_CHUNK_SIZE;
     if (batch_size <= 0) batch_size = DEFAULT_BATCH_SIZE;
 
@@ -245,6 +264,12 @@ int main(int argc, char **argv) {
             char *tok_buf[MAX_TOKENS_PER_CHUNK];
             int ntok = fce_sem_tokenize(chunk, tok_buf, MAX_TOKENS_PER_CHUNK);
             free(chunk);
+
+            /* C5 (review 0003 §C5): skip zero-token chunks — they are rejected
+             * by fce_sem_corpus_add_docs_batch (doc_map[d] = -1) so counting
+             * them in total_chunks makes the reported count diverge from
+             * doc_count. */
+            if (ntok == 0) { offset = end; continue; }
 
             /* Store tokens in batch buffer */
             int base = batch_used * MAX_TOKENS_PER_CHUNK;

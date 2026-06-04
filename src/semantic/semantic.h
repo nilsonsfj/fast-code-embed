@@ -78,6 +78,11 @@ typedef enum {
  * Top-32 gives 12x compression (768→64 bytes/vector) with minimal quality loss. */
 enum { FCE_SPARSE_NNZ_DEFAULT = 32 };
 
+/* M-1 (review 0011 §M-1): sentinel value for sparse index padding.
+ * 0xFFFF marks empty slots; must be > any valid dimension index. */
+_Static_assert(FCE_SEM_DIM < 0xFFFF,
+               "FCE_SEM_DIM must be < 0xFFFF so the sparse-index sentinel is unambiguous");
+
 /* Applied weights sum to ~0.85; proximity is a multiplier on top. */
 typedef struct {
     float w_tfidf;
@@ -89,7 +94,21 @@ typedef struct {
     float threshold;
     int max_edges;
     fce_query_mode_t query_mode;
-    bool sparse_vectors;     /* use sparse storage for enriched/doc vectors */
+    bool sparse_vectors;     /* use sparse storage for enriched/doc vectors.
+                             * L-4 (review 0005 §L-4), M-2 (review 0006 §M-2):
+                             * WARNING — sparse mode changes RANKING, not just
+                             * precision.  The query magnitude is computed over
+                             * all 768 dims but the document magnitude over only
+                             * the top-K retained dims, producing a non-monotone
+                             * cosine that can reorder results vs dense mode.
+                             * Callers that assume sparse mode is a lossy-but-
+                             * rank-preserving optimization will get subtly wrong
+                             * top-k ordering. Use dense mode for faithful rank-
+                             * order; sparse mode is a memory/speed trade-off
+                             * only.  Making cosine monotone would require per-
+                             * document query magnitude (different docs have
+                             * different sparse indices), defeating the fast
+                             * pre-quantized query path. */
     int sparse_nnz;          /* non-zero entries per vector (default 32) */
 } fce_sem_config_t;
 
@@ -142,6 +161,12 @@ void fce_sem_ensure_ready(void);
 /* Free global resources (pretrained token map).
  * Safe to call even if ensure_ready was never called.
  * After shutdown, ensure_ready can be called again to re-initialize.
+ * L-3 (review 0005 §L-3): env-var caches (FCE_BRUTE_WORKERS, FCE_STACK_SIZE)
+ * are never reset by shutdown — changes to these env vars after a
+ * shutdown/re-init cycle are silently ignored. This is consistent with
+ * the env-var-read-once semantics but inconsistent with the re-init
+ * contract documented here. Acceptable because env vars are a build-time
+ * tuning mechanism, not a runtime knob.
  * T1: MUST NOT be called concurrently with any fce_sem_* operation.
  * Concurrent readers after shutdown will UAF — callers are responsible
  * for quiescing all worker threads before invoking this function. */
@@ -234,7 +259,8 @@ float fce_sem_corpus_idf(const fce_sem_corpus_t *corpus, const char *token);
  *   - DO NOT pass the pointer to a function that may itself call ri_vec
  * Each function has its own _Thread_local scratch, so calling
  * fce_sem_corpus_token_at() does NOT invalidate a pointer from this function.
- * If you need a stable copy, fce_sem_dup_ri_vec() (or just memcpy) the data. */
+ * If you need a stable copy, memcpy the data (fce_sem_dup_ri_vec does
+ * not exist — the JNI consumer copies immediately via SetFloatArrayRegion). */
 const fce_sem_vec_t *fce_sem_corpus_ri_vec(const fce_sem_corpus_t *corpus, const char *token);
 
 /* Get the total document count. */
@@ -290,7 +316,11 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
 float fce_sem_combined_score(const fce_sem_func_t *a, const fce_sem_func_t *b,
                              const fce_sem_config_t *cfg);
 
-/* Module proximity multiplier based on file paths. */
+/* Module proximity multiplier based on file paths.
+ * L-5 (review 0011 §L-5): path comparison is byte-wise over '/' only.
+ * Multi-byte UTF-8 path segments and Windows '\' separators are not handled;
+ * cross-platform indexers feeding backslash paths get a flat proximity of 1.0.
+ * For the stated corpora (Unix-style repo paths) this is fine. */
 float fce_sem_proximity(const char *path_a, const char *path_b);
 
 /* ── Ranking / Search ────────────────────────────────────────────── */
@@ -301,8 +331,13 @@ typedef struct {
 } fce_sem_ranked_t;
 
 /* Rank corpus against query and return top-k results.
- * Results are sorted descending by score. Output written to results_out (caller-allocated).
- * count_out receives the number of results (<= top_k). */
+ * Results are sorted descending by score (ties broken by index ascending for
+ * deterministic output). Output written to results_out (caller-allocated).
+ * count_out receives the number of results (<= top_k).
+ * CONTRACT (review 0011 §M-1): corpus-side tfidf_indices MUST be sorted
+ * ascending per-item even in release builds. Unsorted input silently
+ * produces wrong scores via the two-pointer merge in fce_sparse_tfidf_cosine.
+ * The JNI layer enforces this; direct C callers must ensure it themselves. */
 void fce_sem_rank(fce_sem_func_t *query, fce_sem_func_t *corpus,
                    uint32_t corpus_size, uint32_t top_k,
                    const fce_sem_config_t *cfg,

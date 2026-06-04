@@ -20,6 +20,27 @@ enum { WP_TRUE = 1, WP_MIN = 1, WP_STEP = 1 };
  * Default 1 MB; override via FCE_STACK_SIZE env var (in bytes). */
 #define FCE_DEFAULT_WORKER_STACK ((size_t)1 * FCE_SZ_1K * FCE_SZ_1K)
 
+/* M1 (review 0002 §M1): cache FCE_STACK_SIZE at init.
+ * fce_safe_getenv iterates environ directly and is NOT safe against
+ * concurrent setenv/putenv.  Read once, store the result. */
+static size_t g_cached_stack_size = 0;   /* 0 = not yet cached */
+static fce_once_t g_stack_size_once = FCE_ONCE_INIT;
+static void init_stack_size(void) {
+    size_t stack_size = FCE_DEFAULT_WORKER_STACK;
+    char env_buf[32];
+    const char *env_val = fce_safe_getenv("FCE_STACK_SIZE", env_buf, sizeof(env_buf), "");
+    if (env_val && env_val[0]) {
+        char *endptr;
+        errno = 0;
+        unsigned long v = strtoul(env_val, &endptr, 10);
+        if (errno == 0 && endptr != env_val && *endptr == '\0' &&
+            v >= 65536 && v <= (unsigned long)64 * FCE_SZ_1K * FCE_SZ_1K) {
+            stack_size = (size_t)v;
+        }
+    }
+    g_cached_stack_size = stack_size;
+}
+
 /* ── Serial fallback ─────────────────────────────────────────────── */
 
 static void run_serial(int count, fce_parallel_fn fn, void *ctx) {
@@ -59,19 +80,9 @@ static void run_pthreads_static(int count, fce_parallel_fn fn, void *ctx, int nw
         return;
     }
 
-    /* Allow env var override for stack size. */
-    size_t stack_size = FCE_DEFAULT_WORKER_STACK;
-    char env_buf[32];
-    const char *env_val = fce_safe_getenv("FCE_STACK_SIZE", env_buf, sizeof(env_buf), "");
-    if (env_val && env_val[0]) {
-        char *endptr;
-        errno = 0;
-        unsigned long v = strtoul(env_val, &endptr, 10);
-        if (errno == 0 && endptr != env_val && *endptr == '\0' &&
-            v >= 65536 && v <= (unsigned long)64 * FCE_SZ_1K * FCE_SZ_1K) {
-            stack_size = (size_t)v;
-        }
-    }
+    /* M1 (review 0002 §M1): use cached stack size. */
+    fce_once(&g_stack_size_once, init_stack_size);
+    size_t stack_size = g_cached_stack_size;
 
     /* Assign contiguous chunks to each worker. */
     int offset = 0;
@@ -143,19 +154,9 @@ static void run_pthreads(int count, fce_parallel_fn fn, void *ctx, int nworkers)
         .count = count,
     };
 
-    /* Allow env var override for stack size (e.g. FCE_STACK_SIZE=524288). */
-    size_t stack_size = FCE_DEFAULT_WORKER_STACK;
-    char env_buf[32];
-    const char *env_val = fce_safe_getenv("FCE_STACK_SIZE", env_buf, sizeof(env_buf), "");
-    if (env_val && env_val[0]) {
-        char *endptr;
-        errno = 0;
-        unsigned long v = strtoul(env_val, &endptr, 10);
-        if (errno == 0 && endptr != env_val && *endptr == '\0' &&
-            v >= 65536 && v <= (unsigned long)64 * FCE_SZ_1K * FCE_SZ_1K) {
-            stack_size = (size_t)v;
-        }
-    }
+    /* M1 (review 0002 §M1): use cached stack size. */
+    fce_once(&g_stack_size_once, init_stack_size);
+    size_t stack_size = g_cached_stack_size;
 
     fce_thread_t *threads = (fce_thread_t *)malloc((size_t)nworkers * sizeof(fce_thread_t));
     if (!threads) {

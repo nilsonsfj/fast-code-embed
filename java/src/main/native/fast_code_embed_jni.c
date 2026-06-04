@@ -30,6 +30,160 @@
 #include <string.h>
 #include "semantic/semantic.h"
 
+/* ── Opaque handle table (M-4, review 0001 §M-4) ──────────────── *
+ * Converts a Java-level double-close / stale-handle bug from JVM heap
+ * corruption into a catchable IllegalStateException.  Every corpus
+ * handle is encoded as (index | (generation << 16)) where generation
+ * is incremented on each free, making stale handles detectable. */
+#include <pthread.h>
+
+/* ── Opaque handle table ─────────────────────────────────────────────
+ *
+ * The handle table converts opaque Java-level jlong handles into C
+ * pointers, with generation counters that detect stale/duplicate handles
+ * and turn double-close bugs into safe NULL returns.
+ *
+ * LIFETIME CONTRACT (review 0004 §C-1, refcount-based):
+ *
+ * Double-free is prevented at the C level: nFreeCorpus uses take_handle()
+ * which atomically decodes AND clears the slot under a single lock, then
+ * waits for in-flight users to drain (refcount drops to zero) before
+ * returning the pointer for the caller to free.
+ *
+ * Use-against-free is prevented at the C level via per-slot refcounts:
+ *   - acquire_handle() increments the refcount under the mutex.
+ *   - release_handle() decrements it; if the slot was already taken
+ *     (ptr == NULL) and this was the last user, it signals drain_cv
+ *     so take_handle() can proceed with the free.
+ *   - take_handle() clears the pointer, then waits for refcount to
+ *     reach zero before returning — guaranteeing no outstanding user
+ *     holds a dangling pointer.
+ *
+ * Every JNI entry point that decodes a handle MUST call acquire_handle()
+ * on success and release_handle() on EVERY return path (normal, early,
+ * or error).  Omission causes a stuck refcount (take_handle never returns)
+ * or a use-after-free (take_handle returns before the user is done).
+ *
+ * The generation counter's sole purpose is catching stale/duplicate
+ * handles, NOT lifetime management against concurrent free.
+ * ──────────────────────────────────────────────────────────────────── */
+
+#define HANDLE_TABLE_CAP 4096
+#define HANDLE_SLOT_BITS 16                          /* bits for slot index */
+#define HANDLE_GEN_MASK  ((1ULL << (64 - HANDLE_SLOT_BITS - 1)) - 1)  /* 47 bits, bit 63 always clear */
+
+typedef struct {
+    void              *ptr;    /* live fce_sem_corpus_t* or NULL */
+    uint64_t           gen;    /* monotonically increasing; gen==0 → slot free */
+    int                refcount; /* C-1 (review 0004 §C-1): active users */
+} handle_slot_t;
+
+static handle_slot_t g_handle_table[HANDLE_TABLE_CAP];
+static pthread_mutex_t g_handle_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_handle_drain_cv = PTHREAD_COND_INITIALIZER;
+
+/* Encode a (slot, generation) pair into a jlong handle.
+ * C-2 (review 0004 §C-2): HANDLE_GEN_MASK is 47 bits so bit 63 (sign bit)
+ * is always clear — the encoded handle is always positive as a jlong. */
+static inline jlong encode_handle(int slot, uint64_t gen) {
+    return (jlong)(((uint64_t)slot) | ((gen & HANDLE_GEN_MASK) << HANDLE_SLOT_BITS));
+}
+
+/* Allocate a handle table slot. Returns encoded handle, or -1 on OOM/full. */
+static jlong alloc_handle(void *ptr) {
+    pthread_mutex_lock(&g_handle_mutex);
+    for (int i = 0; i < HANDLE_TABLE_CAP; i++) {
+        if (g_handle_table[i].ptr == NULL) {
+            g_handle_table[i].gen++;
+            if (g_handle_table[i].gen == 0) g_handle_table[i].gen = 1;
+            g_handle_table[i].ptr = ptr;
+            g_handle_table[i].refcount = 1; /* C-1: initial owner */
+            jlong h = encode_handle(i, g_handle_table[i].gen);
+            pthread_mutex_unlock(&g_handle_mutex);
+            return h;
+        }
+    }
+    pthread_mutex_unlock(&g_handle_mutex);
+    return -1; /* table full */
+}
+
+/* C-1 (review 2004 §C-1): Decode handle and increment refcount.
+ * Returns the corpus pointer if the generation matches, or NULL.
+ * The caller MUST call release_handle() on every return path. */
+static void *acquire_handle(jlong handle) {
+    if (handle <= 0) return NULL;
+    uint64_t encoded = (uint64_t)handle;
+    int slot = (int)(encoded & ((1 << HANDLE_SLOT_BITS) - 1));
+    uint64_t gen = encoded >> HANDLE_SLOT_BITS;
+    if (slot < 0 || slot >= HANDLE_TABLE_CAP) return NULL;
+    pthread_mutex_lock(&g_handle_mutex);
+    void *ptr = g_handle_table[slot].ptr;
+    uint64_t live_gen = g_handle_table[slot].gen;
+    if (ptr && gen == live_gen) {
+        g_handle_table[slot].refcount++;
+        pthread_mutex_unlock(&g_handle_mutex);
+        return ptr;
+    }
+    pthread_mutex_unlock(&g_handle_mutex);
+    return NULL;
+}
+
+/* C-1 (review 2004 §C-1): Decrement refcount. If the slot was already taken
+ * (ptr==NULL by take_handle) and this was the last user, signal drain_cv
+ * so take_handle() can proceed with the free. The condition is refcount<=1
+ * (not ==0) because take_handle consumes the owner reference after the drain
+ * completes, so it waits for refcount to drop to 1 (all acquirers done).
+ * M-1 (review 0006 §M-1): validate generation to prevent decrements from
+ * stale or double-released handles — a double-release or stale-handle whose
+ * slot has been reallocated to a different corpus would otherwise decrement
+ * the wrong slot's refcount, causing use-after-free. After take_handle
+ * clears ptr, the generation remains unchanged, so in-flight acquirers
+ * still validate successfully. */
+static void release_handle(jlong handle) {
+    if (handle <= 0) return;
+    uint64_t encoded = (uint64_t)handle;
+    int slot = (int)(encoded & ((1 << HANDLE_SLOT_BITS) - 1));
+    uint64_t gen = encoded >> HANDLE_SLOT_BITS;
+    if (slot < 0 || slot >= HANDLE_TABLE_CAP) return;
+    pthread_mutex_lock(&g_handle_mutex);
+    if (gen == g_handle_table[slot].gen) {
+        int rc = --g_handle_table[slot].refcount;
+        if (g_handle_table[slot].ptr == NULL && rc <= 1) {
+            pthread_cond_signal(&g_handle_drain_cv);
+        }
+    }
+    pthread_mutex_unlock(&g_handle_mutex);
+}
+
+/* C-1 (review 2004 §C-1): Atomically decode AND clear the handle slot,
+ * then wait for all in-flight users to drain (refcount drops to 1, meaning
+ * only the owner baseline remains). Returns the pointer only if the generation
+ * matches; the winning caller gets a non-NULL pointer and the slot is NULLed
+ * under the same lock, so a second concurrent close() on the same handle
+ * safely gets NULL. The caller is responsible for freeing the returned pointer. */
+static void *take_handle(jlong handle) {
+    if (handle <= 0) return NULL;
+    uint64_t encoded = (uint64_t)handle;
+    int slot = (int)(encoded & ((1 << HANDLE_SLOT_BITS) - 1));
+    uint64_t gen = encoded >> HANDLE_SLOT_BITS;
+    if (slot < 0 || slot >= HANDLE_TABLE_CAP) return NULL;
+    pthread_mutex_lock(&g_handle_mutex);
+    void *ptr = g_handle_table[slot].ptr;
+    uint64_t live_gen = g_handle_table[slot].gen;
+    if (ptr && gen == live_gen) {
+        g_handle_table[slot].ptr = NULL; /* clear — no new acquires possible */
+        /* Wait for in-flight users to finish. */
+        while (g_handle_table[slot].refcount > 1) {
+            pthread_cond_wait(&g_handle_drain_cv, &g_handle_mutex);
+        }
+        g_handle_table[slot].refcount = 0;
+    } else {
+        ptr = NULL;
+    }
+    pthread_mutex_unlock(&g_handle_mutex);
+    return ptr;
+}
+
 /* ── Cached IDs (initialized in JNI_OnLoad) ────────────────────── */
 
 static jclass    cls_func;
@@ -43,6 +197,7 @@ static jmethodID ctor_search_result;
 
 static jclass    cls_illegal_arg;
 static jclass    cls_npe;
+static jclass    cls_oom;
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -51,6 +206,12 @@ static jclass    cls_npe;
 } while (0)
 
 /* Build a fce_sem_func_t from a Java FuncDescriptor object.
+ *
+ * L-6 (review 0005 §L-6): This function returns a zeroed descriptor with
+ * file_path==NULL on OOM *and* throws OutOfMemoryError. Every caller MUST
+ * check ExceptionCheck() before using the returned struct. This "return
+ * half-built struct + pending exception" pattern is brittle — the flat API
+ * (nSimpleRankFlat) is the preferred model for new code.
  *
  * Ownership contract:
  *   - Caller must free(*path_out) when done.
@@ -94,6 +255,13 @@ static fce_sem_func_t marshal_func(JNIEnv *env, jobject obj, char **path_out,
             (*env)->DeleteLocalRef(env, jpath);
             if (jindices_out) *jindices_out = NULL;
             if (jweights_out) *jweights_out = NULL;
+            /* M-4 (review 0006 §M-4): throw OOM so callers see the failure
+             * via ExceptionCheck rather than silently scoring against a zeroed
+             * descriptor.  M-3 (review 0007 §M-3): use cached cls_oom to avoid
+             * FindClass under memory pressure. If cls_oom is NULL, the pending
+             * OOM from GetStringUTFChars is sufficient — leave it. */
+            if (cls_oom) (*env)->ThrowNew(env, cls_oom,
+                             "marshal_func: GetStringUTFChars OOM");
             return (fce_sem_func_t){0};
         }
         /* C2: check strdup return — on OOM,
@@ -106,6 +274,11 @@ static fce_sem_func_t marshal_func(JNIEnv *env, jobject obj, char **path_out,
             (*env)->DeleteLocalRef(env, jpath);
             if (jindices_out) *jindices_out = NULL;
             if (jweights_out) *jweights_out = NULL;
+            /* M-4 (review 0006 §M-4): throw OOM so callers see the failure
+             * via ExceptionCheck rather than silently scoring against a zeroed
+             * descriptor.  M-3 (review 0007 §M-3): use cached cls_oom. */
+            if (cls_oom) (*env)->ThrowNew(env, cls_oom,
+                             "marshal_func: strdup OOM");
             return (fce_sem_func_t){0};
         }
         f.file_path = *path_out;
@@ -121,6 +294,22 @@ static fce_sem_func_t marshal_func(JNIEnv *env, jobject obj, char **path_out,
 
     *jindices_out = jindices;
     *jweights_out = jweights;
+
+    /* A2 (review 0003 §A2): exactly one of indices/weights present is a
+     * silent quality degradation (struct path drops TF-IDF silently);
+     * the flat path already rejects this with IllegalArgumentException.
+     * Match that behaviour here for consistency. */
+    if ((jindices != NULL) != (jweights != NULL)) {
+        if (cls_illegal_arg)
+            (*env)->ThrowNew(env, cls_illegal_arg,
+                             "tfidfIndices and tfidfWeights must both be present or both absent");
+        if (jindices) (*env)->DeleteLocalRef(env, jindices);
+        if (jweights) (*env)->DeleteLocalRef(env, jweights);
+        free(*path_out); *path_out = NULL;
+        *jindices_out = NULL;
+        *jweights_out = NULL;
+        return (fce_sem_func_t){0};
+    }
 
     if (jindices && jweights) {
         jint ilen = (*env)->GetArrayLength(env, jindices);
@@ -181,7 +370,23 @@ static fce_sem_func_t marshal_func(JNIEnv *env, jobject obj, char **path_out,
                 return (fce_sem_func_t){0};
             }
         }
-        f.tfidf_len = ilen < wlen ? ilen : wlen;
+        /* M-6 (review 0011 §M-6): reject tfidf index/weight length mismatch.
+         * Silently truncating to the shorter length discards data with no
+         * diagnostic.  Throwing IllegalArgumentException matches the strictness
+         * of the flat path's query-side checks. */
+        if (ilen != wlen) {
+            (*env)->ReleaseIntArrayElements(env, jindices, (jint *)f.tfidf_indices, JNI_ABORT);
+            (*env)->ReleaseFloatArrayElements(env, jweights, f.tfidf_weights, JNI_ABORT);
+            jclass iae = cls_illegal_arg ? cls_illegal_arg : (*env)->FindClass(env, "java/lang/IllegalArgumentException");
+            (*env)->ThrowNew(env, iae, "tfidfIndices and tfidfWeights must have the same length");
+            if (jindices) (*env)->DeleteLocalRef(env, jindices);
+            if (jweights) (*env)->DeleteLocalRef(env, jweights);
+            free(*path_out); *path_out = NULL;
+            if (jindices_out) *jindices_out = NULL;
+            if (jweights_out) *jweights_out = NULL;
+            return (fce_sem_func_t){0};
+        }
+        f.tfidf_len = ilen;
     }
 
     /* riVec */
@@ -231,7 +436,12 @@ static fce_sem_func_t marshal_func(JNIEnv *env, jobject obj, char **path_out,
 }
 
 /* Release JNI array refs after marshalling is done.
- * Receives the JNI array refs directly from marshal_func — no re-fetch. */
+ * Receives the JNI array refs directly from marshal_func — no re-fetch.
+ * J1 (review 0002 §J1): marshal_func NULLs *jindices_out and *jweights_out on
+ * every error return.  unmarshal_func guards on non-NULL before release/delete,
+ * so calling it after a marshal_func error is safe (all refs are NULL, nothing
+ * is released).  This contract is binding: any future marshal_func error branch
+ * that forgets to NULL-out the output pointers would cause a double-release. */
 static void unmarshal_func(JNIEnv *env, jobject obj, fce_sem_func_t *f,
                             jintArray jindices, jfloatArray jweights, char *path) {
     (void)obj;
@@ -292,6 +502,15 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     (*env)->DeleteLocalRef(env, local_npe);
     if (!cls_npe) goto fail;
 
+    /* M-3 (review 0007 §M-3): cache OutOfMemoryError class so marshal_func's
+     * OOM paths don't call FindClass under memory pressure (FindClass can itself
+     * fail with OOM, making ThrowNew(env, NULL, msg) UB). */
+    jclass local_oom = (*env)->FindClass(env, "java/lang/OutOfMemoryError");
+    if (!local_oom) goto fail;
+    cls_oom = (*env)->NewGlobalRef(env, local_oom);
+    (*env)->DeleteLocalRef(env, local_oom);
+    if (!cls_oom) goto fail;
+
     return JNI_VERSION_1_6;
 
 fail:
@@ -301,6 +520,7 @@ fail:
     if (cls_search_result) { (*env)->DeleteGlobalRef(env, cls_search_result); cls_search_result = NULL; }
     if (cls_illegal_arg) { (*env)->DeleteGlobalRef(env, cls_illegal_arg); cls_illegal_arg = NULL; }
     if (cls_npe) { (*env)->DeleteGlobalRef(env, cls_npe); cls_npe = NULL; }
+    if (cls_oom) { (*env)->DeleteGlobalRef(env, cls_oom); cls_oom = NULL; }
     return JNI_ERR;
 }
 
@@ -318,17 +538,20 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
         if (cls_search_result) (*env)->DeleteGlobalRef(env, cls_search_result);
         if (cls_illegal_arg) (*env)->DeleteGlobalRef(env, cls_illegal_arg);
         if (cls_npe) (*env)->DeleteGlobalRef(env, cls_npe);
+        if (cls_oom) (*env)->DeleteGlobalRef(env, cls_oom);
     }
     cls_func = NULL;
     cls_search_result = NULL;
     cls_illegal_arg = NULL;
     cls_npe = NULL;
+    cls_oom = NULL;
 }
 
 /* ── Corpus JNI ─────────────────────────────────────────────────── */
 
 JNIEXPORT jlong JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nCreateCorpus(
     JNIEnv *env, jclass cls) {
+    (void)env;
     (void)cls;
     fce_sem_corpus_t *c = fce_sem_corpus_new();
     /* Review 0001 §2.6: fce_sem_corpus_new returns NULL on OOM. The old
@@ -340,37 +563,50 @@ JNIEXPORT jlong JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nC
     if (!c) {
         return (jlong)-1;
     }
-    return (jlong)(uintptr_t)c;
+    /* M-4 (review 0001 §M-4): register the pointer in the handle table and
+     * return an opaque (index | generation) encoded handle.  A stale positive
+     * handle from a previously-freed Corpus will fail the generation check
+     * and decode as NULL instead of being cast to a live pointer. */
+    jlong h = alloc_handle(c);
+    if (h < 0) {
+        /* Table full or OOM — free the corpus and report OOM. */
+        fce_sem_corpus_free(c);
+        return (jlong)-1;
+    }
+    return h;
 }
 
 JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nFreeCorpus(
     JNIEnv *env, jclass cls, jlong handle) {
+    (void)env;
     (void)cls;
-    /* C1: guard against invalid (stale/corrupt)
-     * handle — matches every other JNI function's guard pattern. A stale
-     * handle from a previously-freed Corpus would otherwise be cast to a
-     * pointer and passed to free(), causing double-free / heap corruption. */
-    if (handle <= 0) return;
-    fce_sem_corpus_free((fce_sem_corpus_t *)(uintptr_t)handle);
+    /* M-4 (review 0001 §M-4): decode handle via the handle table.  A stale
+     * or duplicated handle fails the generation check and returns NULL.
+     * B1 (review 0003 §B1): use take_handle() — atomic decode+clear under
+     * a single lock.  If two threads race close() on the same handle, only
+     * the first gets a non-NULL pointer; the second safely gets NULL. */
+    void *ptr = take_handle(handle);
+    if (!ptr) return;
+    fce_sem_corpus_free((fce_sem_corpus_t *)ptr);
 }
 
 JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDoc(
     JNIEnv *env, jclass cls, jlong handle, jobjectArray jtokens) {
     (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return;
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return;
     /* H1 (review 0007 §H1): null-guard the array argument. GetArrayLength on
-     * NULL is UB per JNI spec and SIGSEGV the JVM on HotSpot. */
-    if (!jtokens) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "tokens is null"); return; }
-    fce_sem_corpus_t *corp = (fce_sem_corpus_t *)(uintptr_t)handle;
+     * NULL is UB per JNI spec and SIGSEGVs the JVM on HotSpot. */
+    if (!jtokens) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "tokens is null"); release_handle(handle); return; }
     int count = (*env)->GetArrayLength(env, jtokens);
     /* L4 (review 0005 §L4): malloc(0) is implementation-defined and may return
      * NULL, which the OOM guard below would treat as an allocation failure.
      * Return early on empty input — matching nAddDocsBatch (:329). */
-    if (count == 0) return;
+    if (count == 0) { release_handle(handle); return; }
     const char **tokens = (const char **)malloc(sizeof(char *) * count);
     jstring *refs = (jstring *)malloc(sizeof(jstring) * count);
-    if (!tokens || !refs) { free(tokens); free(refs); return; }
+    if (!tokens || !refs) { free(tokens); free(refs); release_handle(handle); return; }
     int pinned = 0;
     for (int i = 0; i < count; i++) {
         jstring jtok = (jstring)(*env)->GetObjectArrayElement(env, jtokens, i);
@@ -399,18 +635,19 @@ adddoc_cleanup:
     }
     free(refs);
     free(tokens);
+    release_handle(handle);
 }
 
 JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDocsBatch(
     JNIEnv *env, jclass cls, jlong handle, jobjectArray jdocs, jint maxTokensPerDoc) {
     (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return;
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return;
     /* H1 (review 0007 §H1): null-guard the array argument. */
-    if (!jdocs) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "docs is null"); return; }
-    fce_sem_corpus_t *corp = (fce_sem_corpus_t *)(uintptr_t)handle;
+    if (!jdocs) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "docs is null"); release_handle(handle); return; }
     int docCount = (*env)->GetArrayLength(env, jdocs);
-    if (docCount == 0 || maxTokensPerDoc <= 0) return;
+    if (docCount == 0 || maxTokensPerDoc <= 0) { release_handle(handle); return; }
 
     /* H1 (review 0001-0001 §1): clamp maxTokensPerDoc to FCE_SEM_MAX_TOKENS
      * (512). Without this, a single doc with >512 tokens causes the C batch
@@ -427,6 +664,7 @@ JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAd
     int *token_counts = (int *)malloc(sizeof(int) * docCount);
     if (!all_tokens || !all_refs || !token_counts) {
         free(all_tokens); free(all_refs); free(token_counts);
+        release_handle(handle);
         return;
     }
     memset(all_tokens, 0, sizeof(char *) * flat);
@@ -449,6 +687,7 @@ JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAd
         for (int t = 0; t < len; t++) {
             jstring jtok = (jstring)(*env)->GetObjectArrayElement(env, jdoc, t);
             if ((*env)->ExceptionCheck(env)) {
+                if (jtok) (*env)->DeleteLocalRef(env, jtok);
                 (*env)->DeleteLocalRef(env, jdoc);
                 goto addbatch_cleanup;
             }
@@ -482,14 +721,19 @@ addbatch_cleanup:
     free(all_refs);
     free(all_tokens);
     free(token_counts);
+    release_handle(handle);
 }
 
 JNIEXPORT jboolean JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nFinalizeCorpus(
     JNIEnv *env, jclass cls, jlong handle) {
     (void)env; (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return JNI_FALSE;
-    int rc = fce_sem_corpus_finalize((fce_sem_corpus_t *)(uintptr_t)handle);
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle.
+     * The refcount protects the corpus during the long-running finalize
+     * even if close() is called concurrently from another thread. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return JNI_FALSE;
+    int rc = fce_sem_corpus_finalize(corp);
+    release_handle(handle);
     return rc == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -503,13 +747,13 @@ JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAd
      * discard the corpus. This is a deliberate trade-off: atomic rollback
      * across potentially millions of tokens would require a full corpus
      * snapshot and copy, which is not justified for a batch-add API. */
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return;
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return;
     /* H1 (review 0007 §H1): null-guard the array argument. */
-    if (!jnames) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "names is null"); return; }
-    fce_sem_corpus_t *corp = (fce_sem_corpus_t *)(uintptr_t)handle;
+    if (!jnames) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "names is null"); release_handle(handle); return; }
     int total = (*env)->GetArrayLength(env, jnames);
-    if (total == 0) return;
+    if (total == 0) { release_handle(handle); return; }
 
     /* C5: reduce BATCH from 10000 to 1000 to cut
      * per-call heap allocation from ~160 KB to ~16 KB. This bounds allocation
@@ -518,7 +762,7 @@ JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAd
     const int BATCH = 1000;
     const char **names = (const char **)malloc(sizeof(char *) * BATCH);
     jstring *refs = (jstring *)malloc(sizeof(jstring) * BATCH);
-    if (!names || !refs) { free(names); free(refs); return; }
+    if (!names || !refs) { free(names); free(refs); release_handle(handle); return; }
 
     for (int start = 0; start < total; start += BATCH) {
         int end = start + BATCH;
@@ -559,25 +803,30 @@ addtok_cleanup:
     }
     free(refs);
     free(names);
+    release_handle(handle);
 }
 
 JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddFiles(
     JNIEnv *env, jclass cls, jlong handle, jobjectArray jpaths, jint chunkSize,
     jintArray jFileDocCounts, jint maxTokensPerChunk) {
     (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return 0;
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return 0;
     /* C1: null jpaths → GetArrayLength is UB and
      * SIGSEGVs the JVM on HotSpot. Throw NPE before reaching the JNI call. */
-    if (!jpaths) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "paths is null"); return -1; }
-    fce_sem_corpus_t *corp = (fce_sem_corpus_t *)(uintptr_t)handle;
+    if (!jpaths) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "paths is null"); release_handle(handle); return -1; }
     int count = (*env)->GetArrayLength(env, jpaths);
-    if (count == 0 || chunkSize <= 0) return 0;
+    if (count == 0 || chunkSize <= 0) { release_handle(handle); return 0; }
 
     /* Extract all path strings in one pass, cache refs for cleanup. */
     const char **paths = (const char **)malloc(sizeof(char *) * count);
     jstring *refs = (jstring *)malloc(sizeof(jstring) * count);
-    if (!paths || !refs) { free(paths); free(refs); return -1; }
+    if (!paths || !refs) { free(paths); free(refs); release_handle(handle); return -1; }
+    /* M-3 (review 0001 §M-3): hoist file_doc_counts declaration above the
+     * for-loop to prevent goto from jumping over its initialization. */
+    int *file_doc_counts = NULL;
+
     /* H2: initialize result before any goto can bypass the assignment. */
     int result = -1;
     int pinned = 0;
@@ -601,7 +850,6 @@ JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAd
     }
 
     /* Per-file doc counts output buffer. */
-    int *file_doc_counts = NULL;
     if (jFileDocCounts && (*env)->GetArrayLength(env, jFileDocCounts) >= count) {
         file_doc_counts = (int *)malloc(sizeof(int) * count);
         if (file_doc_counts) memset(file_doc_counts, 0, sizeof(int) * count);
@@ -623,39 +871,45 @@ addfiles_cleanup:
     }
     free(refs);
     free(paths);
+    release_handle(handle);
     return result;
 }
 
 JNIEXPORT jfloat JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetIdf(
     JNIEnv *env, jclass cls, jlong handle, jstring jtoken) {
     (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return 0.0f;
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return 0.0f;
     /* H1 (review 0005 §H1): null jstring → GetStringUTFChars(env, NULL, …) is UB
-     * and crashes the JVM. Throw NPE before reaching the JNI call. */
-    if (!jtoken) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "token is null"); return 0.0f; }
+     * and crashes the JVM on HotSpot. Throw NPE before reaching the JNI call. */
+    if (!jtoken) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "token is null"); release_handle(handle); return 0.0f; }
     const char *tok = (*env)->GetStringUTFChars(env, jtoken, NULL);
-    if (!tok) {
+    if (!tok || (*env)->ExceptionCheck(env)) {
         /* OOM: OutOfMemoryError is pending. Calling the C function with a
          * pending exception is undefined JNI behavior — return early. */
+        release_handle(handle);
         return 0.0f;
     }
-    float idf = fce_sem_corpus_idf((fce_sem_corpus_t *)(uintptr_t)handle, tok);
+    float idf = fce_sem_corpus_idf(corp, tok);
     (*env)->ReleaseStringUTFChars(env, jtoken, tok);
+    release_handle(handle);
     return idf;
 }
 
 JNIEXPORT jfloatArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetRiVec(
     JNIEnv *env, jclass cls, jlong handle, jstring jtoken) {
     (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return NULL;
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return NULL;
     /* H1 (review 0005 §H1): null jstring → GetStringUTFChars(env, NULL, …) is UB
-     * and crashes the JVM. Throw NPE before reaching the JNI call. */
-    if (!jtoken) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "token is null"); return NULL; }
+     * and crashes the JVM on HotSpot. Throw NPE before reaching the JNI call. */
+    if (!jtoken) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "token is null"); release_handle(handle); return NULL; }
     const char *tok = (*env)->GetStringUTFChars(env, jtoken, NULL);
-    if (!tok) {
+    if (!tok || (*env)->ExceptionCheck(env)) {
         /* OOM: OutOfMemoryError is pending. Bail before calling C. */
+        release_handle(handle);
         return NULL;
     }
     /* Review 0001 §2.5: fce_sem_corpus_ri_vec returns a pointer to a
@@ -667,29 +921,38 @@ JNIEXPORT jfloatArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEm
      * _Thread_local scratch is per-Java-thread (and the C side, being
      * a JNI_OnLoad-attached dylib, is always called from a Java
      * thread that has a stable _Thread_local key). */
-    const fce_sem_vec_t *vec = fce_sem_corpus_ri_vec((fce_sem_corpus_t *)(uintptr_t)handle, tok);
+    const fce_sem_vec_t *vec = fce_sem_corpus_ri_vec(corp, tok);
     (*env)->ReleaseStringUTFChars(env, jtoken, tok);
-    if (!vec) return NULL;
+    if (!vec) { release_handle(handle); return NULL; }
     jfloatArray result = (*env)->NewFloatArray(env, FCE_SEM_DIM);
-    CHECK_EXCEPTION_RETURN(env, NULL);
+    /* C-1 (review 0006 §C-1): NewFloatArray can fail with pending OOM.
+     * release_handle MUST be called on every path after acquire_handle. */
+    if ((*env)->ExceptionCheck(env)) { release_handle(handle); return NULL; }
     (*env)->SetFloatArrayRegion(env, result, 0, FCE_SEM_DIM, vec->v);
+    release_handle(handle);
     return result;
 }
 
 JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetDocCount(
     JNIEnv *env, jclass cls, jlong handle) {
     (void)env; (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return 0;
-    return fce_sem_corpus_doc_count((fce_sem_corpus_t *)(uintptr_t)handle);
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return 0;
+    int count = fce_sem_corpus_doc_count(corp);
+    release_handle(handle);
+    return count;
 }
 
 JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetTokenCount(
     JNIEnv *env, jclass cls, jlong handle) {
     (void)env; (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return 0;
-    return fce_sem_corpus_token_count((fce_sem_corpus_t *)(uintptr_t)handle);
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return 0;
+    int count = fce_sem_corpus_token_count(corp);
+    release_handle(handle);
+    return count;
 }
 
 /* ── Static Nomic Search JNI ────────────────────────────────────── */
@@ -736,16 +999,17 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     return result;
 
 tokenize_cleanup:
-    /* I1 (review 0007 §I1): safety of this cleanup loop depends on two
+    /* Latent-3 (review 0001 §3.3): safety of this cleanup loop depends on two
      * invariants working together:
      *   1. tokens[] is zeroed up front (memset at :699), so every slot
      *      holds NULL unless fce_sem_tokenize wrote to it.
      *   2. The success loop (:707-713) sets tokens[i] = NULL after free,
      *      so already-consumed slots are harmless to free() again.
      * A future edit that removes either the up-front memset or the
-     * per-iteration NULLing will introduce a double-free here. */
+     * per-iteration NULLing will introduce a double-free here.
+     * Guard: only free non-NULL slots. */
     for (int i = 0; i < count; i++) {
-        free(tokens[i]);
+        if (tokens[i]) free(tokens[i]);
     }
     (*env)->ReleaseStringUTFChars(env, jname, name);
     return NULL;
@@ -793,7 +1057,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
      * fits in size_t, but this explicit check prevents issues if the
      * requirement is ever relaxed. */
     size_t flat_sz = (size_t)count * (size_t)max_out;
-    if (flat_sz > (SIZE_MAX / sizeof(char *))) return NULL;
+    if (flat_sz > (SIZE_MAX / sizeof(char *))) goto tokenize_cleanup_input;
     char **all_tokens = (char **)calloc(flat_sz, sizeof(char *));
     int *token_counts = (int *)malloc(count * sizeof(int));
     if (!all_tokens || !token_counts) {
@@ -956,6 +1220,11 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     /* C5 (review 0002-0002 §2.5): clamp topK to corpus size before allocating
      * result buffers to prevent allocation-amplification from hostile callers. */
     if (topK > corpusSize) topK = corpusSize;
+    /* L2 (review 0002 §L2): zero-initialization is LOAD-BEARING for the cleanup
+     * path — the *Cleanup labels iterate corpusSize and skip slots where
+     * jindices_arr[i] || jweights_arr[i] is NULL (i.e., never marshaled).
+     * A future switch to malloc would turn cleanup into wild-pointer reads
+     * and free() of indeterminate pointers.  Do NOT change to malloc. */
     fce_sem_func_t *corpus = (fce_sem_func_t *)calloc(corpusSize, sizeof(fce_sem_func_t));
     char **paths = (char **)calloc(corpusSize, sizeof(char *));
     jobject *corp_refs = (jobject *)calloc(corpusSize, sizeof(jobject));
@@ -976,19 +1245,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     fce_sem_func_t query = marshal_func(env, jquery, &qpath, &qjindices, &qjweights);
     if ((*env)->ExceptionCheck(env)) goto simpleRank_cleanup;
 
-    /* Marshal corpus — cache jobject refs for cleanup.
-     * corp_refs[i] is not used by unmarshal_func (only jindices/jweights are),
-     * so delete it immediately to bound local ref pressure.
-     * J-2 (review 0002 §2.2): the invariant is "corp_refs[i] is non-NULL
-     * iff the local ref has NOT been DeleteLocalRef'd". We set it to NULL
-     * on the success path, and the cleanup loop walks the array looking
-     * for non-NULL slots. If marshal_func throws partway through (e.g.,
-     * OOM in GetIntArrayElements), the loop bails out at the
-     * ExceptionCheck. Slots [0, i) are NULL (already cleared); slot i is
-     * the obj reference still pinned (NOT DeleteLocalRef'd yet) — the
-     * cleanup at simpleRank_cleanup will release it. Slots [i+1, N) are
-     * untouched and the cleanup loop skips them (NULL). The current
-     * code is correct; this comment makes the invariant explicit. */
+    /* Marshal corpus — cache jobject refs for cleanup. */
     for (int i = 0; i < corpusSize; i++) {
         jobject obj = (*env)->GetObjectArrayElement(env, jcorpus, i);
         if ((*env)->ExceptionCheck(env)) goto simpleRank_cleanup;
@@ -1010,6 +1267,15 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     for (uint32_t i = 0; i < count; i++) {
         jobject jres = (*env)->NewObject(env, cls_search_result, ctor_search_result,
             results[i].index, results[i].score);
+        /* M-1 (review 0007 §M-1): NewObject can throw OOM and return NULL.
+         * Continuing JNI calls with a pending exception is UB per the spec.
+         * L-5 (review 0001 §L-5): delete partially-built jresults before
+         * jumping to cleanup. */
+        if (!jres || (*env)->ExceptionCheck(env)) {
+            (*env)->DeleteLocalRef(env, jresults);
+            jresults = NULL;
+            goto simpleRank_cleanup;
+        }
         (*env)->SetObjectArrayElement(env, jresults, i, jres);
         (*env)->DeleteLocalRef(env, jres);
     }
@@ -1063,6 +1329,8 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     }
     /* M2 (review 0004 §M2): clamp topK to corpus size, mirroring simpleRank C5. */
     if (topK > corpusSize) topK = corpusSize;
+    /* L2 (review 0002 §L2): zero-initialization is LOAD-BEARING for the cleanup
+     * path — see comment in simpleRank above.  Do NOT change to malloc. */
     fce_sem_func_t *corpus = (fce_sem_func_t *)calloc(corpusSize, sizeof(fce_sem_func_t));
     char **paths = (char **)calloc(corpusSize, sizeof(char *));
     jobject *corp_refs = (jobject *)calloc(corpusSize, sizeof(jobject));
@@ -1102,6 +1370,15 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     for (uint32_t i = 0; i < count; i++) {
         jobject jres = (*env)->NewObject(env, cls_search_result, ctor_search_result,
             results[i].index, results[i].score);
+        /* M-1 (review 0007 §M-1): NewObject can throw OOM and return NULL.
+         * Continuing JNI calls with a pending exception is UB per the spec.
+         * L-5 (review 0001 §L-5): delete partially-built jresults before
+         * jumping to cleanup. */
+        if (!jres || (*env)->ExceptionCheck(env)) {
+            (*env)->DeleteLocalRef(env, jresults);
+            jresults = NULL;
+            goto simpleSearch_cleanup;
+        }
         (*env)->SetObjectArrayElement(env, jresults, i, jres);
         (*env)->DeleteLocalRef(env, jres);
     }
@@ -1149,11 +1426,15 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
 
     /* H1 (review 0003 §H1): declare all pin pointers upfront, NULL-initialized,
      * so that goto flat_cleanup_query before any pin assignment does not read
-     * indeterminate stack values. Each pointer is assigned below at its pin site. */
+     * indeterminate stack values. Each pointer is assigned below at its pin site.
+     * J2 (review 0002 §J2): also declare results here — goto flat_cleanup_query
+     * can be reached before the original declaration site, and jumping over
+     * an uninitialized declaration is a maintenance trap. */
     const float *all_weights = NULL, *all_ri_vecs = NULL;
     const int   *all_indices = NULL, *tfidf_lens  = NULL;
     const float *q_weights   = NULL, *q_ri_vec    = NULL;
     const int   *q_indices   = NULL;
+    fce_sem_ranked_t *results = NULL;
 
     /* Null-guard the required array arguments BEFORE any GetArrayLength calls.
      * JNI spec says GetArrayLength(env, NULL) is undefined and crashes on HotSpot.
@@ -1162,7 +1443,10 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
      * should not be forced to allocate TF-IDF arrays that are then ignored. */
     if (!j_file_paths || !j_all_ri_vecs) {
         if ((*env)->ExceptionCheck(env)) return NULL;
-        (*env)->ThrowNew(env, cls_npe, "null array argument to nSimpleRankFlat");
+        /* J1 (review 0003 §J1): guard cls_npe for uniformity with every other
+         * throw site in this file.  Today JNI_OnLoad hard-fails if cls_npe
+         * is NULL, but the invariant is fragile to future relaxations. */
+        if (cls_npe) (*env)->ThrowNew(env, cls_npe, "null array argument to nSimpleRankFlat");
         return NULL;
     }
 
@@ -1304,7 +1588,6 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     }
 
     /* flat scorer does not use file paths — skip extraction entirely. */
-    fce_sem_ranked_t *results = NULL;
 
     /* Score all pairs in C */
     results = (fce_sem_ranked_t *)malloc(sizeof(fce_sem_ranked_t) * topK);
@@ -1322,6 +1605,15 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     for (uint32_t i = 0; i < count; i++) {
         jobject jres = (*env)->NewObject(env, cls_search_result, ctor_search_result,
             results[i].index, results[i].score);
+        /* M-1 (review 0007 §M-1): NewObject can throw OOM and return NULL.
+         * Continuing JNI calls with a pending exception is UB per the spec.
+         * L-5 (review 0001 §L-5): delete partially-built jresults before
+         * jumping to cleanup. */
+        if (!jres || (*env)->ExceptionCheck(env)) {
+            (*env)->DeleteLocalRef(env, jresults);
+            jresults = NULL;
+            goto flat_cleanup_results;
+        }
         (*env)->SetObjectArrayElement(env, jresults, i, jres);
         (*env)->DeleteLocalRef(env, jres);
     }
@@ -1352,6 +1644,16 @@ static jobjectArray build_search_results(JNIEnv *env, fce_sem_ranked_t *results,
     for (uint32_t i = 0; i < count; i++) {
         jobject jres = (*env)->NewObject(env, cls_search_result, ctor_search_result,
             results[i].index, results[i].score);
+        /* M-1 (review 0007 §M-1): NewObject can throw OOM and return NULL.
+         * Continuing JNI calls with a pending exception is UB per the spec.
+         * L-5 (review 0001 §L-5): delete the partially-built jresults before
+         * returning NULL — consistent with the file's DeleteLocalRef-on-every-path
+         * style.  The JVM would reclaim it on return anyway, but this makes the
+         * contract explicit and is required under PushLocalFrame. */
+        if (!jres || (*env)->ExceptionCheck(env)) {
+            (*env)->DeleteLocalRef(env, jresults);
+            return NULL;
+        }
         (*env)->SetObjectArrayElement(env, jresults, i, jres);
         (*env)->DeleteLocalRef(env, jres);
     }
@@ -1362,37 +1664,42 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     JNIEnv *env, jclass cls, jlong handle,
     jstring jquery, jint topK) {
     (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
-    fce_sem_corpus_t *corp = (fce_sem_corpus_t *)(uintptr_t)handle;
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle.
+     * The refcount protects the corpus during the parallel search
+     * even if close() is called concurrently from another thread. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
     if (topK <= 0) {
+        release_handle(handle);
         return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
     }
     /* C5 (review 0002-0002 §2.5): clamp topK to corpus size.
      * M1 (review 0005 §1.2): early-return on empty corpus — avoids malloc
      * amplification when doc_count == 0 and topK is large. */
     int doc_count = fce_sem_corpus_doc_count(corp);
-    if (doc_count <= 0) return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
+    if (doc_count <= 0) { release_handle(handle); return (*env)->NewObjectArray(env, 0, cls_search_result, NULL); }
     if (topK > doc_count) topK = doc_count;
     /* H1 (review 0005 §H1): null jstring → GetStringUTFChars(env, NULL, …) is UB
-     * and crashes the JVM. Throw NPE before reaching the JNI call.
+     * and crashes the JVM on HotSpot. Throw NPE before reaching the JNI call.
      * C7: return NULL (not empty array) for
      * consistency with other methods. */
-    if (!jquery) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "query is null"); return NULL; }
+    if (!jquery) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "query is null"); release_handle(handle); return NULL; }
     const char *query = (*env)->GetStringUTFChars(env, jquery, NULL);
     if (!query || (*env)->ExceptionCheck(env)) {
         if (query) (*env)->ReleaseStringUTFChars(env, jquery, query);
+        release_handle(handle);
         return NULL;
     }
 
     fce_sem_ranked_t *results = (fce_sem_ranked_t *)malloc(sizeof(fce_sem_ranked_t) * topK);
-    if (!results) { (*env)->ReleaseStringUTFChars(env, jquery, query); return NULL; }
+    if (!results) { (*env)->ReleaseStringUTFChars(env, jquery, query); release_handle(handle); return NULL; }
     uint32_t count = 0;
     fce_sem_search_query(corp, query, topK, results, &count, NULL);
     (*env)->ReleaseStringUTFChars(env, jquery, query);
 
     jobjectArray jresults = build_search_results(env, results, count);
     free(results);
+    release_handle(handle);
     return jresults;
 }
 
@@ -1400,37 +1707,40 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     JNIEnv *env, jclass cls, jlong handle,
     jstring jquery, jint topK) {
     (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
-    fce_sem_corpus_t *corp = (fce_sem_corpus_t *)(uintptr_t)handle;
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
     if (topK <= 0) {
+        release_handle(handle);
         return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
     }
     /* C5 (review 0002-0002 §2.5): clamp topK to corpus size.
      * M1 (review 0005 §1.2): early-return on empty corpus — avoids malloc
      * amplification when doc_count == 0 and topK is large. */
     int doc_count = fce_sem_corpus_doc_count(corp);
-    if (doc_count <= 0) return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
+    if (doc_count <= 0) { release_handle(handle); return (*env)->NewObjectArray(env, 0, cls_search_result, NULL); }
     if (topK > doc_count) topK = doc_count;
     /* H1 (review 0005 §H1): null jstring → GetStringUTFChars(env, NULL, …) is UB
-     * and crashes the JVM. Throw NPE before reaching the JNI call.
+     * and crashes the JVM on HotSpot. Throw NPE before reaching the JNI call.
      * C7: return NULL (not empty array) for
      * consistency with other methods. */
-    if (!jquery) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "query is null"); return NULL; }
+    if (!jquery) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "query is null"); release_handle(handle); return NULL; }
     const char *query = (*env)->GetStringUTFChars(env, jquery, NULL);
     if (!query || (*env)->ExceptionCheck(env)) {
         if (query) (*env)->ReleaseStringUTFChars(env, jquery, query);
+        release_handle(handle);
         return NULL;
     }
 
     fce_sem_ranked_t *results = (fce_sem_ranked_t *)malloc(sizeof(fce_sem_ranked_t) * topK);
-    if (!results) { (*env)->ReleaseStringUTFChars(env, jquery, query); return NULL; }
+    if (!results) { (*env)->ReleaseStringUTFChars(env, jquery, query); release_handle(handle); return NULL; }
     uint32_t count = 0;
     fce_sem_search_query_tfidf(corp, query, topK, results, &count, NULL);
     (*env)->ReleaseStringUTFChars(env, jquery, query);
 
     jobjectArray jresults = build_search_results(env, results, count);
     free(results);
+    release_handle(handle);
     return jresults;
 }
 
@@ -1438,56 +1748,61 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     JNIEnv *env, jclass cls, jlong handle,
     jstring jquery, jint topK) {
     (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
-    fce_sem_corpus_t *corp = (fce_sem_corpus_t *)(uintptr_t)handle;
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
     if (topK <= 0) {
+        release_handle(handle);
         return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
     }
     /* C5 (review 0002-0002 §2.5): clamp topK to corpus size.
      * M1 (review 0005 §1.2): early-return on empty corpus — avoids malloc
      * amplification when doc_count == 0 and topK is large. */
     int doc_count = fce_sem_corpus_doc_count(corp);
-    if (doc_count <= 0) return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
+    if (doc_count <= 0) { release_handle(handle); return (*env)->NewObjectArray(env, 0, cls_search_result, NULL); }
     if (topK > doc_count) topK = doc_count;
     /* H1 (review 0005 §H1): null jstring → GetStringUTFChars(env, NULL, …) is UB
-     * and crashes the JVM. Throw NPE before reaching the JNI call.
+     * and crashes the JVM on HotSpot. Throw NPE before reaching the JNI call.
      * C7: return NULL (not empty array) for
      * consistency with other methods. */
-    if (!jquery) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "query is null"); return NULL; }
+    if (!jquery) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "query is null"); release_handle(handle); return NULL; }
     const char *query = (*env)->GetStringUTFChars(env, jquery, NULL);
     if (!query || (*env)->ExceptionCheck(env)) {
         if (query) (*env)->ReleaseStringUTFChars(env, jquery, query);
+        release_handle(handle);
         return NULL;
     }
 
     fce_sem_ranked_t *results = (fce_sem_ranked_t *)malloc(sizeof(fce_sem_ranked_t) * topK);
-    if (!results) { (*env)->ReleaseStringUTFChars(env, jquery, query); return NULL; }
+    if (!results) { (*env)->ReleaseStringUTFChars(env, jquery, query); release_handle(handle); return NULL; }
     uint32_t count = 0;
     fce_sem_search_query_bruteforce(corp, query, topK, results, &count);
     (*env)->ReleaseStringUTFChars(env, jquery, query);
 
     jobjectArray jresults = build_search_results(env, results, count);
     free(results);
+    release_handle(handle);
     return jresults;
 }
 
 JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSearchCandidateCount(
     JNIEnv *env, jclass cls, jlong handle, jstring jquery) {
     (void)cls;
-    /* M3 (review 0004 §M3): guard against invalid (OOM sentinel / stale) handle. */
-    if (handle <= 0) return 0;
-    fce_sem_corpus_t *corp = (fce_sem_corpus_t *)(uintptr_t)handle;
+    /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return 0;
     /* H1 (review 0005 §H1): null jstring → GetStringUTFChars(env, NULL, …) is UB
-     * and crashes the JVM. Throw NPE before reaching the JNI call. */
-    if (!jquery) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "query is null"); return 0; }
+     * and crashes the JVM on HotSpot. Throw NPE before reaching the JNI call. */
+    if (!jquery) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "query is null"); release_handle(handle); return 0; }
     const char *query = (*env)->GetStringUTFChars(env, jquery, NULL);
     if (!query || (*env)->ExceptionCheck(env)) {
         if (query) (*env)->ReleaseStringUTFChars(env, jquery, query);
+        release_handle(handle);
         return 0;
     }
     int count = fce_sem_search_candidate_count(corp, query);
     (*env)->ReleaseStringUTFChars(env, jquery, query);
+    release_handle(handle);
     return count;
 }
 

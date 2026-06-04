@@ -70,6 +70,10 @@ void fce_log(FCELogLevel level, const char *msg, ...) {
         if ((size_t)pos < sizeof(line_buf) - 1) {
             pos += snprintf(line_buf + pos, sizeof(line_buf) - (size_t)pos, " %s=%s", key, val);
         }
+        /* L-2 (review 0006 §L-2): snprintf returns the number of chars that
+         * WOULD have been written, so pos can exceed sizeof(line_buf). Normalize
+         * after each write so the next snprintf call computes a valid size. */
+        if (pos > (int)sizeof(line_buf) - 1) pos = (int)sizeof(line_buf) - 1;
     }
     va_end(args);
 

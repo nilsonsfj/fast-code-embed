@@ -309,22 +309,58 @@ public class FastCodeEmbedTest {
         });
 
         System.out.println("\nProximity:");
-        test("same file → 1.10", () -> {
-            /* Why 1.10? The proximity algorithm counts path components that
-             * match between the two paths. For "src/handler.c" vs itself:
+        test("same file → 1.05", () -> {
+            /* Why 1.05? The proximity algorithm counts only directory components
+             * that match between two paths. For "src/handler.c" vs itself:
              *   - "src" matches → shared_dirs = 1
-             *   - filename "handler.c" matches → shared_dirs = 2
              *   - total_dirs (max slashes) = 1, so max_dirs + 1 = 2
-             *   - ratio = shared_dirs / (max_dirs + 1) = 2 / 2 = 1.0
-             *   - proximity = 1.0 + 1.0 * 0.10 (PROX_MAX_BOOST) = 1.10
+             *   - ratio = shared_dirs / (max_dirs + 1) = 1 / 2 = 0.5
+             *   - proximity = 1.0 + 0.5 * 0.10 (PROX_MAX_BOOST) = 1.05
              * Different prefixes ("src/handler.c" vs "lib/utils.c") share
              * zero path components → ratio = 0 → proximity = 1.0. */
             float p = FastCodeEmbed.proximity("src/handler.c", "src/handler.c");
-            assertEquals(1.10f, p, 0.001f, "proximity");
+            assertEquals(1.05f, p, 0.001f, "proximity");
         });
         test("different files → 1.0", () -> {
             float p = FastCodeEmbed.proximity("src/handler.c", "lib/utils.c");
             assertEquals(1.0f, p, 0.001f, "proximity");
+        });
+
+        System.out.println("\nCorpus lifecycle:");
+        test("close() cleans up cleanly (no SIGTRAP at shutdown)", () -> {
+            /* Regression test for SIGTRAP at JVM shutdown.  The Cleaner thread
+             * could race with JNI_OnUnload if close() didn't deregister the
+             * Cleaner action.  This test creates and closes a corpus, then the
+             * JVM exits cleanly (no Trace/BPT trap). */
+            try (Corpus corp = new Corpus()) {
+                String[][] docs = new String[500][];
+                for (int i = 0; i < 500; i++) {
+                    docs[i] = new String[]{"token_" + i, "common", "shared"};
+                }
+                corp.addDocsBatch(docs);
+                corp.complete();
+                /* Exercise query to ensure native resources are alive. */
+                SearchResult[] r = FastCodeEmbed.searchQuery(corp, "token_0 common", 10);
+                assertTrue(r.length > 0, "should return results");
+            }
+            /* After try-with-resources, the corpus is closed and the Cleaner
+             * is deregistered.  If close() forgot to call cleanable.clean(),
+             * the Cleaner thread would attempt native calls during JVM shutdown,
+             * causing SIGTRAP (signal 5 / Trace/BPT trap). */
+        });
+
+        test("double close() is safe", () -> {
+            Corpus corp = new Corpus();
+            corp.addDocsBatch(new String[][]{{"a", "b"}, {"c", "d"}});
+            corp.complete();
+            corp.close();
+            corp.close(); /* must not crash or double-free */
+        });
+
+        test("close before complete is safe", () -> {
+            Corpus corp = new Corpus();
+            corp.addDocsBatch(new String[][]{{"x", "y"}});
+            corp.close(); /* finalize was never called */
         });
 
         System.out.println("\n=========================");

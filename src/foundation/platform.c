@@ -205,8 +205,8 @@ int fce_nprocs(void) {
     if (sysctlbyname("hw.ncpu", &ncpu, &len, NULL, 0) == 0 && ncpu > 0) {
         return ncpu;
     }
-    enum { FILE_EXISTS = 1 };
-    return FILE_EXISTS;
+    enum { MIN_NPROCS = 1 };
+    return MIN_NPROCS;
 #else
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int)n : 1;
@@ -266,7 +266,13 @@ extern char **environ;
 #endif
 
 /* Safe getenv: iterates environ directly (NOT safe with concurrent setenv/putenv).
- * Only call from single-threaded initialization paths. Writes result to buf. */
+ * M-1 (review 0001 §M-1): the environ array can be reallocated by concurrent
+ * setenv/putenv — a concurrent reader would dereference freed memory.  This
+ * function is safe against concurrent getenv() calls (each copies to its own
+ * buffer) but NOT against concurrent setenv/putenv.
+ * Safe for: init paths, infrequent calls, or calls where the caller accepts
+ * the risk.  NOT safe for hot concurrent paths — cache the result at init
+ * instead (see FCE_BRUTE_WORKERS / FCE_STACK_SIZE in semantic.c / worker_pool.c). */
 const char *fce_safe_getenv(const char *name, char *buf, size_t buf_sz, const char *fallback) {
     if (buf_sz == 0) return NULL;  /* L4 (review 0003 §L4): prevent underflow */
     char **env = FCE_ENVIRON;
@@ -276,10 +282,12 @@ const char *fce_safe_getenv(const char *name, char *buf, size_t buf_sz, const ch
             if (strncmp(*env, name, nlen) == 0 && (*env)[nlen] == '=') {
                 const char *val = *env + nlen + 1;
                 snprintf(buf, buf_sz, "%s", val);
-                /* C8: detect truncation — if the source
+                /* M-1 (review 0001 §M-1): detect truncation — if the source
                  * value is longer than the buffer can hold, reject it to
-                 * prevent strtol/strtod from parsing a truncated number. */
-                if (strlen(val) >= buf_sz - 1) {
+                 * prevent strtol/strtod from parsing a truncated number.
+                 * A value of exactly buf_sz-1 bytes fits (with NUL), so the
+                 * check is > buf_sz-1 (i.e. >= buf_sz). */
+                if (strlen(val) > buf_sz - 1) {
                     buf[0] = '\0';
                     return NULL;
                 }
