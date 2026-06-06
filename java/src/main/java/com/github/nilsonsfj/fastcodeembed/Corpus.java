@@ -57,10 +57,17 @@ public class Corpus implements AutoCloseable {
 
     /** Action registered with the Cleaner. Holds the native handle only. */
     private static final class CloseAction implements Runnable {
-        private volatile long h;
-        CloseAction(long handle) { this.h = handle; }
+        private final java.util.concurrent.atomic.AtomicLong h;
+        CloseAction(long handle) { this.h = new java.util.concurrent.atomic.AtomicLong(handle); }
         @Override public void run() {
-            if (h != 0) { FastCodeEmbed.freeCorpus(h); h = 0; }
+            /* JA-05: Use getAndSet(0) for atomic
+             * check-and-clear. The old volatile check-then-act had a TOCTOU
+             * race: the Cleaner thread could read h as non-zero, then the
+             * explicit close() thread sets h to 0 and frees the corpus, then
+             * the Cleaner thread also frees it — double-free. getAndSet(0)
+             * guarantees exactly one thread sees the non-zero handle. */
+            long v = h.getAndSet(0);
+            if (v != 0) { FastCodeEmbed.freeCorpus(v); }
         }
     }
 
@@ -141,9 +148,7 @@ public class Corpus implements AutoCloseable {
         int before = FastCodeEmbed.getDocCount(handle);
         FastCodeEmbed.addDocsBatch(handle, docs, maxLen);
         int added = FastCodeEmbed.getDocCount(handle) - before;
-        /* Some docs may be rejected by native (count<=0 or >512). We don't
-         * know which ones, so we use a placeholder count and let the
-         * docPaths stay synced only by count, not by per-doc mapping. */
+        /* No path mapping needed — add empty strings for all accepted docs. */
         for (int i = 0; i < added; i++) docPaths.add("");
     }
 
@@ -165,15 +170,25 @@ public class Corpus implements AutoCloseable {
             if (doc.length > maxLen) maxLen = doc.length;
         }
         int before = FastCodeEmbed.getDocCount(handle);
-        FastCodeEmbed.addDocsBatch(handle, docs, maxLen);
+        int[] docMap = FastCodeEmbed.addDocsBatch(handle, docs, maxLen);
         int added = FastCodeEmbed.getDocCount(handle) - before;
-        /* Same caveat as addDocsBatch(docs): if some docs are rejected by
-         * native, the path→doc mapping is not preserved (paths are still
-         * tracked in order, but rejected docs are skipped). For most use
-         * cases (well-formed token sets) this matches the native state. */
-        for (int i = 0; i < added; i++) {
-            String p = paths[i] != null ? paths[i] : "";
-            docPaths.add(p);
+        /* M-07: use docMap to map paths correctly.
+         * docMap[d] is the index of doc d in the valid docs list, or -1 if
+         * rejected. We iterate all docs and only add paths for accepted ones. */
+        if (docMap != null) {
+            for (int d = 0; d < docMap.length && added > 0; d++) {
+                if (docMap[d] >= 0) {
+                    String p = paths[d] != null ? paths[d] : "";
+                    docPaths.add(p);
+                    added--;
+                }
+            }
+        } else {
+            /* Fallback: if docMap is NULL (OOM), use sequential mapping. */
+            for (int i = 0; i < added; i++) {
+                String p = paths[i] != null ? paths[i] : "";
+                docPaths.add(p);
+            }
         }
     }
 
@@ -466,7 +481,7 @@ public class Corpus implements AutoCloseable {
     public synchronized void close() {
         long h = handle;
         handle = 0;
-        closeAction.h = 0;
+        closeAction.h.set(0);
         if (h != 0) FastCodeEmbed.freeCorpus(h);
         /* Deregister the Cleaner so it doesn't run during JVM shutdown.
          * Without this, the Cleaner thread may attempt to call into native

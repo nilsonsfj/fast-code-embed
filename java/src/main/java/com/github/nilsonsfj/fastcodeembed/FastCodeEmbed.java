@@ -240,8 +240,8 @@ public final class FastCodeEmbed {
     static long createCorpus() { return nCreateCorpus(); }
     static void freeCorpus(long handle) { nFreeCorpus(handle); }
     static void addDoc(long handle, String[] tokens) { nAddDoc(handle, tokens); }
-    static void addDocsBatch(long handle, String[][] docs, int maxTokensPerDoc) {
-        nAddDocsBatch(handle, docs, maxTokensPerDoc);
+    static int[] addDocsBatch(long handle, String[][] docs, int maxTokensPerDoc) {
+        return nAddDocsBatch(handle, docs, maxTokensPerDoc);
     }
     static boolean finalizeCorpus(long handle) { return nFinalizeCorpus(handle); }
     static void addDocsTokenized(long handle, String[] names) { nAddDocsTokenized(handle, names); }
@@ -256,7 +256,7 @@ public final class FastCodeEmbed {
     private static native long nCreateCorpus();
     private static native void nFreeCorpus(long handle);
     private static native void nAddDoc(long handle, String[] tokens);
-    private static native void nAddDocsBatch(long handle, String[][] docs, int maxTokensPerDoc);
+    private static native int[] nAddDocsBatch(long handle, String[][] docs, int maxTokensPerDoc);
     private static native boolean nFinalizeCorpus(long handle);
     private static native void nAddDocsTokenized(long handle, String[] names);
     private static native int nAddFiles(long handle, String[] paths, int chunkSize, int[] fileDocCounts, int maxTokensPerChunk);

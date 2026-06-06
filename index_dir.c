@@ -283,7 +283,7 @@ int main(int argc, char **argv) {
 
             /* Flush batch when full */
             if (batch_used >= batch_size) {
-                fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, batch_used, MAX_TOKENS_PER_CHUNK);
+                fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, batch_used, MAX_TOKENS_PER_CHUNK, NULL);
                 /* Free token strings (add_docs_batch doesn't take ownership) */
                 for (int i = 0; i < batch_used; i++) {
                     int base2 = i * MAX_TOKENS_PER_CHUNK;
@@ -299,7 +299,7 @@ int main(int argc, char **argv) {
 
     /* Flush remaining batch */
     if (batch_used > 0) {
-        fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, batch_used, MAX_TOKENS_PER_CHUNK);
+        fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, batch_used, MAX_TOKENS_PER_CHUNK, NULL);
         for (int i = 0; i < batch_used; i++) {
             int base = i * MAX_TOKENS_PER_CHUNK;
             for (int t = 0; t < token_counts[i]; t++) {

@@ -17,21 +17,21 @@
 
 /* ── Safe memory ──────────────────────────────────────────────── */
 
-/* Safe realloc: frees old pointer on failure instead of leaking it.
+/* realloc_or_free: frees old pointer on failure instead of leaking it.
  * Returns NULL on allocation failure (old memory is freed).
  *
  * WARNING: This is only safe for arrays whose elements do NOT own additional
  * heap memory. If `ptr` points to an array of heap-allocated pointers
  * (e.g. char *[]) and the realloc fails, every string the old array owned
- * is leaked — safe_realloc frees the array itself but not the strings
+ * is leaked — realloc_or_free frees the array itself but not the strings
  * each element points at. For such cases, use a manual
  *     tmp = realloc(ptr, new_size);
  *     if (!tmp) { / * keep ptr, free individual elements * / }
  * pattern instead. The safe_grow macro below inherits this restriction. */
-static inline void *safe_realloc(void *ptr, size_t size) {
-    enum { SAFE_REALLOC_MIN = 1 };
+static inline void *realloc_or_free(void *ptr, size_t size) {
+    enum { REALLOC_OR_FREE_MIN = 1 };
     if (size == 0) {
-        size = SAFE_REALLOC_MIN;
+        size = REALLOC_OR_FREE_MIN;
     }
     void *tmp = realloc(ptr, size);
     if (!tmp) {
@@ -73,17 +73,17 @@ static inline void safe_buf_free_impl(void **buf, size_t *count) {
 #define safe_buf_free(buf, countp) safe_buf_free_impl((void **)(void *)&(buf), (countp))
 
 /* Safe grow: doubles capacity and reallocs when count reaches cap.
- * Note: uses safe_realloc which frees the old buffer on failure, so this is
+ * Note: uses realloc_or_free which frees the old buffer on failure, so this is
  * only appropriate for arrays whose elements don't own additional heap memory.
  * For arrays of heap-allocated pointers (e.g. char *[]), use a manual
- * realloc+cleanup pattern instead — see warning on safe_realloc above.
+ * realloc+cleanup pattern instead — see warning on realloc_or_free above.
  * Usage: safe_grow(arr, count, cap, growth_factor)
  * After the call, arr is the new buffer (NULL on OOM). */
 #define safe_grow(arr, n, cap, factor)                                                             \
     do {                                                                                           \
         if ((size_t)(n) >= (size_t)(cap)) {                                                        \
             (cap) *= (factor);                                                                     \
-            (arr) = safe_realloc((arr), (size_t)(cap) * sizeof(*(arr)));                           \
+            (arr) = realloc_or_free((arr), (size_t)(cap) * sizeof(*(arr)));                        \
         }                                                                                          \
     } while (0)
 

@@ -194,7 +194,7 @@ int main(void) {
             all_tokens[c * max_tok + t] = (char *)corpus[c].tokens[t];
         }
     }
-    fce_sem_corpus_add_docs_batch(corp_batch, all_tokens, token_counts, CORPUS_SIZE, max_tok);
+    fce_sem_corpus_add_docs_batch(corp_batch, all_tokens, token_counts, CORPUS_SIZE, max_tok, NULL);
     fce_sem_corpus_finalize(corp_batch);
     double batch_ms = ms_since(t0);
     printf("  corpus build (batch)         %8.2f ms  (%.1fx faster)\n",

@@ -77,6 +77,11 @@ public class FuncDescriptor {
 
     /**
      * Set the 768-dimensional Random Indexing vector.
+     * <p>
+     * L-9: The dimension is hardcoded to 768 to match
+     * {@code FCE_SEM_DIM} in the C library. If the library is compiled with
+     * {@code FCE_SEM_DIM_256}, the JNI layer still uses 768 (the preprocessor
+     * dimension), so the Java bindings only support the default 768-dim build.
      * Typically built by summing enriched token vectors from a finalized corpus.
      *
      * @param vec float array of length 768

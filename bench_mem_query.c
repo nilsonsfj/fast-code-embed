@@ -287,7 +287,7 @@ int main(int argc, char **argv) {
                  * Rejected docs (vocab cap, doc cap, OOM rollback) don't appear in
                  * the corpus, so their path entries must be removed. */
                 int before = fce_sem_corpus_doc_count(corp);
-                fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, batch_used, MAX_TOKENS_PER_CHUNK);
+                fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, batch_used, MAX_TOKENS_PER_CHUNK, NULL);
                 int accepted = fce_sem_corpus_doc_count(corp) - before;
                 if (accepted < batch_used && doc_path_count >= (batch_used - accepted)) {
                     doc_path_count -= (batch_used - accepted);
@@ -303,7 +303,7 @@ int main(int argc, char **argv) {
     }
     if (batch_used > 0) {
         int before = fce_sem_corpus_doc_count(corp);
-        fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, batch_used, MAX_TOKENS_PER_CHUNK);
+        fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, batch_used, MAX_TOKENS_PER_CHUNK, NULL);
         int accepted = fce_sem_corpus_doc_count(corp) - before;
         if (accepted < batch_used && doc_path_count >= (batch_used - accepted)) {
             doc_path_count -= (batch_used - accepted);

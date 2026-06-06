@@ -226,9 +226,13 @@ void fce_sem_corpus_add_doc(fce_sem_corpus_t *corpus, const char **tokens, int c
  * `all_tokens` layout: all_tokens[f * max_tokens_per_doc + t] = token pointer.
  * `token_counts[f]` = number of tokens in document f.
  * This replaces a loop of fce_sem_corpus_add_doc() calls.
+ * `doc_map_out` (optional): if non-NULL, receives a malloc'd array of
+ * doc_count ints where doc_map_out[d] is the index of doc d in the valid
+ * docs list, or -1 if doc d was rejected. Caller must free().
  * THREAD-SAFETY: not thread-safe — see fce_sem_corpus_add_doc. */
 void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
-                                   const int *token_counts, int doc_count, int max_tokens_per_doc);
+                                   const int *token_counts, int doc_count,
+                                   int max_tokens_per_doc, int *doc_map_out);
 
 /* Finalize: compute IDF, build enriched token vectors via co-occurrence.
  * Returns 0 on success, -1 on failure (OOM). On failure the corpus is NOT

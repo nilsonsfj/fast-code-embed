@@ -9,6 +9,7 @@
 #include "foundation/profile.h"
 #include "foundation/log.h"
 #include "foundation/compat.h"
+#include "foundation/platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +26,11 @@ enum {
 bool fce_profile_active = false;
 
 void fce_profile_init(void) {
-    const char *env = getenv("FCE_PROFILE");
+    /* C-8: use fce_safe_getenv instead of raw
+     * getenv() to be consistent with the rest of the codebase and avoid
+     * a data race if another thread calls setenv/putenv concurrently. */
+    char env_buf[4];
+    const char *env = fce_safe_getenv("FCE_PROFILE", env_buf, sizeof(env_buf), NULL);
     if (env && env[0] != '\0' && env[0] != '0') {
         fce_profile_active = true;
     }

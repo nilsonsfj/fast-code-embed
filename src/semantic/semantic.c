@@ -27,9 +27,7 @@
 #include <math.h>
 #include <limits.h>
 #include <sys/stat.h>
-#ifndef NDEBUG
-#include <assert.h>
-#endif
+#include <time.h>
 #include <fenv.h>
 #if defined(__linux__)
 #include <malloc.h>
@@ -48,7 +46,6 @@ static inline uint32_t fce_htole32(uint32_t v) {
     return v;
 #endif
 }
-#include <time.h>
 #include <assert.h>
 #include "embed/code_vectors.h"
 
@@ -56,13 +53,9 @@ static inline uint32_t fce_htole32(uint32_t v) {
 #include "xxhash/xxhash.h"
 
 #include <ctype.h>
-#include <math.h>
 #include <stdatomic.h>
 #include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <errno.h>
 #ifndef _WIN32
 #include <sched.h>
@@ -72,14 +65,14 @@ static inline uint32_t fce_htole32(uint32_t v) {
 
 enum {
     /* L-5 (review 0005 §L-5): tokens >= 256 bytes are silently discarded
-     * (not truncated). Non-ASCII bytes (>= 0x80) are kept as-is with no
-     * UTF-8 decoding — this matches the embedding model's byte-level
-     * tokenization. Both behaviors are intentional design choices. */
+     * (not truncated). Only ASCII alphanumeric bytes [a-zA-Z0-9] are kept;
+     * non-ASCII bytes (>= 0x80) are dropped. Behavior is locale-independent
+     * (explicit ASCII-range checks, not isalnum/tolower). */
     FCE_TOKEN_BUF_LEN = 256,
     FCE_CORPUS_INIT_CAP = 4096,
     FCE_DOC_TOKENS_INIT = 64,
     FCE_RI_SEED_BASE = 0x52494E44, /* "RIND" */
-    FCE_PM_UNINIT = 0, FCE_PM_INIT = 1, FCE_PM_READY = 2,
+    FCE_PM_UNINIT = 0, FCE_PM_INIT = 1, FCE_PM_READY = 2, FCE_PM_FAILED = 3,
     /* Review 0007 §4.1: hard caps on vocabulary and document count.
      * ~4x the measured linux-source corpus (193K docs, ~1M vocab tokens).
      * Prevents a hostile/untrusted caller from OOMing the JVM host. */
@@ -225,12 +218,9 @@ bool fce_sem_is_enabled(void) {
  * LIMITATIONS (review 0002 §5.7 / 0001 §5.6):
  *   - Does NOT include `'`, `@`, `|` (rare in source code but present in
  *     template strings, decorators, and bitwise-or patterns respectively).
- *   - Does NOT handle multi-byte UTF-8 sequences. The function operates on
- *     bytes; non-ASCII bytes (>= 0x80) are kept as part of the token by
- *     the `isalnum` branch below. This is acceptable for typical ASCII
- *     identifiers and most Unicode identifiers that decompose at the
- *     camelBreak point anyway. Add additional delimiters here if your
- *     target corpus uses them. */
+ *   - Only ASCII alphanumeric bytes [a-zA-Z0-9] are accepted into tokens;
+ *     non-ASCII bytes (>= 0x80) are dropped (not kept as part of the token).
+ *     Add additional delimiters here if your target corpus uses them. */
 static bool is_token_delim(char c) {
     return c == '.' || c == '/' || c == '_' || c == '-' || c == ' ' || c == '(' || c == ')' ||
            c == ',' || c == ':';
@@ -239,10 +229,11 @@ static bool is_token_delim(char c) {
 /* True for a token break point at position i in an identifier.
  * Splits on:
  *   - lowercase → uppercase  (camelCase: "parseHTTP" → "parse", "http")
- *   - letter → digit        (utf8Decode → "utf8", "decode")
  *   - digit → uppercase letter (parse2JSON → "parse2", "json")
  *   - uppercase → uppercase + lowercase (acronym boundary: "HTTPServer" → "http", "server")
- * Does NOT split digit→lowercase so "parse2" stays as one token. */
+ * Does NOT split letter→digit — letter+digit runs stay together so
+ * identifiers like utf8, sha256, base64, int32, http2 are kept as one
+ * token (utf8Decode → "utf8", "decode"; parse2 → "parse2"). */
 static bool is_camel_break(const char *name, int i) {
     if (i <= 0) return false;
     /* L-2 (review 0001 §L-2): self-defending guard — name[i] must be non-NUL
@@ -259,8 +250,6 @@ static bool is_camel_break(const char *name, int i) {
     bool p_lo = p >= 'a' && p <= 'z';
     /* lowercase → uppercase: camelCase */
     if (c_up && p_lo) return true;
-    /* letter/digit → digit: utf8Decode */
-    if (c_dg && !p_dg) return true;
     /* digit → uppercase letter: parse2JSON */
     if (p_dg && c_up) return true;
     /* H-1 (review 0008 §H.1): acronym boundary — two+ uppercase followed by
@@ -327,9 +316,13 @@ int fce_sem_tokenize(const char *name, char **out, int max_out) {
                 continue;
             }
         }
-        if (isalnum((unsigned char)c)) {
+        bool c_lo = (c >= 'a' && c <= 'z');
+        bool c_up = (c >= 'A' && c <= 'Z');
+        bool c_dg = (c >= '0' && c <= '9');
+        if (c_lo || c_up || c_dg) {
+            char lc = c_up ? (char)(c + ('a' - 'A')) : c;
             if (blen < FCE_TOKEN_BUF_LEN - 1) {
-                buf[blen++] = (char)tolower((unsigned char)c);
+                buf[blen++] = lc;
             } else {
                 /* Token exceeds buffer — mark overflow, fce_flush_token will discard it. */
                 blen = FCE_TOKEN_BUF_LEN;
@@ -583,7 +576,7 @@ void fce_sem_corpus_add_docs_tokenized(fce_sem_corpus_t *corpus,
         return;
     }
     fce_sem_tokenize_batch(names, count, all_tokens, token_counts, max_tok);
-    fce_sem_corpus_add_docs_batch(corpus, all_tokens, token_counts, count, max_tok);
+    fce_sem_corpus_add_docs_batch(corpus, all_tokens, token_counts, count, max_tok, NULL);
     /* Free the token strings (batch_add_docs_batch doesn't take ownership) */
     for (int f = 0; f < count; f++) {
         for (int t = 0; t < token_counts[f]; t++) {
@@ -703,9 +696,11 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
          * Warn once so batch indexers can detect corruption. */
         if (nread != file_len) {
             fce_log_warn("add_files.truncated",
-                         "path", paths[fi],
-                         "expected", (long)file_len,
-                         "got", (long)nread);
+                         "path", paths[fi]);
+            fce_log_int(FCE_LOG_WARN, "add_files.truncated",
+                        "expected", (int64_t)file_len);
+            fce_log_int(FCE_LOG_WARN, "add_files.truncated",
+                        "got", (int64_t)nread);
         }
 
         /* Chunk by } boundaries, tokenize each chunk.
@@ -747,7 +742,7 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
             if (batch_used >= batch_cap) {
                 int before = fce_sem_corpus_doc_count(corpus);
                 fce_sem_corpus_add_docs_batch(corpus, all_tokens, token_counts,
-                                               batch_used, max_tok);
+                                               batch_used, max_tok, NULL);
                 /* C2 (review 0003 §1.2): distribute rejected-doc deficit across
                  * the files that contributed to this batch, going from the most-
                  * recent file backwards, clamping each at 0. This prevents any
@@ -791,7 +786,7 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
     if (batch_used > 0) {
         int before = fce_sem_corpus_doc_count(corpus);
         fce_sem_corpus_add_docs_batch(corpus, all_tokens, token_counts,
-                                       batch_used, max_tok);
+                                       batch_used, max_tok, NULL);
         int accepted = fce_sem_corpus_doc_count(corpus) - before;
         if (accepted < batch_used) {
             int deficit = batch_used - accepted;
@@ -983,7 +978,8 @@ static void ensure_abbrev_ht(const abbrev_pair_t *abbrevs) {
     }
     fce_once(&g_pretrained_once, init_pretrained_mutex);
     fce_mutex_lock(&g_init_mutex);
-    if (atomic_load_explicit(&g_abbrev_ht_state, memory_order_acquire) != FCE_PM_READY) {
+    if (atomic_load_explicit(&g_abbrev_ht_state, memory_order_acquire) != FCE_PM_READY
+        && atomic_load_explicit(&g_abbrev_ht_state, memory_order_acquire) != FCE_PM_FAILED) {
         g_abbrev_ht = calloc(ABBREV_HT_SIZE, sizeof(abbrev_ht_entry_t));
         if (g_abbrev_ht) {
             for (int a = 0; abbrevs[a].abbrev; a++) {
@@ -997,8 +993,13 @@ static void ensure_abbrev_ht(const abbrev_pair_t *abbrevs) {
                 g_abbrev_ht[idx].expanded = abbrevs[a].expanded;
             }
             atomic_store_explicit(&g_abbrev_ht_state, FCE_PM_READY, memory_order_release);
+        } else {
+            /* R-03: on calloc failure, mark as FAILED
+             * so subsequent calls don't retry on every tokenization (perf degrad).
+             * Abbreviation expansion is simply skipped — tokens pass through
+             * unchanged. */
+            atomic_store_explicit(&g_abbrev_ht_state, FCE_PM_FAILED, memory_order_release);
         }
-        /* On calloc failure, leave state as FCE_PM_UNINIT so next call can retry. */
     }
     fce_mutex_unlock(&g_init_mutex);
 }
@@ -1173,16 +1174,43 @@ void fce_sem_random_index(const char *token, fce_sem_vec_t *out) {
     atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
 
     /* Fallback: sparse random vector for tokens not in pretrained vocab.
+     * H-02: Use collision-merging like build_src_entry
+     * so both code paths produce the same vector for the same token. Without
+     * merging, colliding hash positions accumulate (e.g. +1 + +1 = +2),
+     * producing magnitude > 1.0 inconsistent with pretrained vectors.
      * L4: hash includes NUL terminator for consistency with abbreviation and
      * token-dedup hashing. Position mod 768 gives slight bias (acceptable for RI). */
 sparse_fallback:;
     uint64_t seed = XXH3_64bits(token, strlen(token) + 1);
+    uint16_t tmp_idx[FCE_SEM_SPARSE_NNZE];
+    float tmp_val[FCE_SEM_SPARSE_NNZE];
+    int count = 0;
     for (int i = 0; i < FCE_SEM_SPARSE_NNZE; i++) {
         uint32_t le_i = fce_htole32((uint32_t)i);
         uint64_t h = XXH3_64bits_withSeed(&le_i, sizeof(le_i), seed + FCE_RI_SEED_BASE);
         int pos = (int)(h % FCE_SEM_DIM);
         float sign = (h & 1) ? FCE_SEM_UNIT_POS : -FCE_SEM_UNIT_POS;
-        out->v[pos] += sign;
+        /* Merge collisions */
+        int found = FCE_NOT_FOUND;
+        for (int j = 0; j < count; j++) {
+            if (tmp_idx[j] == (uint16_t)pos) {
+                found = j;
+                break;
+            }
+        }
+        if (found >= 0) {
+            tmp_val[found] += sign;
+        } else {
+            tmp_idx[count] = (uint16_t)pos;
+            tmp_val[count] = sign;
+            count++;
+        }
+    }
+    /* Write non-zero entries */
+    for (int j = 0; j < count; j++) {
+        if (tmp_val[j] != 0.0F) {
+            out->v[tmp_idx[j]] = tmp_val[j];
+        }
     }
 }
 
@@ -1235,6 +1263,10 @@ struct fce_sem_corpus {
     int entry_cap;
     int doc_count;
     bool finalized;
+    /* H-01: track if finalize was attempted but failed.
+     * On failure, doc_vectors is freed but doc_token_ids may still be valid.
+     * Retrying finalize would crash (NULL deref on doc_vectors). Block retry. */
+    bool finalize_failed;
 
     /* Sparse vector storage (top-K NNZ per vector). */
     int sparse_nnz;              /* non-zero entries per vector (0 = dense mode) */
@@ -1522,7 +1554,8 @@ static void batch_resolve_worker(int worker_id, void *ctx_ptr) {
 }
 
 void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
-                                   const int *token_counts, int doc_count, int max_tokens_per_doc) {
+                                   const int *token_counts, int doc_count,
+                                   int max_tokens_per_doc, int *doc_map_out) {
     if (!corpus || !all_tokens || !token_counts || doc_count <= 0 || corpus->finalized) {
         return;
     }
@@ -1561,6 +1594,12 @@ void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
         } else {
             doc_map[d] = -1; /* sentinel: skip this doc */
         }
+    }
+
+    /* M-07: if caller wants the doc_map, copy it
+     * so they can map paths to the correct docs (rejected docs are skipped). */
+    if (doc_map_out) {
+        memcpy(doc_map_out, doc_map, (size_t)doc_count * sizeof(int));
     }
 
     if (valid_doc_count == 0) {
@@ -2012,6 +2051,11 @@ static void cooccur_int8_one_target(cooccur_int8_ctx_t *cc, int tid, fce_sem_vec
 }
 
 static void cooccur_worker_int8(int worker_id, void *ctx_ptr) {
+    /* C-07: cooccur_worker_sparse has a bounds guard
+     * on worker_id vs scratch_count, but cooccur_worker_int8 does NOT need one
+     * because it doesn't use the scratch array at all — work is dispatched via
+     * the atomic next_chunk counter, not worker_id. The (void)worker_id cast
+     * confirms this parameter is unused. */
     (void)worker_id;
     cooccur_int8_ctx_t *cc = ctx_ptr;
     while (true) {
@@ -2497,9 +2541,11 @@ void fce_sem_corpus_set_sparse(fce_sem_corpus_t *corpus, int nnz) {
 }
 
 int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
-    if (!corpus || corpus->finalized) {
-        return 0;
-    }
+    /* H-01: block retry after failure — the corpus
+     * is in an inconsistent state (doc_vectors freed but doc_token_ids may
+     * still be valid). Retrying would crash on NULL deref. */
+    if (!corpus || corpus->finalized) return 0;
+    if (corpus->finalize_failed) return -1;
 
     /* L-1 (review 0001 §L-1): the per-vector FP rounding pin in
      * fce_quantize_f32_768_avx2 (simd_dot768.h) already ensures the SIMD
@@ -2533,12 +2579,14 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
 
     reverse_index_t *rev = build_reverse_index(corpus);
     if (!rev) {
+        corpus->finalize_failed = true;
         return -1;
     }
     fce_sem_src_entry_t *src_entries =
         calloc((size_t)corpus->entry_count, sizeof(fce_sem_src_entry_t));
     if (!src_entries) {
         free_reverse_index(rev);
+        corpus->finalize_failed = true;
         return -1;
     }
 
@@ -2555,6 +2603,7 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
             corpus->enriched_vecs_q = NULL;
             free(src_entries);
             free_reverse_index(rev);
+            corpus->finalize_failed = true;
             return -1;
         }
     }
@@ -2582,6 +2631,7 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
         free(src_entries);
         free_reverse_index(rev);
         fce_log_error("fce_sem_corpus_finalize", "detail", "pass1 double-OOM; finalize failed");
+        corpus->finalize_failed = true;
         return -1;
     }
     finalize_pass2(&params);
@@ -2632,6 +2682,7 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
         free(src_entries);
         free_reverse_index(rev);
         fce_log_error("fce_sem_corpus_finalize", "detail", "doc_vectors calloc failed");
+        corpus->finalize_failed = true;
         return -1;
     }
     docvec_ctx_t dctx = {
@@ -2671,6 +2722,7 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
             free(corpus->doc_vectors); corpus->doc_vectors = NULL;
             free(src_entries);
             free_reverse_index(rev);
+            corpus->finalize_failed = true;
             return -1;
         }
     }
@@ -3012,6 +3064,7 @@ fail_finalize:
      * or retry with sparse disabled. */
     free(src_entries);
     free_reverse_index(rev);
+    corpus->finalize_failed = true;
     return -1;
 }
 
@@ -4156,11 +4209,22 @@ static void tls_cand_scratch_destructor(void *ptr) {
     }
 }
 static void tls_cand_key_init(void) {
-    pthread_key_create(&tls_cand_key, tls_cand_scratch_destructor);
+    /* C-4: pthread_key_create can fail if the system
+     * runs out of TLS keys. On failure tls_cand_key is 0 (zero-init) and
+     * subsequent pthread_getspecific/setspecific on slot 0 is UB. The
+     * documented maximum is PTHREAD_KEYS_MAX (typically 128-512); in practice
+     * a JVM already uses ~50 keys. We cannot recover gracefully, so log and
+     * leave tls_cand_key as 0 — tls_cand_scratch_get will return NULL which
+     * callers already handle (collect_candidates checks for NULL). */
+    if (pthread_key_create(&tls_cand_key, tls_cand_scratch_destructor) != 0) {
+        fce_log_warn("tls_cand_key_init",
+                     "pthread_key_create failed (TLS key exhaustion)");
+    }
 }
 static cand_scratch_t *tls_cand_scratch_get(void) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     pthread_once(&once, tls_cand_key_init);
+    if (!tls_cand_key) return NULL; /* C-4: key creation failed */
     cand_scratch_t *sc = (cand_scratch_t *)pthread_getspecific(tls_cand_key);
     if (!sc) {
         sc = (cand_scratch_t *)calloc(1, sizeof(cand_scratch_t));
@@ -4186,6 +4250,7 @@ static int collect_candidates(const fce_sem_corpus_t *corpus,
 
     int ndocs = corpus->doc_count;
     cand_scratch_t *sc = tls_cand_scratch_get();
+    if (!sc) return 0; /* C-4: TLS key creation failed */
 
     /* Ensure seen bitmap is large enough.
      * INVARIANT (review 0002 §1.4): `seen_nwords` is monotonically
@@ -4416,11 +4481,16 @@ static void rerank_serial(const fce_sem_corpus_t *corpus,
      * callers learn their request was oversized rather than getting mysteriously
      * fewer results than expected. */
     if (top_k > FCE_CANDIDATE_CAP) {
-        static int warned = 0;
+        /* H-3: _Atomic to avoid data race when
+         * multiple threads call rerank_serial concurrently. At worst a
+         * duplicate warning is emitted — the race is benign but UB. */
+        static _Atomic int warned = 0;
         if (!warned) {
-            fce_log_warn("rerank_serial.truncated",
-                         "top_k=%d exceeds FCE_CANDIDATE_CAP=%d, clamping",
-                         (int)top_k, FCE_CANDIDATE_CAP);
+            /* H-09: fce_log_warn expects all variadic
+             * args to be const char*. Passing (int)top_k and FCE_CANDIDATE_CAP
+             * as values was UB (reads int as pointer). Use fce_log_int which
+             * correctly formats integer values. */
+            fce_log_int(FCE_LOG_WARN, "rerank_serial.truncated", "top_k", (int64_t)top_k);
             warned = 1;
         }
         top_k = FCE_CANDIDATE_CAP;
@@ -4579,12 +4649,35 @@ static uint32_t merge_local_heaps(bf_chunk_ctx_t *chunks, int nchunks,
         /* OOM: collect ALL candidates from all local heaps, sort, take top-k. */
         fce_sem_ranked_t *all = malloc((size_t)total * sizeof(fce_sem_ranked_t));
         if (!all) {
-            /* Double OOM: best-effort take first top_k items. */
+            /* H-07: Double OOM — scan all local heaps
+             * to extract the global top-k without any allocation. Each iteration
+             * finds the highest-scored item across all heaps, appends it to
+             * results_out, then removes it by replacing with the last item and
+             * shrinking the count. This is O(top_k * total) but correct — the
+             * old code simply copied the first top_k items from the first chunks,
+             * which could miss better candidates in later chunks. */
+            int rem[nchunks];
+            for (int c = 0; c < nchunks; c++) rem[c] = chunks[c].local_count;
             uint32_t k = 0;
-            for (int c = 0; c < nchunks && k < top_k; c++) {
-                for (int i = 0; i < chunks[c].local_count && k < top_k; i++) {
-                    results_out[k++] = chunks[c].local_heap[i];
+            for (uint32_t take = 0; take < top_k; take++) {
+                int best_c = -1, best_i = -1;
+                float best_s = -1.0f;
+                for (int c = 0; c < nchunks; c++) {
+                    for (int i = 0; i < rem[c]; i++) {
+                        float s = chunks[c].local_heap[i].score;
+                        if (s > best_s ||
+                            (s == best_s && best_c >= 0 &&
+                             chunks[c].local_heap[i].index < chunks[best_c].local_heap[best_i].index)) {
+                            best_s = s;
+                            best_c = c;
+                            best_i = i;
+                        }
+                    }
                 }
+                if (best_c < 0) break;
+                results_out[k++] = chunks[best_c].local_heap[best_i];
+                chunks[best_c].local_heap[best_i] =
+                    chunks[best_c].local_heap[--rem[best_c]];
             }
             if (k > 1) qsort(results_out, k, sizeof(fce_sem_ranked_t), fce_ranked_cmp_desc);
             return k;
@@ -4681,7 +4774,7 @@ static void bruteforce_precomputed(const fce_sem_corpus_t *corpus,
 
     if (nworkers > 1 && scan_bytes > 50 * 1024 * 1024) {
         /* Parallel path: split docs into nworkers contiguous chunks. */
-        int total_chunks = nworkers;  /* workers + main thread */
+        int total_chunks = nworkers;
         int chunk_size = n / total_chunks;
         int remainder = n % total_chunks;
 
@@ -4708,8 +4801,13 @@ static void bruteforce_precomputed(const fce_sem_corpus_t *corpus,
             offset += sz;
         }
 
-        /* Launch parallel workers (nworkers-1 threads + main thread). */
-        fce_parallel_for_opts_t popts = { .max_workers = nworkers - 1 };
+        /* H-3: fce_parallel_for_static treats max_workers
+         * as total parallelism (spawns max_workers-1 threads + main = max_workers
+         * executors). Passing nworkers-1 here gave nworkers-1 total executors for
+         * nworkers chunks — one thread ran two chunks back-to-back, halving
+         * throughput. With nworkers==2 (the default on 8-core), max_workers==1
+         * hit the serial guard and the entire scan ran single-threaded. */
+        fce_parallel_for_opts_t popts = { .max_workers = nworkers };
         fce_parallel_for_static(total_chunks, bf_chunk_worker, chunks, popts);
 
         /* Merge local heaps into final results. */
@@ -4856,11 +4954,12 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
     /* M-4 (review 0006 §M-4): a zero/degenerate query vector (empty tokenization
      * or all-zero embeddings) produces qvec_q_inv_mag == 0, causing every document
      * to score exactly 0.5 — a silent quality cliff. Return an empty result set
-     * instead so callers don't mistake degenerate scores for real results. */
+     * instead so callers don't mistake degenerate scores for real results.
+     * H-1: goto cleanup so q_toks[0..q_ntok-1] are freed;
+     * the earlier bare return leaked those strdup'd tokens. */
     if (qvec_q_inv_mag == 0.0f) {
         if (count_out) *count_out = 0;
-        free(candidates);
-        return;
+        goto cleanup;
     }
 
     /* FCE_QUERY_FAST: force inverted index path, skip fallback to brute if too few. */
@@ -4881,11 +4980,16 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
             goto brute_force;
         }
         if (ncand < (int)top_k && mode == FCE_QUERY_FAST) {
-            static int warned = 0;
+            /* H-3: _Atomic to avoid data race. */
+            static _Atomic int warned = 0;
             if (!warned) {
-                fce_log_warn("query_fast.few_results",
-                             "ncand=%d < top_k=%d, returning fewer results",
-                             ncand, (int)top_k);
+            /* Q-04: fce_log_warn consumes all variadic
+             * args as const char* — passing int is UB (reads int as pointer).
+             * Use fce_log_int which correctly formats integer values. */
+            fce_log_int(FCE_LOG_WARN, "query_fast.few_results",
+                        "ncand", (int64_t)ncand);
+            fce_log_int(FCE_LOG_WARN, "query_fast.few_results",
+                        "top_k", (int64_t)top_k);
                 warned = 1;
             }
         }

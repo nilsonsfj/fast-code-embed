@@ -6,12 +6,14 @@
  */
 #include "semantic/semantic.h"
 #include "foundation/hash_table.h"
+#include "pipeline/worker_pool.h"
 
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -391,7 +393,7 @@ static void test_corpus_batch_add(void) {
     char *all_tokens[6] = {"fn", "error", "fn", "log", "err", "handle"};
     int counts[3] = {2, 2, 2};
 
-    fce_sem_corpus_add_docs_batch(corp, all_tokens, counts, 3, 2);
+    fce_sem_corpus_add_docs_batch(corp, all_tokens, counts, 3, 2, NULL);
     ASSERT(fce_sem_corpus_doc_count(corp) == 3);
 
     fce_sem_corpus_finalize(corp);
@@ -1121,7 +1123,7 @@ static void test_doc_count_batch_parity(void) {
     int tc[] = {2, 2, 0, 600};
     /* Flat token array: doc 0 = {"a","b"}, doc 1 = {"c","d"}, doc 2 = empty, doc 3 = oversized */
     const char *all_tokens[] = {"a", "b", "c", "d"};
-    fce_sem_corpus_add_docs_batch(batch, (char **)all_tokens, tc, 4, 2);
+    fce_sem_corpus_add_docs_batch(batch, (char **)all_tokens, tc, 4, 2, NULL);
     ASSERT(fce_sem_corpus_doc_count(batch) == 2);
 
     fce_sem_corpus_free(single);
@@ -1172,6 +1174,74 @@ static void test_corpus_get_or_add_oom_rollback(void) {
     float idf_alpha = fce_sem_corpus_idf(corp, "alpha");
     ASSERT(idf_alpha >= 0.0f); /* alpha in 2 of 2 docs — IDF = log(2/2) = 0 */
     fce_sem_corpus_free(corp);
+    PASS();
+}
+
+/* ── fix tests ──────────────────── */
+
+/* H-1: degenerate (all-OOV) query must return 0 results and must not
+ * leak the strdup'd tokens from fce_sem_tokenize.  Before the fix the
+ * function did `free(candidates); return;` which skipped the cleanup
+ * loop that frees q_toks[0..q_ntok-1].  Running under ASAN / valgrind
+ * catches the leak; the correctness assertion below verifies the fix
+ * at runtime in normal builds. */
+static void test_h1_oov_query_returns_empty(void) {
+    TEST(H-1: OOV-only query returns 0 results without leak);
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    ASSERT(corp != NULL);
+    const char *t1[] = {"handle", "request"};
+    const char *t2[] = {"process", "response"};
+    fce_sem_corpus_add_doc(corp, t1, 2);
+    fce_sem_corpus_add_doc(corp, t2, 2);
+    fce_sem_corpus_finalize(corp);
+
+    /* Query with tokens that are not in the corpus token_map.
+     * fce_sem_tokenize will produce tokens from the query string, but
+     * fce_sem_corpus_ri_vec returns NULL for all of them → qvec stays
+     * zero → qvec_q_inv_mag == 0 → goto cleanup path exercised. */
+    fce_sem_ranked_t results[4];
+    uint32_t count = 99; /* sentinel */
+    fce_sem_search_query(corp, "zqxjvw_utterly_unknown_xkcd", 4, results, &count, NULL);
+    ASSERT(count == 0);
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
+/* H-3: fce_parallel_for_static must invoke the callback exactly once
+ * per index regardless of worker count.  Before the fix, bruteforce_
+ * precomputed passed max_workers = nworkers-1, giving nworkers-1 total
+ * executors for nworkers chunks — the last chunk was merged onto an
+ * already-busy thread.  This test verifies the worker_pool semantics
+ * directly: N items dispatched with max_workers = N must visit each
+ * index [0, N) exactly once. */
+
+#define H3_CHUNKS 8
+static _Atomic int h3_visit_count[H3_CHUNKS];
+
+static void h3_count_worker(int idx, void *ctx) {
+    (void)ctx;
+    if (idx >= 0 && idx < H3_CHUNKS) {
+        atomic_fetch_add_explicit(&h3_visit_count[idx], 1, memory_order_relaxed);
+    }
+}
+
+static void test_h3_parallel_for_static_covers_all_chunks(void) {
+    TEST(H-3: parallel_for_static visits each index exactly once);
+    for (int i = 0; i < H3_CHUNKS; i++) {
+        atomic_store(&h3_visit_count[i], 0);
+    }
+
+    fce_parallel_for_opts_t opts = { .max_workers = H3_CHUNKS };
+    fce_parallel_for_static(H3_CHUNKS, h3_count_worker, NULL, opts);
+
+    for (int i = 0; i < H3_CHUNKS; i++) {
+        int v = atomic_load(&h3_visit_count[i]);
+        if (v != 1) {
+            printf("FAIL (index %d visited %d times, expected 1)\n", i, v);
+            return;
+        }
+    }
     PASS();
 }
 
@@ -1276,6 +1346,11 @@ int main(void) {
     test_doc_count_batch_parity();
     test_abbrev_ht_oom_retry();
     test_corpus_get_or_add_oom_rollback();
+
+    /* fixes */
+    printf("\nReview Fixes:\n");
+    test_h1_oov_query_returns_empty();
+    test_h3_parallel_for_static_covers_all_chunks();
 
     /* Summary */
     printf("\n=========================\n");

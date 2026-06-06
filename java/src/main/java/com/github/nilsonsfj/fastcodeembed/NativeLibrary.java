@@ -44,6 +44,19 @@ public final class NativeLibrary {
             libName = "fast_code_embed_jni.dll";
         }
 
+        /* C-2: sweep stale dirs BEFORE creating tmpDir.
+         * The previous ordering swept AFTER createTempDirectory, which deleted
+         * the freshly-created "fce-jni-*" dir (it matched the prefix) and then
+         * caused Files.copy to throw NoSuchFileException — making the JAR
+         * fallback path unconditionally fail on every deployment.
+         * S-4: sweep both legacy prefix and new prefix
+         * to clean up dirs left by prior JVM crashes (deleteOnExit doesn't fire
+         * on abort). Age-gate to dirs older than 1 hour to avoid racing against
+         * other JVM instances on the same host that are mid-extraction. */
+        String tmpRoot = System.getProperty("java.io.tmpdir");
+        sweepStaleTempDirs(tmpRoot, "fast-code-embed-jni-");
+        sweepStaleTempDirs(tmpRoot, "fce-jni-");
+
         /* M3 (review 0001-0001 §5): use Files.createTempDirectory for an
          * unpredictable directory name with 0700 permissions. The previous
          * PID-derived name was predictable, enabling a classic native-library
@@ -55,11 +68,6 @@ public final class NativeLibrary {
             throw new UnsatisfiedLinkError("Failed to create temp directory: " + ex.getMessage());
         }
         tmpDir.toFile().deleteOnExit();
-
-        /* Best-effort cleanup of legacy PID-based dirs from prior runs.
-         * These use the old "fast-code-embed-jni-<pid>" naming convention. */
-        String tmpRoot = System.getProperty("java.io.tmpdir");
-        sweepStaleTempDirs(tmpRoot, "fast-code-embed-jni-");
 
         try {
             java.nio.file.Path tmpLib = tmpDir.resolve(libName);
@@ -93,7 +101,10 @@ public final class NativeLibrary {
         }
     }
 
+    private static final long SWEEP_AGE_MS = 60L * 60 * 1000; /* 1 hour */
+
     private static void sweepStaleTempDirs(String root, String prefix) {
+        long cutoff = System.currentTimeMillis() - SWEEP_AGE_MS;
         try (java.util.stream.Stream<java.nio.file.Path> stream =
                  java.nio.file.Files.list(java.nio.file.Paths.get(root))) {
             stream.filter(p -> {
@@ -101,6 +112,20 @@ public final class NativeLibrary {
                         return fn != null && fn.toString().startsWith(prefix);
                     })
                   .filter(p -> java.nio.file.Files.isDirectory(p))
+                  /* C-2: only delete dirs older than
+                   * SWEEP_AGE_MS to avoid racing a concurrent JVM that just
+                   * created its extraction dir but hasn't called System.load
+                   * yet. Dirs that young are almost certainly live. */
+                  .filter(p -> {
+                      try {
+                          java.nio.file.attribute.BasicFileAttributes attrs =
+                              java.nio.file.Files.readAttributes(
+                                  p, java.nio.file.attribute.BasicFileAttributes.class);
+                          return attrs.lastModifiedTime().toMillis() < cutoff;
+                      } catch (java.io.IOException ignored) {
+                          return false;
+                      }
+                  })
                   .forEach(p -> {
                       /* Best-effort recursive delete. We don't fail load() on
                        * cleanup errors — the worst case is some disk used. */

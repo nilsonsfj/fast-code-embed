@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "semantic/semantic.h"
+#include "foundation/log.h"
 
 /* ── Opaque handle table (M-4, review 0001 §M-4) ──────────────── *
  * Converts a Java-level double-close / stale-handle bug from JVM heap
@@ -138,7 +139,11 @@ static void *acquire_handle(jlong handle) {
  * slot has been reallocated to a different corpus would otherwise decrement
  * the wrong slot's refcount, causing use-after-free. After take_handle
  * clears ptr, the generation remains unchanged, so in-flight acquirers
- * still validate successfully. */
+ * still validate successfully.
+ * C-2: guard against refcount underflow — if
+ * release_handle is called without a matching acquire_handle (e.g., error
+ * path), skip the decrement when refcount is already 0 to prevent
+ * negative refcount that could let take_handle proceed prematurely. */
 static void release_handle(jlong handle) {
     if (handle <= 0) return;
     uint64_t encoded = (uint64_t)handle;
@@ -147,9 +152,17 @@ static void release_handle(jlong handle) {
     if (slot < 0 || slot >= HANDLE_TABLE_CAP) return;
     pthread_mutex_lock(&g_handle_mutex);
     if (gen == g_handle_table[slot].gen) {
-        int rc = --g_handle_table[slot].refcount;
-        if (g_handle_table[slot].ptr == NULL && rc <= 1) {
-            pthread_cond_signal(&g_handle_drain_cv);
+        int rc = g_handle_table[slot].refcount;
+        if (rc > 0) {
+            rc = --g_handle_table[slot].refcount;
+            if (g_handle_table[slot].ptr == NULL && rc <= 1) {
+                /* H-2: broadcast so all waiters in
+                 * take_handle() re-check their predicate. signal() wakes
+                 * exactly one arbitrary waiter — if that waiter is draining a
+                 * different slot its predicate is false, and the waiter whose
+                 * predicate is now true is never woken. */
+                pthread_cond_broadcast(&g_handle_drain_cv);
+            }
         }
     }
     pthread_mutex_unlock(&g_handle_mutex);
@@ -468,6 +481,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     if (!local_func) goto fail;
     cls_func = (*env)->NewGlobalRef(env, local_func);
     (*env)->DeleteLocalRef(env, local_func);
+    if (!cls_func) goto fail;
 
     fid_file_path       = (*env)->GetFieldID(env, cls_func, "filePath", "Ljava/lang/String;");
     fid_tfidf_indices   = (*env)->GetFieldID(env, cls_func, "tfidfIndices", "[I");
@@ -482,6 +496,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     if (!local_sr) goto fail;
     cls_search_result = (*env)->NewGlobalRef(env, local_sr);
     (*env)->DeleteLocalRef(env, local_sr);
+    if (!cls_search_result) goto fail;
 
     ctor_search_result = (*env)->GetMethodID(env, cls_search_result, "<init>", "(IF)V");
     if (!ctor_search_result) goto fail;
@@ -605,7 +620,10 @@ JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAd
      * Return early on empty input — matching nAddDocsBatch (:329). */
     if (count == 0) { release_handle(handle); return; }
     const char **tokens = (const char **)malloc(sizeof(char *) * count);
-    jstring *refs = (jstring *)malloc(sizeof(jstring) * count);
+    /* C-3: use calloc so that unpinned slots are
+     * zeroed — if a future code change iterates `count` instead of `pinned`,
+     * it won't call ReleaseStringUTFChars on garbage pointers. */
+    jstring *refs = (jstring *)calloc(count, sizeof(jstring));
     if (!tokens || !refs) { free(tokens); free(refs); release_handle(handle); return; }
     int pinned = 0;
     for (int i = 0; i < count; i++) {
@@ -638,16 +656,26 @@ adddoc_cleanup:
     release_handle(handle);
 }
 
-JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDocsBatch(
+JNIEXPORT jintArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDocsBatch(
     JNIEnv *env, jclass cls, jlong handle, jobjectArray jdocs, jint maxTokensPerDoc) {
     (void)cls;
     /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
     fce_sem_corpus_t *corp = acquire_handle(handle);
-    if (!corp) return;
+    if (!corp) return NULL;
     /* H1 (review 0007 §H1): null-guard the array argument. */
-    if (!jdocs) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "docs is null"); release_handle(handle); return; }
+    if (!jdocs) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "docs is null"); release_handle(handle); return NULL; }
     int docCount = (*env)->GetArrayLength(env, jdocs);
-    if (docCount == 0 || maxTokensPerDoc <= 0) { release_handle(handle); return; }
+    if (docCount == 0 || maxTokensPerDoc <= 0) { release_handle(handle); return NULL; }
+
+    /* J-05: Clamp docCount to prevent DoS via
+     * unbounded allocation. A caller passing new String[10000000][512] would
+     * attempt to allocate ~40 GB. 1M docs is a generous upper bound that
+     * covers realistic use cases while preventing memory exhaustion. */
+    enum { MAX_BATCH_DOCS = 1000000 };
+    if (docCount > MAX_BATCH_DOCS) {
+        fce_log_warn("nAddDocsBatch.clamped", "docCount", "exceeds 1M limit");
+        docCount = MAX_BATCH_DOCS;
+    }
 
     /* H1 (review 0001-0001 §1): clamp maxTokensPerDoc to FCE_SEM_MAX_TOKENS
      * (512). Without this, a single doc with >512 tokens causes the C batch
@@ -665,9 +693,16 @@ JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAd
     if (!all_tokens || !all_refs || !token_counts) {
         free(all_tokens); free(all_refs); free(token_counts);
         release_handle(handle);
-        return;
+        return NULL;
     }
     memset(all_tokens, 0, sizeof(char *) * flat);
+
+    /* C-1: hoist both result pointers to NULL before
+     * the first goto so all error paths return a defined value and doc_map
+     * is always safe to free in the cleanup block. gcc -Wmaybe-uninitialized
+     * catches this class of bug; clang's sometimes-uninitialized does not. */
+    jintArray jresult = NULL;
+    int *doc_map = NULL;
 
     for (int d = 0; d < docCount; d++) {
         jobjectArray jdoc = (jobjectArray)(*env)->GetObjectArrayElement(env, jdocs, d);
@@ -704,9 +739,25 @@ JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAd
         (*env)->DeleteLocalRef(env, jdoc);
     }
 
-    fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, docCount, maxTokensPerDoc);
+    /* M-07: allocate doc_map to track which docs
+     * were accepted by the C side, so Java can map paths correctly. */
+    doc_map = (int *)malloc(sizeof(int) * docCount);
+    if (!doc_map) {
+        goto addbatch_cleanup;
+    }
+
+    fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, docCount, maxTokensPerDoc, doc_map);
+
+    /* Convert doc_map to jintArray for Java. */
+    jresult = (*env)->NewIntArray(env, docCount);
+    if (jresult) {
+        (*env)->SetIntArrayRegion(env, jresult, 0, docCount, doc_map);
+    }
 
 addbatch_cleanup:
+    /* free(NULL) is safe — doc_map is NULL on every error path that jumps
+     * here before the malloc above, or after a failed malloc. */
+    free(doc_map);
     /* Release JNI strings using cached refs. Iterate the full flat array so
      * partially-pinned docs (where the inner loop bailed mid-doc) are also
      * cleaned up. all_refs was calloc'd, so unprocessed entries are NULL. */
@@ -722,6 +773,7 @@ addbatch_cleanup:
     free(all_tokens);
     free(token_counts);
     release_handle(handle);
+    return jresult;
 }
 
 JNIEXPORT jboolean JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nFinalizeCorpus(
@@ -886,8 +938,10 @@ JNIEXPORT jfloat JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_n
     if (!jtoken) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "token is null"); release_handle(handle); return 0.0f; }
     const char *tok = (*env)->GetStringUTFChars(env, jtoken, NULL);
     if (!tok || (*env)->ExceptionCheck(env)) {
-        /* OOM: OutOfMemoryError is pending. Calling the C function with a
-         * pending exception is undefined JNI behavior — return early. */
+        /* M-3: if GetStringUTFChars returned non-NULL
+         * but an exception is pending (some JVMs set OOM and still return a
+         * copy), release the string to avoid a native memory leak. */
+        if (tok) (*env)->ReleaseStringUTFChars(env, jtoken, tok);
         release_handle(handle);
         return 0.0f;
     }
@@ -926,8 +980,10 @@ JNIEXPORT jfloatArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEm
     if (!vec) { release_handle(handle); return NULL; }
     jfloatArray result = (*env)->NewFloatArray(env, FCE_SEM_DIM);
     /* C-1 (review 0006 §C-1): NewFloatArray can fail with pending OOM.
-     * release_handle MUST be called on every path after acquire_handle. */
-    if ((*env)->ExceptionCheck(env)) { release_handle(handle); return NULL; }
+     * release_handle MUST be called on every path after acquire_handle.
+     * J-01: NewFloatArray may return NULL without
+     * setting a pending exception on some JVMs — check for NULL explicitly. */
+    if (!result || (*env)->ExceptionCheck(env)) { release_handle(handle); return NULL; }
     (*env)->SetFloatArrayRegion(env, result, 0, FCE_SEM_DIM, vec->v);
     release_handle(handle);
     return result;

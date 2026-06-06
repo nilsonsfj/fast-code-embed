@@ -12,7 +12,10 @@ CC      ?= cc
 # rely on the GNU `, ##__VA_ARGS__` extension (C-2 review 0002 §5.8:
 # __VA_OPT__ is C23 and rejected by -std=c11). All other pedantic warnings
 # remain on.
-CFLAGS       ?= -O2 -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11 -mtune=native -DNDEBUG
+# L-10: -fPIC ensures the static library objects
+# can be linked into a shared library (e.g., the JNI dylib) on all platforms,
+# including macOS ARM64 where the linker requires PIC for dylib content.
+CFLAGS       ?= -O2 -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11 -mtune=native -DNDEBUG -fPIC
 CFLAGS_DEBUG ?= -O0 -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11 -g -fsanitize=address -fno-omit-frame-pointer
 AR      ?= ar
 ARFLAGS ?= rcs

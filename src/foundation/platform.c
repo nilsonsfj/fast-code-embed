@@ -181,7 +181,15 @@ static void init_timebase(void) { mach_timebase_info(&timebase_info); }
 uint64_t fce_now_ns(void) {
     fce_once(&timebase_once, init_timebase);
     uint64_t ticks = mach_absolute_time();
+    /* L-02: ticks * numer can overflow uint64_t on
+     * long-running macOS servers (~4.7 years on Apple Silicon where numer=125).
+     * Use __uint128_t to avoid overflow; supported by GCC/Clang on 64-bit. */
+#if defined(__SIZEOF_INT128__)
+    __uint128_t product = (__uint128_t)ticks * (__uint128_t)timebase_info.numer;
+    return (uint64_t)(product / timebase_info.denom);
+#else
     return ticks * timebase_info.numer / timebase_info.denom;
+#endif
 }
 #else
 uint64_t fce_now_ns(void) {
