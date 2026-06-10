@@ -886,7 +886,75 @@ static void test_corpus_search_query(void) {
     PASS();
 }
 
-/* LOW priority fix tests */
+/* Low-priority fix tests */
+
+static void test_corpus_free_after_finalize(void) {
+    TEST(corpus free after finalize releases doc_vectors);
+    /* Regression anchor for L-3: fce_sem_corpus_free previously omitted
+     * free(corpus->doc_vectors). Under ASan this catches the leak; here it
+     * just confirms the finalize+free cycle doesn't crash. */
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    ASSERT(corp != NULL);
+    const char *t1[] = {"alpha", "beta", "gamma"};
+    const char *t2[] = {"delta", "epsilon"};
+    const char *t3[] = {"alpha", "delta"};
+    for (int d = 0; d < 50; d++) {
+        fce_sem_corpus_add_doc(corp, t1, 3);
+        fce_sem_corpus_add_doc(corp, t2, 2);
+        fce_sem_corpus_add_doc(corp, t3, 2);
+    }
+    int rc = fce_sem_corpus_finalize(corp);
+    ASSERT(rc == 0);
+    ASSERT(fce_sem_corpus_doc_count(corp) == 150);
+    /* doc_vectors is allocated during finalize; free() must release it. */
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
+static void test_search_query_repeated_same_corpus(void) {
+    TEST(repeated search queries reuse scratch buffer correctly);
+    /* Regression anchor for L-5: raw_need was set to the computed estimate
+     * rather than sc->raw_cap, causing unnecessary shrinking reallocs when a
+     * large scratch buffer was reused for a smaller query. Verify that results
+     * are correct and stable across three queries of varying breadth. */
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    ASSERT(corp != NULL);
+    const char *doc_handle[]   = {"handle", "request", "parse", "auth"};
+    const char *doc_process[]  = {"process", "data", "transform"};
+    const char *doc_validate[] = {"validate", "user", "check", "auth"};
+    const char *doc_send[]     = {"send", "response", "write"};
+    const char *doc_read[]     = {"read", "input", "parse", "buffer"};
+    for (int i = 0; i < 20; i++) {
+        fce_sem_corpus_add_doc(corp, doc_handle,   4);
+        fce_sem_corpus_add_doc(corp, doc_process,  3);
+        fce_sem_corpus_add_doc(corp, doc_validate, 4);
+        fce_sem_corpus_add_doc(corp, doc_send,     3);
+        fce_sem_corpus_add_doc(corp, doc_read,     4);
+    }
+    ASSERT(fce_sem_corpus_finalize(corp) == 0);
+
+    fce_sem_ranked_t results[10];
+    uint32_t count = 0;
+
+    /* Query 1: broad — many token hits, large raw buffer allocated */
+    fce_sem_search_query(corp, "handle request parse auth validate user", 10, results, &count, NULL);
+    ASSERT(count > 0);
+    float score1 = results[0].score;
+
+    /* Query 2: narrow — fewer token hits; buffer should be reused, not shrunk */
+    fce_sem_search_query(corp, "send", 10, results, &count, NULL);
+    ASSERT(count > 0);
+
+    /* Query 3: broad again — verify result is stable (same as query 1) */
+    fce_sem_search_query(corp, "handle request parse auth validate user", 10, results, &count, NULL);
+    ASSERT(count > 0);
+    ASSERT_NEAR(results[0].score, score1, 1e-6f);
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
+/* Pre-existing Low-priority fix tests (from earlier review rounds) */
 
 static void test_abbreviation_lazy_allocation(void) {
     TEST(abbreviation hash table lazy allocation);
@@ -1245,6 +1313,260 @@ static void test_h3_parallel_for_static_covers_all_chunks(void) {
     PASS();
 }
 
+/* ── Medium-priority fix tests ─────────────────────────── */
+
+/* M-1: fce_sem_corpus_finalize returns -1 (not 0) when finalize_failed.
+ *
+ * fce_sem_corpus is an opaque type in the public header, so we cannot set
+ * finalize_failed directly.  Instead we use a cast against a local mirror
+ * struct that matches the leading fields of the internal definition up to and
+ * including finalize_failed.  This is technically relying on struct layout
+ * compatibility but is acceptable for a white-box unit test that lives in the
+ * same repository as the implementation.  The layout is enforced at compile
+ * time by _Static_assert checks immediately after the struct definition in
+ * semantic.c — any field insertion or reorder will fail to compile.
+ *
+ * Layout of struct fce_sem_corpus (see semantic.c):
+ *   FCEHashTable *token_map;       (pointer)
+ *   corpus_entry_t *entries;       (pointer)
+ *   fce_sem_vec_t *enriched_vecs;  (pointer)
+ *   int8_t *enriched_vecs_q;       (pointer)
+ *   fce_sem_vec_t *doc_vectors;    (pointer)
+ *   int8_t *doc_vectors_q;         (pointer)
+ *   float *doc_vectors_q_inv_mag;  (pointer)
+ *   int entry_count;               (int)
+ *   int entry_cap;                 (int)
+ *   int doc_count;                 (int)
+ *   bool finalized;                (bool, same alignment-unit as int on common ABIs)
+ *   bool finalize_failed;          <─ this is what we need to set
+ */
+typedef struct {
+    void *token_map;
+    void *entries;
+    void *enriched_vecs;
+    void *enriched_vecs_q;
+    void *doc_vectors;
+    void *doc_vectors_q;
+    void *doc_vectors_q_inv_mag;
+    int entry_count;
+    int entry_cap;
+    int doc_count;
+    bool finalized;
+    bool finalize_failed;
+} corpus_mirror_t;
+
+static void test_m1_finalize_failed_returns_error(void) {
+    TEST(M-1: finalize returns -1 when finalize_failed is set);
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    ASSERT(corp != NULL);
+
+    /* Force finalize_failed = true via the layout-compatible mirror. */
+    corpus_mirror_t *m = (corpus_mirror_t *)(void *)corp;
+    m->finalize_failed = true;
+
+    /* Now calling finalize must return -1, not 0. */
+    int rc = fce_sem_corpus_finalize(corp);
+    ASSERT(rc == -1);
+
+    /* Reset so free() works cleanly. */
+    m->finalize_failed = false;
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
+/* M-2: letter→digit runs stay together in identifiers.
+ * After removing the `c_dg && !p_dg` split from is_camel_break, tokens like
+ * utf8, sha256, base64, int32 are no longer shredded into a stem + bare digit. */
+static void test_m2_digit_identifier_stays_whole(void) {
+    TEST(M-2: digit identifier tokens stay whole);
+    char *tokens[16];
+    int n;
+
+    /* utf8Decode → "utf8", "decode" (2 tokens, not 3) */
+    n = fce_sem_tokenize("utf8Decode", tokens, 16);
+    ASSERT(n == 2);
+    ASSERT(strcmp(tokens[0], "utf8") == 0);
+    ASSERT(strcmp(tokens[1], "decode") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+
+    /* sha256Hash → "sha256", "hash" */
+    n = fce_sem_tokenize("sha256Hash", tokens, 16);
+    ASSERT(n == 2);
+    ASSERT(strcmp(tokens[0], "sha256") == 0);
+    ASSERT(strcmp(tokens[1], "hash") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+
+    /* parse2JSON → "parse2", "json" (digit→uppercase still splits) */
+    n = fce_sem_tokenize("parse2JSON", tokens, 16);
+    ASSERT(n == 2);
+    ASSERT(strcmp(tokens[0], "parse2") == 0);
+    ASSERT(strcmp(tokens[1], "json") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+
+    /* parse2item → "parse2item" (digit→lowercase does NOT split) */
+    n = fce_sem_tokenize("parse2item", tokens, 16);
+    ASSERT(n == 1);
+    ASSERT(strcmp(tokens[0], "parse2item") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+
+    PASS();
+}
+
+/* M-3: explicit ASCII-range tokenization drops non-ASCII bytes.
+ * "caf\xc3\xa9" (UTF-8 for "café") → only the ASCII prefix "caf" survives.
+ * Normal ASCII input is unaffected. */
+static void test_m3_tokenize_locale_independent(void) {
+    TEST(M-3: non-ASCII bytes are dropped from tokens);
+    char *tokens[16];
+    int n;
+
+    /* Pure ASCII: must still work. */
+    n = fce_sem_tokenize("hello", tokens, 16);
+    ASSERT(n == 1);
+    ASSERT(strcmp(tokens[0], "hello") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+
+    /* "caf\xc3\xa9" — UTF-8 for "café".  The 0xC3 and 0xA9 bytes are
+     * non-ASCII and must be dropped; only "caf" remains. */
+    n = fce_sem_tokenize("caf\xc3\xa9", tokens, 16);
+    ASSERT(n == 1);
+    ASSERT(strcmp(tokens[0], "caf") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+
+    /* String that is entirely non-ASCII bytes → 0 tokens. */
+    n = fce_sem_tokenize("\xc3\xa9\xc3\xa0", tokens, 16);
+    ASSERT(n == 0);
+
+    PASS();
+}
+
+/* M-5: doc_map_out entries are set to -1 when the doc-cap is exceeded.
+ *
+ * FCE_SEM_MAX_DOC_COUNT is 1 000 000.  We set corpus->doc_count to
+ * FCE_SEM_MAX_DOC_COUNT - 1 via the mirror (safe because no allocation is
+ * involved — we just lie about the current count) and then add a 2-doc batch;
+ * valid_doc_count will be 2, which exceeds the remaining capacity (1 slot),
+ * triggering the cap-exceeded path. */
+static void test_m5_doc_map_out_cleared_on_cap_exceeded(void) {
+    TEST(M-5: doc_map_out cleared to -1 when doc cap exceeded);
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    ASSERT(corp != NULL);
+
+    /* Lie about doc_count so the next batch triggers the cap check.
+     * We use the mirror struct to set doc_count to one below the cap so
+     * adding 2 valid docs would exceed it.  We do NOT adjust doc_cap or
+     * the token arrays — the cap check fires before any allocation. */
+    corpus_mirror_t *m = (corpus_mirror_t *)(void *)corp;
+    /* FCE_SEM_MAX_DOC_COUNT = 1 000 000; set to (cap - 1) so 2 docs exceed it */
+    m->doc_count = 999999;
+
+    /* Batch: 2 docs each with 1 valid token. */
+    char *all_tokens[] = {"alpha", "beta"};
+    int token_counts[] = {1, 1};
+    int doc_map_out[2];
+    doc_map_out[0] = 42;   /* sentinel — must be overwritten to -1 */
+    doc_map_out[1] = 43;
+
+    fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, 2, 1, doc_map_out);
+
+    /* The batch was rejected; doc_map_out must be entirely -1. */
+    ASSERT(doc_map_out[0] == -1);
+    ASSERT(doc_map_out[1] == -1);
+
+    /* Restore doc_count before free so the corpus destructor doesn't try to
+     * walk a million non-existent doc_token_ids slots. */
+    m->doc_count = 0;
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
+/* ── PR review follow-up tests ──────────────────────────────────── */
+
+/* doc_map_out happy path: a batch with one invalid doc (zero tokens) should
+ * set doc_map_out[d] = -1 for that doc and sequential indices for the valid
+ * ones.  This pins the normal memcpy path so the failure-path invalidations
+ * are clearly distinct from a correct acceptance map. */
+static void test_doc_map_out_valid_batch(void) {
+    TEST(doc_map_out: correct indices for mixed valid/invalid batch);
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    ASSERT(corp != NULL);
+
+    /* Three docs; doc[1] has 0 tokens → invalid → must get -1 in map. */
+    char *all_tokens[] = {"alpha", NULL, "gamma"};
+    int token_counts[] = {1, 0, 1};
+    int doc_map_out[3];
+    doc_map_out[0] = 99; /* sentinels */
+    doc_map_out[1] = 99;
+    doc_map_out[2] = 99;
+
+    fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, 3, 1, doc_map_out);
+
+    /* doc[0] → first valid doc (index 0 in valid list) */
+    ASSERT(doc_map_out[0] == 0);
+    /* doc[1] → rejected (zero tokens) */
+    ASSERT(doc_map_out[1] == -1);
+    /* doc[2] → second valid doc (index 1 in valid list) */
+    ASSERT(doc_map_out[2] == 1);
+    /* Corpus should contain exactly 2 docs. */
+    ASSERT(fce_sem_corpus_doc_count(corp) == 2);
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
+/* invalidate_doc_map NULL guard: passing doc_map_out = NULL on a path that
+ * calls invalidate_doc_map (cap-exceeded) must not crash.  This is a
+ * regression test for the NULL guard inside the helper. */
+static void test_doc_map_out_null_safe_on_rejection(void) {
+    TEST(doc_map_out NULL is safe on cap-exceeded rejection);
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    ASSERT(corp != NULL);
+
+    corpus_mirror_t *m = (corpus_mirror_t *)(void *)corp;
+    m->doc_count = 999999; /* one below the 1 000 000 cap */
+
+    char *all_tokens[] = {"alpha", "beta"};
+    int token_counts[] = {1, 1};
+
+    /* doc_map_out = NULL — must not crash even though invalidate_doc_map
+     * is called internally on this path. */
+    fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, 2, 1, NULL);
+
+    m->doc_count = 0;
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
+/* Mirror layout sanity at runtime: read doc_count via the mirror and compare
+ * it to the public fce_sem_corpus_doc_count() accessor.  The compile-time
+ * _Static_asserts in semantic.c ensure the layout hasn't drifted at build
+ * time; this test catches any platform where the assertions pass but the
+ * runtime offsets are still wrong (e.g. unusual ABI padding). */
+static void test_corpus_mirror_layout_sanity(void) {
+    TEST(corpus_mirror_t runtime layout matches public accessor);
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    ASSERT(corp != NULL);
+
+    /* Mirror should initially show doc_count == 0. */
+    corpus_mirror_t *m = (corpus_mirror_t *)(void *)corp;
+    ASSERT(m->doc_count == fce_sem_corpus_doc_count(corp));
+    ASSERT(m->doc_count == 0);
+
+    /* Add two docs and verify the mirror tracks the public count. */
+    const char *t1[] = {"foo", "bar"};
+    const char *t2[] = {"baz"};
+    fce_sem_corpus_add_doc(corp, t1, 2);
+    fce_sem_corpus_add_doc(corp, t2, 1);
+    ASSERT(m->doc_count == fce_sem_corpus_doc_count(corp));
+    ASSERT(m->doc_count == 2);
+
+    /* finalize_failed should be false on a freshly created corpus. */
+    ASSERT(m->finalize_failed == false);
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
 /* ── Main ──────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1329,8 +1651,8 @@ int main(void) {
     test_hash_table_null_guard();
     test_corpus_search_query();
 
-    /* LOW priority fix tests */
-    printf("\nLOW Priority Fixes:\n");
+    /* Low-priority fix tests (previous review rounds) */
+    printf("\nLow Priority Fixes:\n");
     test_abbreviation_lazy_allocation();
     test_abbreviation_concurrent_init();
     test_reverse_index_memory_cap();
@@ -1351,6 +1673,24 @@ int main(void) {
     printf("\nReview Fixes:\n");
     test_h1_oov_query_returns_empty();
     test_h3_parallel_for_static_covers_all_chunks();
+
+    /* Medium-priority fixes */
+    printf("\nMedium Fixes:\n");
+    test_m1_finalize_failed_returns_error();
+    test_m2_digit_identifier_stays_whole();
+    test_m3_tokenize_locale_independent();
+    test_m5_doc_map_out_cleared_on_cap_exceeded();
+
+    /* Low-priority fixes */
+    printf("\nLow Fixes:\n");
+    test_corpus_free_after_finalize();
+    test_search_query_repeated_same_corpus();
+
+    /* PR review follow-up */
+    printf("\nPR Review Follow-up:\n");
+    test_doc_map_out_valid_batch();
+    test_doc_map_out_null_safe_on_rejection();
+    test_corpus_mirror_layout_sanity();
 
     /* Summary */
     printf("\n=========================\n");

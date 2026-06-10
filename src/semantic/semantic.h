@@ -69,7 +69,7 @@ enum { FCE_SEM_AST_PROFILE_DIMS = 25 };
 typedef enum {
     FCE_QUERY_AUTO   = 0,  /* use fast path, fall back to brute if no inv index */
     FCE_QUERY_BRUTE  = 1,  /* always brute-force scan all docs */
-    FCE_QUERY_FAST   = 2,  /* inverted index + rerank, fall back to brute if < top_k */
+    FCE_QUERY_FAST   = 2,  /* inverted index + rerank; does NOT fall back to brute-force */
     FCE_QUERY_TFIDF  = 3,  /* TF-IDF candidate retrieval + RI rerank */
 } fce_query_mode_t;
 

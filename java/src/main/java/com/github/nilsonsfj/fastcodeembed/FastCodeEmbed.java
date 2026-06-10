@@ -156,11 +156,11 @@ public final class FastCodeEmbed {
      * enriched token vectors, return top-k ranked results.
      * Fast path: uses inverted index for candidate retrieval, then reranks
      * with RI cosine similarity.
-     * <p><b>NOTE:</b> When the query tokens are rare (fewer than {@code topK}
-     * documents match in the inverted index), this method may return fewer
-     * than {@code topK} results.  It does <b>not</b> fall back to brute-force
-     * to top up.  Use {@link #searchQueryBruteforce} or
-     * {@link #searchQueryTfidf} when completeness is important.
+     * <p><b>NOTE:</b> Uses AUTO mode: falls back to brute-force scan when the
+     * inverted index yields fewer than {@code topK} candidates, ensuring up to
+     * {@code topK} results are returned.  Use {@link #searchQueryBruteforce} for
+     * guaranteed exhaustive search, or {@link #searchQueryTfidf} for TF-IDF-based
+     * candidate retrieval.
      *
      * @param corpus finalized corpus to search
      * @param query  natural language query string

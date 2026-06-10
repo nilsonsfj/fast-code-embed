@@ -298,7 +298,7 @@ static fce_sem_func_t marshal_func(JNIEnv *env, jobject obj, char **path_out,
     } else {
         *path_out = NULL;
     }
-    (*env)->DeleteLocalRef(env, jpath);
+    if (jpath) (*env)->DeleteLocalRef(env, jpath);
 
     /* tfidfIndices */
     jintArray jindices = (jintArray)(*env)->GetObjectField(env, obj, fid_tfidf_indices);
@@ -461,8 +461,8 @@ static void unmarshal_func(JNIEnv *env, jobject obj, fce_sem_func_t *f,
     if (jindices && f->tfidf_indices) (*env)->ReleaseIntArrayElements(env, jindices, (jint *)f->tfidf_indices, JNI_ABORT);
     if (jweights && f->tfidf_weights) (*env)->ReleaseFloatArrayElements(env, jweights, f->tfidf_weights, JNI_ABORT);
 
-    (*env)->DeleteLocalRef(env, jindices);
-    (*env)->DeleteLocalRef(env, jweights);
+    if (jindices) (*env)->DeleteLocalRef(env, jindices);
+    if (jweights) (*env)->DeleteLocalRef(env, jweights);
 
     free(path);
 }
@@ -638,7 +638,8 @@ JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAd
         }
         if (!jtok) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "null token in array"); goto adddoc_cleanup; }
         tokens[i] = (*env)->GetStringUTFChars(env, jtok, NULL);
-        if (!tokens[i]) {
+        if (!tokens[i] || (*env)->ExceptionCheck(env)) {
+            if (tokens[i]) (*env)->ReleaseStringUTFChars(env, jtok, tokens[i]);
             (*env)->DeleteLocalRef(env, jtok);
             goto adddoc_cleanup;
         }
@@ -667,10 +668,10 @@ JNIEXPORT jintArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbe
     int docCount = (*env)->GetArrayLength(env, jdocs);
     if (docCount == 0 || maxTokensPerDoc <= 0) { release_handle(handle); return NULL; }
 
-    /* J-05: Clamp docCount to prevent DoS via
-     * unbounded allocation. A caller passing new String[10000000][512] would
-     * attempt to allocate ~40 GB. 1M docs is a generous upper bound that
-     * covers realistic use cases while preventing memory exhaustion. */
+    /* J-05: Clamp docCount for trusted callers.
+     * Note: 1M docs × 512 tokens × sizeof(char*) ≈ 4 GB in all_tokens alone,
+     * so the clamp limits worst-case allocation but is not a hard memory bound.
+     * The C layer enforces the real corpus limits. */
     enum { MAX_BATCH_DOCS = 1000000 };
     if (docCount > MAX_BATCH_DOCS) {
         fce_log_warn("nAddDocsBatch.clamped", "docCount", "exceeds 1M limit");
@@ -728,7 +729,8 @@ JNIEXPORT jintArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbe
             }
             if (!jtok) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "null token in doc array"); (*env)->DeleteLocalRef(env, jdoc); goto addbatch_cleanup; }
             const char *tok = (*env)->GetStringUTFChars(env, jtok, NULL);
-            if (!tok) {
+            if (!tok || (*env)->ExceptionCheck(env)) {
+                if (tok) (*env)->ReleaseStringUTFChars(env, jtok, tok);
                 (*env)->DeleteLocalRef(env, jtok);
                 (*env)->DeleteLocalRef(env, jdoc);
                 goto addbatch_cleanup;
@@ -825,10 +827,11 @@ JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAd
         int pinned = 0;
         for (int i = 0; i < batch; i++) {
             jstring jname = (jstring)(*env)->GetObjectArrayElement(env, jnames, start + i);
-            if ((*env)->ExceptionCheck(env)) goto addtok_cleanup;
+            if ((*env)->ExceptionCheck(env)) { if (jname) (*env)->DeleteLocalRef(env, jname); goto addtok_cleanup; }
             if (!jname) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "null token in array"); goto addtok_cleanup; }
             names[i] = (*env)->GetStringUTFChars(env, jname, NULL);
-            if (!names[i]) {
+            if (!names[i] || (*env)->ExceptionCheck(env)) {
+                if (names[i]) (*env)->ReleaseStringUTFChars(env, jname, names[i]);
                 (*env)->DeleteLocalRef(env, jname);
                 goto addtok_cleanup;
             }
@@ -1036,6 +1039,9 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
      * even if the count is less than FCE_SEM_MAX_TOKENS. */
     memset(tokens, 0, sizeof(tokens));
     int count = fce_sem_tokenize(name, tokens, FCE_SEM_MAX_TOKENS);
+    /* M-3: fce_sem_tokenize now uses explicit ASCII-range
+     * checks ([a-zA-Z0-9] only), so tokens contain only ASCII bytes.
+     * NewStringUTF is therefore safe — no non-ASCII bytes can reach it. */
 
     jclass strCls = (*env)->FindClass(env, "java/lang/String");
     if ((*env)->ExceptionCheck(env)) goto tokenize_cleanup;

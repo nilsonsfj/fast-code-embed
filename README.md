@@ -26,7 +26,8 @@ scoring defaults, and a cleaner API.
 
 ```bash
 make            # build lib/libfast_code_embed.a
-make test       # run the test suite
+make test       # run the test suite (64/64 pass)
+make bench      # build bench_mem_query benchmark tool
 ```
 
 ```c
@@ -93,7 +94,8 @@ the library builds two complementary representations:
 
 For advanced use, you can also wire in your own call graph, type system, or AST
 via the `api_vec`, `type_vec`, `decorator_vec`, and `struct_profile[25]` fields
-in `fce_sem_func_t`.
+in `fce_sem_func_t`. Search path is configurable via `fce_query_mode_t`
+(AUTO, BRUTE, FAST, TFIDF) — see [CONFIGURABLE-QUERY-MODES.md](CONFIGURABLE-QUERY-MODES.md).
 
 ## Regenerating the Embedding Table
 

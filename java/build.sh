@@ -10,7 +10,18 @@ if [ -z "${JAVA_HOME:-}" ]; then
     JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(which java)")")")"
 fi
 JNI_INCLUDE="$JAVA_HOME/include"
-JNI_DARWIN="$JAVA_HOME/include/darwin"
+
+# Detect platform: macOS vs Linux
+OS="$(uname -s)"
+if [ "$OS" = "Darwin" ]; then
+    JNI_PLATFORM_INCLUDE="$JNI_INCLUDE/darwin"
+    LIB_SUFFIX=".dylib"
+    UNINIT_FLAG="-Werror=sometimes-uninitialized"
+else
+    JNI_PLATFORM_INCLUDE="$JNI_INCLUDE/linux"
+    LIB_SUFFIX=".so"
+    UNINIT_FLAG="-Werror=maybe-uninitialized"
+fi
 
 # Output dirs
 CLASSES_DIR="$SCRIPT_DIR/lib/classes"
@@ -24,14 +35,14 @@ make -j4 lib
 echo ""
 echo "=== Compiling JNI native code ==="
 cc -shared -fPIC -O2 -Wall -Wextra -Werror \
-   -Werror=uninitialized -Werror=sometimes-uninitialized \
+   -Werror=uninitialized "$UNINIT_FLAG" \
    -DNDEBUG \
    -I"$PROJECT_ROOT/src" \
-   -I"$JNI_INCLUDE" -I"$JNI_DARWIN" \
+   -I"$JNI_INCLUDE" -I"$JNI_PLATFORM_INCLUDE" \
    "$SCRIPT_DIR/src/main/native/fast_code_embed_jni.c" \
    -L"$PROJECT_ROOT/build" -lfast_code_embed \
    -lpthread -lm \
-   -o "$NATIVE_DIR/libfast_code_embed_jni.dylib"
+   -o "$NATIVE_DIR/libfast_code_embed_jni${LIB_SUFFIX}"
 
 echo ""
 echo "=== Compiling Java sources ==="
@@ -42,6 +53,7 @@ javac -d "$CLASSES_DIR" @/tmp/java_sources.txt
 echo ""
 echo "=== Running tests ==="
 java -cp "$CLASSES_DIR" -Djava.library.path="$NATIVE_DIR" \
+    -Xcheck:jni \
     com.github.nilsonsfj.fastcodeembed.FastCodeEmbedTest
 
 if [ "${1:-}" = "bench" ]; then

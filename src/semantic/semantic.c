@@ -52,7 +52,6 @@ static inline uint32_t fce_htole32(uint32_t v) {
 #define XXH_INLINE_ALL
 #include "xxhash/xxhash.h"
 
-#include <ctype.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -245,7 +244,6 @@ static bool is_camel_break(const char *name, int i) {
     char p = name[i - 1];
     bool c_up = c >= 'A' && c <= 'Z';
     bool p_up = p >= 'A' && p <= 'Z';
-    bool c_dg = c >= '0' && c <= '9';
     bool p_dg = p >= '0' && p <= '9';
     bool p_lo = p >= 'a' && p <= 'z';
     /* lowercase → uppercase: camelCase */
@@ -949,6 +947,7 @@ static void init_brute_workers(void) {
         int total_cores = fce_system_info().total_cores;
         g_cached_brute_workers = total_cores / 4;
         if (g_cached_brute_workers < 1) g_cached_brute_workers = 1;
+        if (g_cached_brute_workers > 64) g_cached_brute_workers = 64;
     }
 }
 
@@ -1286,6 +1285,24 @@ struct fce_sem_corpus {
     int *inv_doc_ids;     /* flat array of unique doc_ids per token */
 };
 
+/* These assertions protect the corpus_mirror_t layout in tests/test_semantic.c,
+ * which casts fce_sem_corpus_t* to a mirror struct to set private fields in tests.
+ * A field insertion or reorder that shifts any of these fields will fail to compile. */
+_Static_assert(offsetof(struct fce_sem_corpus, entry_count) == 7 * sizeof(void *),
+               "corpus_mirror_t: entry_count must be 7 pointers from start");
+_Static_assert(offsetof(struct fce_sem_corpus, entry_cap) ==
+               offsetof(struct fce_sem_corpus, entry_count) + sizeof(int),
+               "corpus_mirror_t: entry_cap must immediately follow entry_count");
+_Static_assert(offsetof(struct fce_sem_corpus, doc_count) ==
+               offsetof(struct fce_sem_corpus, entry_cap) + sizeof(int),
+               "corpus_mirror_t: doc_count must immediately follow entry_cap");
+_Static_assert(offsetof(struct fce_sem_corpus, finalized) ==
+               offsetof(struct fce_sem_corpus, doc_count) + sizeof(int),
+               "corpus_mirror_t: finalized must immediately follow doc_count");
+_Static_assert(offsetof(struct fce_sem_corpus, finalize_failed) ==
+               offsetof(struct fce_sem_corpus, finalized) + sizeof(bool),
+               "corpus_mirror_t: finalize_failed must immediately follow finalized");
+
 static int fce_corpus_get_or_add(fce_sem_corpus_t *c, const char *token) {
     /* M-2 (review 0005 §M-2): fce_ht_set now exposes an 'inserted' out-param
      * that disambiguates "new key" (inserted=true) from "OOM" (inserted=false),
@@ -1553,6 +1570,13 @@ static void batch_resolve_worker(int worker_id, void *ctx_ptr) {
     free(seen);
 }
 
+/* M-5: fill caller's doc_map_out with -1 so every
+ * rejection/rollback path leaves a consistent "nothing accepted" map. */
+static void invalidate_doc_map(int *doc_map_out, int doc_count) {
+    if (!doc_map_out) return;
+    for (int _d = 0; _d < doc_count; _d++) doc_map_out[_d] = -1;
+}
+
 void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
                                    const int *token_counts, int doc_count,
                                    int max_tokens_per_doc, int *doc_map_out) {
@@ -1610,6 +1634,7 @@ void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
     /* Review 0007 §4.1: reject batch if it would exceed the hard doc cap. */
     if (corpus->doc_count > FCE_SEM_MAX_DOC_COUNT - valid_doc_count) {
         fce_log_warn("document cap exceeded by batch", "limit", "1000000");
+        invalidate_doc_map(doc_map_out, doc_count);
         free(doc_map);
         return;
     }
@@ -1628,6 +1653,7 @@ void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
         int *new_counts = realloc(corpus->doc_token_counts, (size_t)new_cap * sizeof(int));
         if (new_counts) corpus->doc_token_counts = new_counts;
         if (!new_ids || !new_counts) {
+            invalidate_doc_map(doc_map_out, doc_count);
             free(doc_map);
             return;
         }
@@ -1668,7 +1694,10 @@ void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
     _Atomic int *doc_freq_atomic = calloc((size_t)corpus->entry_count, sizeof(_Atomic int));
     if (!doc_freq_atomic) {
         /* OOM fallback: sequential path. Roll back doc_count first since
-         * add_doc increments it itself. */
+         * add_doc increments it itself. Each add_doc call can fail per-doc,
+         * so the indices the caller already received in doc_map_out may not
+         * match what actually gets added. Invalidate to prevent a stale map. */
+        invalidate_doc_map(doc_map_out, doc_count);
         corpus->doc_count = base_doc;
         for (int d = 0; d < doc_count; d++) {
             if (doc_map[d] < 0) continue;
@@ -1741,6 +1770,7 @@ void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
                 fce_ht_clear(corpus->token_map);
             }
         }
+        invalidate_doc_map(doc_map_out, doc_count);
         free(doc_freq_atomic);
         free(doc_map);
         return;
@@ -3188,6 +3218,7 @@ void fce_sem_corpus_free(fce_sem_corpus_t *corpus) {
     free(corpus->entries);
     free(corpus->enriched_vecs);
     free(corpus->enriched_vecs_q);
+    free(corpus->doc_vectors);
     free(corpus->doc_vectors_q);
     free(corpus->doc_vectors_q_inv_mag);
     free(corpus->enriched_sparse_idx);
@@ -4294,6 +4325,7 @@ static int collect_candidates(const fce_sem_corpus_t *corpus,
         if (!sc->raw) { sc->raw_cap = 0; return 0; }
         sc->raw_cap = raw_need;
     }
+    raw_need = sc->raw_cap; /* use actual capacity so mid-loop grows don't shrink */
     int nraw = 0;
 
     for (int t = 0; t < q_ntok; t++) {
@@ -4656,7 +4688,8 @@ static uint32_t merge_local_heaps(bf_chunk_ctx_t *chunks, int nchunks,
              * shrinking the count. This is O(top_k * total) but correct — the
              * old code simply copied the first top_k items from the first chunks,
              * which could miss better candidates in later chunks. */
-            int rem[nchunks];
+            assert(nchunks <= 64); /* init_brute_workers caps at 64 */
+            int rem[64];
             for (int c = 0; c < nchunks; c++) rem[c] = chunks[c].local_count;
             uint32_t k = 0;
             for (uint32_t take = 0; take < top_k; take++) {

@@ -57,7 +57,7 @@ New `make bench` target builds `bench_mem_query`.
 
 ## Testing
 
-- 53/53 tests pass (normal build)
-- 53/53 tests pass (ASAN build, zero warnings)
-- 53/53 tests pass with `FCE_SEM_SKIP_INV_INDEX=1` env var (inverted index skipped)
+- 64/64 tests pass (normal build)
+- 64/64 tests pass (ASAN build, zero warnings)
+- 64/64 tests pass with `FCE_SEM_SKIP_INV_INDEX=1` env var (inverted index skipped)
 - Brute-only mode: all three search paths produce identical 10/10 overlap (all brute-force)

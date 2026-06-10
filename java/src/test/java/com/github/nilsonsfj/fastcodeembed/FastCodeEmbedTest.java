@@ -85,6 +85,18 @@ public class FastCodeEmbedTest {
             }
         });
 
+        test("addDocsBatch(docs,paths) all-empty throws", () -> {
+            try (Corpus corp = new Corpus()) {
+                boolean threw = false;
+                try {
+                    corp.addDocsBatch(new String[][]{{}, {}}, new String[]{"a.c", "b.c"});
+                } catch (IllegalArgumentException e) {
+                    threw = true;
+                }
+                assertTrue(threw, "expected IllegalArgumentException for all-empty docs with paths");
+            }
+        });
+
         test("single doc add", () -> {
             try (Corpus corp = new Corpus()) {
                 corp.addDoc(new String[]{"alpha", "beta"});

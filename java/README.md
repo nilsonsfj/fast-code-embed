@@ -68,10 +68,18 @@ public class Example {
 |--------|---------|-------------|
 | `init()` | `void` | Initialize native library. Call once before scoring. |
 | `tokenize(name)` | `String[]` | Split identifier into tokens (camelCase, snake_case, etc.) |
+| `tokenizeBatch(names)` | `String[][]` | Batch-tokenize multiple names (one JNI call) |
 | `proximity(a, b)` | `float` | Module proximity [1.0, 1.10] |
 | `simpleScore(a, b)` | `float` | TF-IDF + RI score, normalized to [0.0, 1.0] |
 | `simpleRank(query, corpus, topK)` | `SearchResult[]` | Rank corpus by score descending |
 | `simpleSearch(query, corpus, topK, minScore)` | `SearchResult[]` | Rank with minimum threshold |
+| `simpleRankBatch(...)` | `SearchResult[]` | Rank using pre-extracted flat arrays (fast path) |
+| `searchQuery(corpus, query, topK)` | `SearchResult[]` | Tokenize query, retrieve via inverted index, rerank with RI |
+| `searchQueryTfidf(corpus, query, topK)` | `SearchResult[]` | TF-IDF candidate retrieval + RI rerank |
+| `searchQueryBruteforce(corpus, query, topK)` | `SearchResult[]` | Brute-force scan all documents |
+| `searchCandidateCount(corpus, query)` | `int` | Number of inverted index candidates for a query |
+| `getPeakRssBytes()` | `long` | Peak RSS via getrusage() |
+| `getCurrentRssBytes()` | `long` | Current RSS (macOS: task_info, Linux: /proc/self/status) |
 
 ### `Corpus`
 
@@ -79,13 +87,22 @@ public class Example {
 |--------|---------|-------------|
 | `new Corpus()` | | Create empty corpus |
 | `addDoc(tokens)` | `void` | Add one document's tokens |
+| `addDoc(tokens, filePath)` | `void` | Add one document's tokens with file path |
 | `addDocsBatch(docs)` | `void` | Batch-add documents (more efficient) |
+| `addDocsBatch(docs, paths)` | `void` | Batch-add documents with file paths |
+| `addDocsTokenized(names)` | `void` | Batch-add by raw names (tokenization in C) |
+| `addDocsTokenized(names, paths)` | `void` | Batch-add by raw names with file paths |
+| `addFiles(paths, chunkSize, maxTokens)` | `int` | Read source files, chunk at `}` boundaries, tokenize in C |
 | `complete()` | `void` | Compute IDF + enriched vectors (required before querying) |
 | `getIdf(token)` | `float` | IDF weight for a token |
 | `getRiVec(token)` | `float[768]` | Enriched RI vector (null if unknown) |
 | `getDocCount()` | `int` | Number of documents |
 | `getTokenCount()` | `int` | Vocabulary size |
-| `buildFunc(path, tokens)` | `FuncDescriptor` | Convenience: build a scored func from tokens |
+| `getDocPath(index)` | `String` | File path for a document by corpus index |
+| `getDocPaths()` | `String[]` | All tracked file paths (one per document) |
+| `clearDocPaths()` | `void` | Free memory held by tracked paths |
+| `buildFunc(path, tokens)` | `FuncDescriptor` | Convenience: build a scored func from tokens (deprecated — use `extractFlat`) |
+| `extractFlat(funcs)` | `FlatCorpus` | Extract flat arrays for `simpleRankBatch` |
 | `close()` | `void` | Free native resources |
 
 ### `FuncDescriptor`
@@ -107,6 +124,20 @@ public class Example {
 | `getIndex()` | `int` | Index into the searched corpus |
 | `getScore()` | `float` | Similarity score [0.0, 1.0] |
 
+### `FlatCorpus`
+
+Returned by `Corpus.extractFlat()`. Reusable across multiple queries.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `allWeights` | `float[]` | Flat IDF weights: [func × maxTokens + token] |
+| `allIndices` | `int[]` | Flat token indices: [func × maxTokens + token] |
+| `tfidfLens` | `int[]` | Per-function token count |
+| `allRiVecs` | `float[]` | Flat RI vectors: [func × 768 + dim] |
+| `filePaths` | `String[]` | Per-function file paths |
+| `maxTokens` | `int` | Stride for flat arrays |
+| `size()` | `int` | Number of functions |
+
 ## Project Structure
 
 ```
@@ -122,7 +153,7 @@ java/
 ├── src/main/native/
 │   └── fast_code_embed_jni.c             JNI bridge implementation
 └── src/test/java/.../fastcodeembed/
-    ├── FastCodeEmbedTest.java            17 tests (no framework)
+    ├── FastCodeEmbedTest.java            21 tests (no framework)
     ├── BenchJava.java                    Micro-benchmark
     ├── BenchMemQuery.java                Memory + query benchmark
     └── IndexDir.java                     Directory indexer

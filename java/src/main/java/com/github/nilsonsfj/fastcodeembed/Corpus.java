@@ -169,6 +169,7 @@ public class Corpus implements AutoCloseable {
         for (String[] doc : docs) {
             if (doc.length > maxLen) maxLen = doc.length;
         }
+        if (maxLen == 0) throw new IllegalArgumentException("All documents are empty");
         int before = FastCodeEmbed.getDocCount(handle);
         int[] docMap = FastCodeEmbed.addDocsBatch(handle, docs, maxLen);
         int added = FastCodeEmbed.getDocCount(handle) - before;

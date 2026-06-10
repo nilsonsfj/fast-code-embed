@@ -14,9 +14,10 @@ flowchart LR
   subgraph query
     Q[Query tokens] --> R[Query vector]
     R --> S{Search path}
-    S -->|fast / tfidf| T[inverted index → candidates]
+    S -->|AUTO / FAST| T[inverted index → candidates]
     T --> U[RI rerank top-k]
-    S -->|bruteforce| V[int8 dot product, serial]
+    S -->|BRUTE| V[int8 dot product, serial]
+    S -->|TFIDF| X[TF-IDF candidates → RI rerank]
     S -->|simple_rank| W[RI-only scoring]
   end
   D --> U
@@ -27,7 +28,8 @@ flowchart LR
 **Current state:** All doc vectors and enriched vocabulary vectors are int8.
 `doc_vectors_q_inv_mag` stores per-doc reciprocal magnitudes. Brute-force is
 static-chunked parallel (2 workers, ~3 ms). Fast/tfidf paths use inverted
-index candidates + RI rerank.
+index candidates + RI rerank. Search path is configurable via
+`fce_query_mode_t` in `fce_sem_config_t` (AUTO, BRUTE, FAST, TFIDF).
 
 | Layer | Role | Quality |
 |-------|------|---------|
@@ -35,7 +37,7 @@ index candidates + RI rerank.
 | `foundation/` | Hash table, threads, platform | Clean abstractions |
 | `pipeline/worker_pool.c` | `parallel_for` | Simple; thread churn (see M6) |
 | `java/…/fast_code_embed_jni.c` | JNI | Above average hygiene |
-| `tests/test_semantic.c` | 58 unit tests | Good coverage; gaps below |
+| `tests/test_semantic.c` | 64 unit tests | Good coverage; gaps below |
 
 ---
 
@@ -47,7 +49,7 @@ index candidates + RI rerank.
 |-----------|------------|-------|
 | `fce_sem_random_index` | O(768) lookup or O(8) sparse fallback | Pretrained int8 → float; good |
 | `fce_sem_corpus_finalize` | O(tokens × window × docs) parallelized | Dominates ingest; int8 pipeline complete |
-| `fce_sem_search_query` (fast) | O(N_inverted + k×768) | 1–3 ms; architectural recall limit (1.2/10 overlap) |
+| `fce_sem_search_query` (AUTO/FAST) | O(N_inverted + k×768) | 1–3 ms; architectural recall limit (1.2/10 overlap) |
 | `fce_sem_search_query_tfidf` | O(N_inverted + k×768) | 1–2 ms; same recall limitation |
 | `fce_sem_search_query_bruteforce` | O(N × 768) | 3–5 ms; RAM-bandwidth floor |
 | `fce_sem_simple_rank` | O(N × 768) | RI-only; no TF-IDF in simple/flat API |
@@ -61,16 +63,17 @@ For `V` vocabulary tokens, `D` documents (measured at 193 K docs, ~1 M vocab):
 | `enriched_vecs_q` (int8, 768/token) | 768 | ~750 MB |
 | `doc_vectors_q` (int8, 768/doc) | 768 | ~149 MB |
 | `doc_vectors_q_inv_mag` (float32) | 4 | ~0.8 MB |
-| Inverted index | — | ~50–150 MB |
+| Inverted index | — | ~67 MB (skippable via `FCE_BRUTE_ONLY` / `FCE_SEM_SKIP_INV_INDEX=1`) |
 
-**Post-build RSS: 1.1 GB.** Peak during finalize: ~4.9 GB (transient). After
-`malloc_trim`: converges to live set (~1.1 GB).
+**Post-build RSS: 1.1 GB** (1.0 GB without inverted index). Peak during finalize:
+~4.9 GB (transient). After `malloc_trim`: converges to live set (~1.1 GB).
+Run with `make bench` to build the `bench_mem_query` benchmark tool.
 
 ---
 
 ## Java / JNI layer
 
-- Batch APIs (`nAddDocsBatch`, `nAddDocsTokenized`, `nTokenizeBatch`,
+- Batch APIs (`nAddDocsBatch` with doc_map_out, `nAddDocsTokenized`, `nTokenizeBatch`,
   `nSimpleRankFlat`).
 - Exception checks and cleanup labels.
 - Array size validation in flat rank.
@@ -78,6 +81,11 @@ For `V` vocabulary tokens, `D` documents (measured at 193 K docs, ~1 M vocab):
 - Critical native arrays used where GC pressure is a concern.
 - `fce_log` used on pass2 OOM; should extend to finalize failures and
   ht insert failures.
+- `addFiles` for reading source files, chunking by `}` boundaries, and tokenizing entirely in C.
+- High-level search API: `searchQuery`, `searchQueryTfidf`, `searchQueryBruteforce`,
+  `searchCandidateCount` — each delegates to the corresponding C function with
+  AUTO/BRUTE/FAST/TFIDF mode dispatch.
+- Memory measurement: `getPeakRssBytes()`, `getCurrentRssBytes()`.
 
 ---
 
