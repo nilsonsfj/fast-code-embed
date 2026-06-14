@@ -1,12 +1,10 @@
-/*
- * index_dir.c — Recursively tokenize and index a directory of source files.
+/* * index_dir.c — Recursively tokenize and index a directory of source files.
  *
  * Chunks files at 2048 bytes, tokenizes each chunk, builds a corpus.
  * Processes files in batches to avoid holding all token strings in memory.
  *
- * Build:  cc -O2 -std=c11 -Isrc index_dir.c -Lbuild -lstatic_nomic -lpthread -lm -o index_dir
- * Run:    ./index_dir /path/to/source [chunk_size] [batch_size]
- */
+ * Build: cc -O2 -std=c11 -Isrc index_dir.c -Lbuild -lstatic_nomic -lpthread -lm -o index_dir
+ * Run: ./index_dir /path/to/source [chunk_size] [batch_size] */
 #include "semantic/semantic.h"
 #include "foundation/platform.h"
 
@@ -25,7 +23,7 @@
 #define MAX_TOKENS_PER_CHUNK 256
 
 /* File extensions to index */
-static const char *INCLUDE_EXTS[] = { ".c", ".h", ".cpp", ".hpp", ".java", ".py", ".rs", ".go", ".js", ".ts", NULL };
+static const char *INCLUDE_EXTS[] = {".c", ".h", ".cpp", ".hpp", ".java", ".py", ".rs", ".go", ".js", ".ts", NULL};
 
 static int should_include(const char *path) {
     size_t len = strlen(path);
@@ -38,11 +36,14 @@ static int should_include(const char *path) {
 
 /* ── File reading ──────────────────────────────────────────────── */
 
-#define MAX_FILE_SIZE (64 * 1024 * 1024)  /* 64 MB sanity limit */
+#define MAX_FILE_SIZE (64 * 1024 * 1024) /* 64 MB sanity limit */
 
 static char *read_file(const char *path, size_t *out_len) {
     FILE *f = fopen(path, "rb");
-    if (!f) { perror(path); return NULL; }
+    if (!f) {
+        perror(path);
+        return NULL;
+    }
 
     /* Use fstat for portable file size — avoids 32-bit ftell overflow. */
     struct stat st;
@@ -60,7 +61,11 @@ static char *read_file(const char *path, size_t *out_len) {
 
     size_t len = (size_t)st.st_size;
     char *buf = (char *)malloc(len);
-    if (!buf) { perror("malloc"); fclose(f); return NULL; }
+    if (!buf) {
+        perror("malloc");
+        fclose(f);
+        return NULL;
+    }
 
     size_t nread = fread(buf, 1, len, f);
     /* Check ferror BEFORE fclose (fclose invalidates the handle). A short
@@ -108,12 +113,18 @@ static void walk_dir(const char *root, file_list_t *list) {
     char **dir_stack = (char **)malloc((size_t)stack_cap * sizeof(char *));
     if (!dir_stack) return;
     dir_stack[stack_len++] = strdup(root);
-    if (!dir_stack[0]) { free(dir_stack); return; }
+    if (!dir_stack[0]) {
+        free(dir_stack);
+        return;
+    }
 
     while (stack_len > 0) {
         char *dirpath = dir_stack[--stack_len];
         DIR *dir = opendir(dirpath);
-        if (!dir) { free(dirpath); continue; }
+        if (!dir) {
+            free(dirpath);
+            continue;
+        }
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
             if (entry->d_name[0] == '.') continue;
@@ -140,7 +151,7 @@ static void walk_dir(const char *root, file_list_t *list) {
                     stack_cap = new_cap;
                 }
                 dir_stack[stack_len] = strdup(fullpath);
-                if (!dir_stack[stack_len]) continue;  /* L4: don't bump stack_len on strdup failure */
+                if (!dir_stack[stack_len]) continue; /* L4: don't bump stack_len on strdup failure */
                 stack_len++;
             } else if (S_ISREG(st.st_mode) && should_include(fullpath)) {
                 file_list_add(list, fullpath);
@@ -169,10 +180,10 @@ int main(int argc, char **argv) {
         return 1;
     }
     const char *root_dir = argv[1];
-    /* L-1 (review 0011-0001 §L-1): use strtol instead of atoi for error
+    /* L-1: use strtol instead of atoi for error
      * detection and overflow safety. atoi has undefined behavior on overflow
      * and no error indication for garbage input. */
-    /* L-8 (review 0004 §L-8): validate endp to reject trailing garbage
+    /* L-8: validate endp to reject trailing garbage
      * (e.g., "2048xyz" silently parsed as 2048). */
     char *endp;
     long chunk_long = argc > 2 ? strtol(argv[2], &endp, 10) : DEFAULT_CHUNK_SIZE;
@@ -198,7 +209,7 @@ int main(int argc, char **argv) {
     file_list_t files = {0};
     walk_dir(root_dir, &files);
     double walk_ms = ms_since(t0);
-    printf("  Walk directory:           %8.1f ms  (%d files)\n", walk_ms, files.count);
+    printf(" Walk directory: %8.1f ms (%d files)\n", walk_ms, files.count);
 
     if (files.count == 0) {
         printf("No source files found.\n");
@@ -240,13 +251,16 @@ int main(int argc, char **argv) {
         files_processed++;
 
         /* Chunk the file at } boundaries */
-        for (size_t offset = 0; offset < len; ) {
+        for (size_t offset = 0; offset < len;) {
             /* Find next } at or after offset+chunk_size for semantic split. */
             size_t end = offset + (size_t)chunk_size;
             if (end < len) {
                 size_t found = 0;
                 for (size_t i = end; i < len; i++) {
-                    if (content[i] == '}') { found = i + 1; break; }
+                    if (content[i] == '}') {
+                        found = i + 1;
+                        break;
+                    }
                 }
                 end = found ? found : len; /* no } left → take rest of file */
             } else {
@@ -256,7 +270,10 @@ int main(int argc, char **argv) {
 
             /* Null-terminate the chunk for tokenization */
             char *chunk = (char *)malloc(chunk_len + 1);
-            if (!chunk) { offset = end; continue; }  /* M1: advance to prevent infinite loop */
+            if (!chunk) {
+                offset = end;
+                continue;
+            } /* M1: advance to prevent infinite loop */
             memcpy(chunk, content + offset, chunk_len);
             chunk[chunk_len] = '\0';
 
@@ -265,11 +282,14 @@ int main(int argc, char **argv) {
             int ntok = fce_sem_tokenize(chunk, tok_buf, MAX_TOKENS_PER_CHUNK);
             free(chunk);
 
-            /* C5 (review 0003 §C5): skip zero-token chunks — they are rejected
+            /* C5: skip zero-token chunks — they are rejected
              * by fce_sem_corpus_add_docs_batch (doc_map[d] = -1) so counting
              * them in total_chunks makes the reported count diverge from
              * doc_count. */
-            if (ntok == 0) { offset = end; continue; }
+            if (ntok == 0) {
+                offset = end;
+                continue;
+            }
 
             /* Store tokens in batch buffer */
             int base = batch_used * MAX_TOKENS_PER_CHUNK;
@@ -313,7 +333,7 @@ int main(int argc, char **argv) {
     free(token_counts);
 
     double chunk_ms = ms_since(t0);
-    printf("  Read + chunk + tokenize:  %8.1f ms  (%d chunks from %d files)\n",
+    printf(" Read + chunk + tokenize: %8.1f ms (%d chunks from %d files)\n",
            chunk_ms, total_chunks, files_processed);
 
     /* ── 3. Finalize corpus ──────────────────────────────────── */
@@ -324,17 +344,17 @@ int main(int argc, char **argv) {
         return 1;
     }
     double build_ms = ms_since(t0);
-    printf("  Corpus finalize:          %8.1f ms\n", build_ms);
+    printf(" Corpus finalize: %8.1f ms\n", build_ms);
 
     /* ── 4. Stats ─────────────────────────────────────────────── */
     double total_ms = ms_since(t_total);
-    printf("\n  ── Summary ──────────────────────────────────\n");
-    printf("  Total chunks:    %d\n", total_chunks);
-    printf("  Vocabulary:      %d tokens\n", fce_sem_corpus_token_count(corp));
-    printf("  Documents:       %d\n", fce_sem_corpus_doc_count(corp));
-    printf("  Total time:      %.1f ms\n", total_ms);
+    printf("\n ── Summary ──────────────────────────────────\n");
+    printf(" Total chunks: %d\n", total_chunks);
+    printf(" Vocabulary: %d tokens\n", fce_sem_corpus_token_count(corp));
+    printf(" Documents: %d\n", fce_sem_corpus_doc_count(corp));
+    printf(" Total time: %.1f ms\n", total_ms);
     double tput = total_ms > 0.0 ? total_chunks / (total_ms / 1000.0) : 0.0;
-    printf("  Throughput:      %.0f chunks/sec\n", tput);
+    printf(" Throughput: %.0f chunks/sec\n", tput);
 
     /* ── Cleanup ──────────────────────────────────────────────── */
     for (int i = 0; i < files.count; i++) free(files.paths[i]);

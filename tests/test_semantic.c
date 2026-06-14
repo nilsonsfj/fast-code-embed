@@ -18,35 +18,35 @@
 static int tests_run = 0;
 static int tests_passed = 0;
 
-#define TEST(name) \
-    do { \
-        tests_run++; \
+#define TEST(name)                 \
+    do {                           \
+        tests_run++;               \
         printf("  %-48s ", #name); \
-        fflush(stdout); \
+        fflush(stdout);            \
     } while (0)
 
-#define PASS() \
-    do { \
+#define PASS()          \
+    do {                \
         tests_passed++; \
         printf("OK\n"); \
     } while (0)
 
-#define ASSERT(cond) \
-    do { \
-        if (!(cond)) { \
+#define ASSERT(cond)                                         \
+    do {                                                     \
+        if (!(cond)) {                                       \
             printf("FAIL (line %d: %s)\n", __LINE__, #cond); \
-            return; \
-        } \
+            return;                                          \
+        }                                                    \
     } while (0)
 
-#define ASSERT_NEAR(a, b, eps) \
-    do { \
-        float _diff = fabsf((a) - (b)); \
-        if (_diff > (eps)) { \
-            printf("FAIL (line %d: |%g - %g| = %g > %g)\n", \
+#define ASSERT_NEAR(a, b, eps)                                                        \
+    do {                                                                              \
+        float _diff = fabsf((a) - (b));                                               \
+        if (_diff > (eps)) {                                                          \
+            printf("FAIL (line %d: |%g - %g| = %g > %g)\n",                           \
                    __LINE__, (double)(a), (double)(b), (double)_diff, (double)(eps)); \
-            return; \
-        } \
+            return;                                                                   \
+        }                                                                             \
     } while (0)
 
 /* ── Tokenization tests ───────────────────────────────────────── */
@@ -88,7 +88,7 @@ static void test_tokenize_dot_separated(void) {
 static void test_tokenize_pascal_case(void) {
     TEST(tokenize PascalCase);
     char *tokens[32];
-    /* L4 (review 0007 §L4): broader camel break splits acronym boundaries.
+    /* Broader camel break splits acronym boundaries.
      * "XMLHttpRequest" → "xml" + "http" + "request" (uppercase run boundary
      * at X-H transition, then camelCase at H-t transition). */
     int n = fce_sem_tokenize("XMLHttpRequest", tokens, 32);
@@ -168,7 +168,7 @@ static void test_tokenize_abbreviations_hash_table(void) {
 }
 
 static void test_simple_score_deterministic(void) {
-    TEST(simple score is deterministic across repeated calls (magnitude caching));
+    TEST(simple score is deterministic across repeated calls(magnitude caching));
     fce_sem_func_t a = {0}, b = {0};
 
     fce_sem_ensure_ready();
@@ -179,8 +179,10 @@ static void test_simple_score_deterministic(void) {
     b.tfidf_len = 2;
     int indices[] = {0, 1};
     float weights[] = {1.0f, 1.0f};
-    a.tfidf_indices = indices; a.tfidf_weights = weights;
-    b.tfidf_indices = indices; b.tfidf_weights = weights;
+    a.tfidf_indices = indices;
+    a.tfidf_weights = weights;
+    b.tfidf_indices = indices;
+    b.tfidf_weights = weights;
     fce_sem_random_index("handle", &a.ri_vec);
     fce_sem_random_index("handle", &b.ri_vec);
 
@@ -193,7 +195,7 @@ static void test_simple_score_deterministic(void) {
 }
 
 static void test_simple_rank_flat_larger(void) {
-    TEST(simple rank flat with 10 functions finds correct top-3);
+    TEST(simple rank flat with 10 functions finds correct top - 3);
     fce_sem_ensure_ready();
 
     /* Build 10 functions with varying RI vectors. */
@@ -433,7 +435,7 @@ static void test_corpus_token_at(void) {
 
 static void test_proximity_same_file(void) {
     TEST(proximity same file);
-    /* A1 (review 0010): identical files no longer reach FCE_SEM_PROX_MAX_BOOST
+    /* Identical files no longer reach FCE_SEM_PROX_MAX_BOOST
      * because only directory components are compared. src/foo.c vs src/foo.c
      * shares 1 dir out of max 1, ratio=1/(1+1)=0.5, boost=1.05. */
     float p = fce_sem_proximity("src/foo.c", "src/foo.c");
@@ -670,26 +672,32 @@ static void test_simple_rank(void) {
 }
 
 static void test_simple_rank_flat(void) {
-    TEST(simple rank flat matches struct-based rank);
+    TEST(simple rank flat matches struct - based rank);
     fce_sem_ensure_ready();
 
     /* Build 3 functions */
     fce_sem_func_t a = {0}, b = {0}, c = {0};
     int idx_a[] = {0};
     float w_a[] = {1.0f};
-    a.tfidf_indices = idx_a; a.tfidf_weights = w_a; a.tfidf_len = 1;
+    a.tfidf_indices = idx_a;
+    a.tfidf_weights = w_a;
+    a.tfidf_len = 1;
     a.file_path = "src/a.c";
     fce_sem_random_index("query", &a.ri_vec);
 
     int idx_b[] = {1};
     float w_b[] = {1.0f};
-    b.tfidf_indices = idx_b; b.tfidf_weights = w_b; b.tfidf_len = 1;
+    b.tfidf_indices = idx_b;
+    b.tfidf_weights = w_b;
+    b.tfidf_len = 1;
     b.file_path = "src/b.c";
     fce_sem_random_index("other", &b.ri_vec);
 
     int idx_c[] = {0};
     float w_c[] = {1.0f};
-    c.tfidf_indices = idx_c; c.tfidf_weights = w_c; c.tfidf_len = 1;
+    c.tfidf_indices = idx_c;
+    c.tfidf_weights = w_c;
+    c.tfidf_len = 1;
     c.file_path = "src/a.c";
     fce_sem_random_index("query", &c.ri_vec);
 
@@ -757,10 +765,10 @@ static void test_config_defaults(void) {
     PASS();
 }
 
-/* ── Regression tests for review fixes ─────────────────────── */
+/* ── Regression tests for bug fixes ─────────────────────── */
 
 static void test_search_query_null_doc_vectors(void) {
-    TEST(search_query on non-finalized corpus returns 0 results);
+    TEST(search_query on non - finalized corpus returns 0 results);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
     /* Don't add docs or finalize — doc_vectors_q is NULL. */
@@ -773,7 +781,7 @@ static void test_search_query_null_doc_vectors(void) {
 }
 
 static void test_combined_score_zero_vectors(void) {
-    TEST(combined score with zero api/type/deco vectors works);
+    TEST(combined score with zero api / type / deco vectors works);
     fce_sem_func_t a = {0}, b = {0};
 
     fce_sem_ensure_ready();
@@ -801,7 +809,7 @@ static void test_combined_score_zero_vectors(void) {
 }
 
 static void test_corpus_add_doc_pathological_count(void) {
-    TEST(corpus add_doc rejects >512 tokens);
+    TEST(corpus add_doc rejects > 512 tokens);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     /* Create a token array with >512 entries. */
     const char **tokens = (const char **)calloc(600, sizeof(char *));
@@ -827,7 +835,7 @@ static void test_corpus_add_doc_rejects_after_finalize(void) {
 }
 
 static void test_shutdown_and_reinit(void) {
-    TEST(shutdown and re-init works);
+    TEST(shutdown and re - init works);
     fce_sem_ensure_ready();
     /* Score something to ensure the pretrained map is populated. */
     fce_sem_vec_t v;
@@ -849,7 +857,7 @@ static void test_shutdown_and_reinit(void) {
 }
 
 static void test_hash_table_null_guard(void) {
-    TEST(hash table NULL guard on get/set/has);
+    TEST(hash table NULL guard on get / set / has);
     ASSERT(fce_ht_get(NULL, "key") == NULL);
     ASSERT(fce_ht_set(NULL, "key", NULL, NULL) == NULL);
     ASSERT(fce_ht_has(NULL, "key") == false);
@@ -919,17 +927,17 @@ static void test_search_query_repeated_same_corpus(void) {
      * are correct and stable across three queries of varying breadth. */
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
-    const char *doc_handle[]   = {"handle", "request", "parse", "auth"};
-    const char *doc_process[]  = {"process", "data", "transform"};
+    const char *doc_handle[] = {"handle", "request", "parse", "auth"};
+    const char *doc_process[] = {"process", "data", "transform"};
     const char *doc_validate[] = {"validate", "user", "check", "auth"};
-    const char *doc_send[]     = {"send", "response", "write"};
-    const char *doc_read[]     = {"read", "input", "parse", "buffer"};
+    const char *doc_send[] = {"send", "response", "write"};
+    const char *doc_read[] = {"read", "input", "parse", "buffer"};
     for (int i = 0; i < 20; i++) {
-        fce_sem_corpus_add_doc(corp, doc_handle,   4);
-        fce_sem_corpus_add_doc(corp, doc_process,  3);
+        fce_sem_corpus_add_doc(corp, doc_handle, 4);
+        fce_sem_corpus_add_doc(corp, doc_process, 3);
         fce_sem_corpus_add_doc(corp, doc_validate, 4);
-        fce_sem_corpus_add_doc(corp, doc_send,     3);
-        fce_sem_corpus_add_doc(corp, doc_read,     4);
+        fce_sem_corpus_add_doc(corp, doc_send, 3);
+        fce_sem_corpus_add_doc(corp, doc_read, 4);
     }
     ASSERT(fce_sem_corpus_finalize(corp) == 0);
 
@@ -954,7 +962,7 @@ static void test_search_query_repeated_same_corpus(void) {
     PASS();
 }
 
-/* Pre-existing Low-priority fix tests (from earlier review rounds) */
+/* Pre-existing Low-priority fix tests */
 
 static void test_abbreviation_lazy_allocation(void) {
     TEST(abbreviation hash table lazy allocation);
@@ -993,7 +1001,7 @@ static void test_abbreviation_concurrent_init(void) {
             if (strcmp(out[i], "config") == 0) has_config = 1;
             free(out[i]);
         }
-        ASSERT(has_error || count > 0);  /* At least some tokens */
+        ASSERT(has_error || count > 0); /* At least some tokens */
         ASSERT(has_config || count > 0);
     }
     PASS();
@@ -1017,7 +1025,7 @@ static void test_reverse_index_memory_cap(void) {
 
     /* Finalize should succeed without hitting the memory cap. */
     fce_sem_corpus_finalize(corp);
-    ASSERT(corp != NULL);  /* Corpus should be valid after finalize */
+    ASSERT(corp != NULL); /* Corpus should be valid after finalize */
 
     fce_sem_corpus_free(corp);
     PASS();
@@ -1137,14 +1145,14 @@ static void test_rank_flat_top_k_limit(void) {
     fce_sem_simple_rank_flat(
         all_weights, all_indices, tfidf_lens, all_ri_vecs, paths, 5, max_tok,
         q_indices, q_weights, 1, q_ri,
-        2, results, &count);  /* top_k = 2 */
+        2, results, &count); /* top_k = 2 */
 
     ASSERT(count == 2);
     ASSERT(results[0].score >= results[1].score);
     PASS();
 }
 
-/* ── Review 0003 fix tests ─────────────────────────────── */
+/* ── Bug fix regression tests ─────────────────────────────── */
 
 static void test_search_null_file_path(void) {
     TEST(search with NULL file_path does not crash);
@@ -1183,7 +1191,7 @@ static void test_doc_count_batch_parity(void) {
     fce_sem_corpus_t *single = fce_sem_corpus_new();
     fce_sem_corpus_add_doc(single, d1, 2);
     fce_sem_corpus_add_doc(single, d2, 2);
-    fce_sem_corpus_add_doc(single, NULL, 0);    /* empty — rejected */
+    fce_sem_corpus_add_doc(single, NULL, 0); /* empty — rejected */
     ASSERT(fce_sem_corpus_doc_count(single) == 2);
 
     /* Batch path: 4 inputs but only 2 valid */
@@ -1238,14 +1246,14 @@ static void test_corpus_get_or_add_oom_rollback(void) {
     /* Finalize and check IDF */
     fce_sem_corpus_finalize(corp);
     float idf_beta = fce_sem_corpus_idf(corp, "beta");
-    ASSERT(idf_beta > 0.0f);  /* beta in 1 of 2 docs */
+    ASSERT(idf_beta > 0.0f); /* beta in 1 of 2 docs */
     float idf_alpha = fce_sem_corpus_idf(corp, "alpha");
     ASSERT(idf_alpha >= 0.0f); /* alpha in 2 of 2 docs — IDF = log(2/2) = 0 */
     fce_sem_corpus_free(corp);
     PASS();
 }
 
-/* ── fix tests ──────────────────── */
+/* ── Edge case fix tests ──────────────────── */
 
 /* H-1: degenerate (all-OOV) query must return 0 results and must not
  * leak the strdup'd tokens from fce_sem_tokenize.  Before the fix the
@@ -1254,7 +1262,7 @@ static void test_corpus_get_or_add_oom_rollback(void) {
  * catches the leak; the correctness assertion below verifies the fix
  * at runtime in normal builds. */
 static void test_h1_oov_query_returns_empty(void) {
-    TEST(H-1: OOV-only query returns 0 results without leak);
+    TEST(H - 1 : OOV - only query returns 0 results without leak);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
     const char *t1[] = {"handle", "request"};
@@ -1295,12 +1303,12 @@ static void h3_count_worker(int idx, void *ctx) {
 }
 
 static void test_h3_parallel_for_static_covers_all_chunks(void) {
-    TEST(H-3: parallel_for_static visits each index exactly once);
+    TEST(H - 3 : parallel_for_static visits each index exactly once);
     for (int i = 0; i < H3_CHUNKS; i++) {
         atomic_store(&h3_visit_count[i], 0);
     }
 
-    fce_parallel_for_opts_t opts = { .max_workers = H3_CHUNKS };
+    fce_parallel_for_opts_t opts = {.max_workers = H3_CHUNKS};
     fce_parallel_for_static(H3_CHUNKS, h3_count_worker, NULL, opts);
 
     for (int i = 0; i < H3_CHUNKS; i++) {
@@ -1356,7 +1364,7 @@ typedef struct {
 } corpus_mirror_t;
 
 static void test_m1_finalize_failed_returns_error(void) {
-    TEST(M-1: finalize returns -1 when finalize_failed is set);
+    TEST(M - 1 : finalize returns - 1 when finalize_failed is set);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
 
@@ -1378,7 +1386,7 @@ static void test_m1_finalize_failed_returns_error(void) {
  * After removing the `c_dg && !p_dg` split from is_camel_break, tokens like
  * utf8, sha256, base64, int32 are no longer shredded into a stem + bare digit. */
 static void test_m2_digit_identifier_stays_whole(void) {
-    TEST(M-2: digit identifier tokens stay whole);
+    TEST(M - 2 : digit identifier tokens stay whole);
     char *tokens[16];
     int n;
 
@@ -1416,7 +1424,7 @@ static void test_m2_digit_identifier_stays_whole(void) {
  * "caf\xc3\xa9" (UTF-8 for "café") → only the ASCII prefix "caf" survives.
  * Normal ASCII input is unaffected. */
 static void test_m3_tokenize_locale_independent(void) {
-    TEST(M-3: non-ASCII bytes are dropped from tokens);
+    TEST(M - 3 : non - ASCII bytes are dropped from tokens);
     char *tokens[16];
     int n;
 
@@ -1448,7 +1456,7 @@ static void test_m3_tokenize_locale_independent(void) {
  * valid_doc_count will be 2, which exceeds the remaining capacity (1 slot),
  * triggering the cap-exceeded path. */
 static void test_m5_doc_map_out_cleared_on_cap_exceeded(void) {
-    TEST(M-5: doc_map_out cleared to -1 when doc cap exceeded);
+    TEST(M - 5 : doc_map_out cleared to - 1 when doc cap exceeded);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
 
@@ -1464,7 +1472,7 @@ static void test_m5_doc_map_out_cleared_on_cap_exceeded(void) {
     char *all_tokens[] = {"alpha", "beta"};
     int token_counts[] = {1, 1};
     int doc_map_out[2];
-    doc_map_out[0] = 42;   /* sentinel — must be overwritten to -1 */
+    doc_map_out[0] = 42; /* sentinel — must be overwritten to -1 */
     doc_map_out[1] = 43;
 
     fce_sem_corpus_add_docs_batch(corp, all_tokens, token_counts, 2, 1, doc_map_out);
@@ -1480,7 +1488,7 @@ static void test_m5_doc_map_out_cleared_on_cap_exceeded(void) {
     PASS();
 }
 
-/* ── PR review follow-up tests ──────────────────────────────────── */
+/* ── API integration tests ──────────────────────────────────── */
 
 /* doc_map_out happy path: a batch with one invalid doc (zero tokens) should
  * set doc_map_out[d] = -1 for that doc and sequential indices for the valid
@@ -1518,7 +1526,7 @@ static void test_doc_map_out_valid_batch(void) {
  * calls invalidate_doc_map (cap-exceeded) must not crash.  This is a
  * regression test for the NULL guard inside the helper. */
 static void test_doc_map_out_null_safe_on_rejection(void) {
-    TEST(doc_map_out NULL is safe on cap-exceeded rejection);
+    TEST(doc_map_out NULL is safe on cap - exceeded rejection);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
 
@@ -1651,7 +1659,7 @@ int main(void) {
     test_hash_table_null_guard();
     test_corpus_search_query();
 
-    /* Low-priority fix tests (previous review rounds) */
+    /* Low-priority fix tests */
     printf("\nLow Priority Fixes:\n");
     test_abbreviation_lazy_allocation();
     test_abbreviation_concurrent_init();
@@ -1662,32 +1670,32 @@ int main(void) {
     test_rank_flat_zero_scores();
     test_rank_flat_top_k_limit();
 
-    /* fixes */
-    printf("\nReview 0003 Fixes:\n");
+    /* Edge case fixes */
+    printf("\nEdge Case Fixes:\n");
     test_search_null_file_path();
     test_doc_count_batch_parity();
     test_abbrev_ht_oom_retry();
     test_corpus_get_or_add_oom_rollback();
 
-    /* fixes */
-    printf("\nReview Fixes:\n");
+    /* Edge case fixes */
+    printf("\nConcurrency Fixes:\n");
     test_h1_oov_query_returns_empty();
     test_h3_parallel_for_static_covers_all_chunks();
 
     /* Medium-priority fixes */
-    printf("\nMedium Fixes:\n");
+    printf("\nMedium-priority Fixes:\n");
     test_m1_finalize_failed_returns_error();
     test_m2_digit_identifier_stays_whole();
     test_m3_tokenize_locale_independent();
     test_m5_doc_map_out_cleared_on_cap_exceeded();
 
     /* Low-priority fixes */
-    printf("\nLow Fixes:\n");
+    printf("\nLow-priority Fixes:\n");
     test_corpus_free_after_finalize();
     test_search_query_repeated_same_corpus();
 
-    /* PR review follow-up */
-    printf("\nPR Review Follow-up:\n");
+    /* API integration tests */
+    printf("\nAPI Integration Tests:\n");
     test_doc_map_out_valid_batch();
     test_doc_map_out_null_safe_on_rejection();
     test_corpus_mirror_layout_sanity();

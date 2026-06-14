@@ -1,14 +1,12 @@
-/*
- * hash_table.c — Robin Hood open-addressing hash table.
+/* * hash_table.c — Robin Hood open-addressing hash table.
  *
  * Key design choices:
- *   - FNV-1a hash (fast, good distribution for strings)
- *   - Per-table random seed to mitigate hash-flooding DoS attacks
- *   - Robin Hood insertion: on collision, the key with shorter probe
- *     distance yields its slot. This bounds max probe distance.
- *   - Backward-shift deletion: no tombstones needed.
- *   - Load factor 75% triggers 2x resize.
- */
+ * - FNV-1a hash (fast, good distribution for strings)
+ * - Per-table random seed to mitigate hash-flooding DoS attacks
+ * - Robin Hood insertion: on collision, the key with shorter probe
+ * distance yields its slot. This bounds max probe distance.
+ * - Backward-shift deletion: no tombstones needed.
+ * - Load factor 75% triggers 2x resize. */
 #include "foundation/hash_table.h"
 #include "foundation/constants.h"
 #include <stdlib.h>
@@ -43,7 +41,7 @@ static uint32_t ht_random_seed(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint32_t s = (uint32_t)ts.tv_sec;
     uint32_t ns = (uint32_t)ts.tv_nsec;
-    /* L-4 (review 0006 §L-4): mix in getpid() — on a freshly-booted container
+    /* L-4: mix in getpid() — on a freshly-booted container
      * CLOCK_MONOTONIC starts near zero, so the seed is weakly guessable.
      * getpid() is cheap and adds PID-space entropy. */
     return s ^ (ns * 2654435761U) ^ 0x9E3779B9U ^ (uint32_t)getpid();
@@ -55,7 +53,7 @@ static uint32_t ht_random_seed(void) {
 #include <time.h>
 static uint32_t ht_random_seed_fallback(void) {
     uint32_t seed;
-    /* C7 (review 0002-0002 §3.7): getentropy provides OS-level entropy
+    /* C7: getentropy provides OS-level entropy
      * (read from /dev/urandom or getrandom syscall) on modern POSIX.
      * Available on glibc 2.25+, musl, BSDs. Much harder to guess than
      * clock-based seeding for hash-flood mitigation. */
@@ -68,7 +66,7 @@ static uint32_t ht_random_seed_fallback(void) {
     static uint32_t counter = 0;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    /* L-4 (review 0006 §L-4): mix in getpid() for PID-space entropy on
+    /* L-4: mix in getpid() for PID-space entropy on
      * fresh containers where CLOCK_MONOTONIC starts near zero. */
     return (uint32_t)ts.tv_nsec ^ (uint32_t)ts.tv_sec ^ (++counter) ^ (uint32_t)getpid();
 }
@@ -187,24 +185,24 @@ static bool ht_resize(FCEHashTable *ht) {
 void *fce_ht_set(FCEHashTable *ht, const char *key, void *value, bool *inserted) {
     if (inserted) *inserted = false;
     if (!ht || !key) return NULL;
-    /* N2 (review 2004 §N2): values MUST be non-NULL.  NULL is the sentinel
+    /* N2: values MUST be non-NULL. NULL is the sentinel
      * for "absent" — fce_ht_get returns NULL when a key is not found, so
-     * storing a real NULL payload is indistinguishable from a miss.  Enforce
+     * storing a real NULL payload is indistinguishable from a miss. Enforce
      * the contract rather than silently losing the entry. */
     if (!value) return NULL;
 
-    /* H-1 (review 0011 §H-1): Check load factor BEFORE any probing.
+    /* H-1: Check load factor BEFORE any probing.
      * Robin Hood steals during probing mutate the table in-place; if a
      * subsequent ht_resize OOMs, stolen entries are lost and the caller's
-     * key may be double-freed.  Checking + resizing here ensures the table
+     * key may be double-freed. Checking + resizing here ensures the table
      * is unmutated when OOM occurs, making the caller's free(key) correct
-     * and no live entry is ever dropped.  The cost is a potentially
+     * and no live entry is ever dropped. The cost is a potentially
      * unnecessary resize on update-heavy workloads, which is acceptable
      * for memory-safety.
-     * L5 (review 0002 §L5): on an UPDATE of an existing key, count does not
-     * grow, so the resize here is wasted work.  A future optimization could
+     * L5: on an UPDATE of an existing key, count does not
+     * grow, so the resize here is wasted work. A future optimization could
      * probe first to check for an existing key, but that reintroduces the
-     * Robin Hood mutation before the OOM check.  The current design trades
+     * Robin Hood mutation before the OOM check. The current design trades
      * unnecessary allocation on updates for unconditional memory-safety. */
     if ((uint64_t)ht->count * HT_LOAD_DEN >= (uint64_t)ht->capacity * HT_LOAD_NUM) {
         if (!ht_resize(ht)) return NULL;

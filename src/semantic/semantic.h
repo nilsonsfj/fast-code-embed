@@ -1,24 +1,22 @@
-/*
- * semantic.h — Algorithmic code embeddings for SEMANTICALLY_RELATED edges.
+/* * semantic.h — Algorithmic code embeddings for SEMANTICALLY_RELATED edges.
  *
  * Combines multiple signals into a unified similarity score without external
- * models or dependencies.  All signals derived from graph buffer metadata
+ * models or dependencies. All signals derived from graph buffer metadata
  * and the existing AST walk.
  *
  * Signals:
- *   1. TF-IDF on metadata tokens (vocabulary overlap)
- *   2. Random Indexing with co-occurrence (within-codebase synonym bridging)
- *   3. API Signature vectors (same callees → related)
- *   4. Type Signature vectors (same param/return types → related)
- *   5. Module Proximity (same directory → boost)
- *   6. Decorator Pattern vectors (same annotations → related)
- *   7. AST Structural Profile (control flow shape, expression types)
- *   8. Graph Diffusion (transitive closure via neighbor blending)
+ * 1. TF-IDF on metadata tokens (vocabulary overlap)
+ * 2. Random Indexing with co-occurrence (within-codebase synonym bridging)
+ * 3. API Signature vectors (same callees → related)
+ * 4. Type Signature vectors (same param/return types → related)
+ * 5. Module Proximity (same directory → boost)
+ * 6. Decorator Pattern vectors (same annotations → related)
+ * 7. AST Structural Profile (control flow shape, expression types)
+ * 8. Graph Diffusion (transitive closure via neighbor blending)
  *
  * Note: signals 7 includes data flow and Halstead complexity features,
  * computed at extraction time (ast_profile.h) and stored in properties_json.
- * The rest are computed in the post-pass.
- */
+ * The rest are computed in the post-pass. */
 #ifndef FCE_SEMANTIC_H
 #define FCE_SEMANTIC_H
 
@@ -26,7 +24,7 @@
 #include <stdint.h>
 #include "version.h"
 
-/* C8 (review 0002-0002 §3.8): 64-bit-only guard. On 32-bit builds with the
+/* C8: 64-bit-only guard. On 32-bit builds with the
  * full 5 M-vocab / 1 M-doc caps, size_t products (e.g. entry_count * 768)
  * overflow and under-allocate → heap overflow. Enforce 64-bit at compile time. */
 _Static_assert(sizeof(void *) >= 8,
@@ -35,7 +33,7 @@ _Static_assert(sizeof(void *) >= 8,
 /* ── Configuration ───────────────────────────────────────────────── */
 
 /* Random Indexing dimension. 256 is sufficient for <500K functions. */
-/* 768 = nomic-embed-code embedding dimension.  Matches FCE_PRETRAINED_DIM.
+/* 768 = nomic-embed-code embedding dimension. Matches FCE_PRETRAINED_DIM.
  * FCE_SEM_DIM_256: compile with -DFCE_SEM_DIM_256 to use 256 dims instead.
  * Saves ~640 MB memory (enriched_vecs_q + doc_vectors_q) at the cost of
  * lower embedding quality. All SIMD kernels adapt automatically. */
@@ -67,10 +65,10 @@ enum { FCE_SEM_AST_PROFILE_DIMS = 25 };
 /* Query path selection: runtime mode for dispatching search calls.
  * FCE_QUERY_AUTO is the default — preserves current behavior with no regression. */
 typedef enum {
-    FCE_QUERY_AUTO   = 0,  /* use fast path, fall back to brute if no inv index */
-    FCE_QUERY_BRUTE  = 1,  /* always brute-force scan all docs */
-    FCE_QUERY_FAST   = 2,  /* inverted index + rerank; does NOT fall back to brute-force */
-    FCE_QUERY_TFIDF  = 3,  /* TF-IDF candidate retrieval + RI rerank */
+    FCE_QUERY_AUTO = 0,  /* use fast path, fall back to brute if no inv index */
+    FCE_QUERY_BRUTE = 1, /* always brute-force scan all docs */
+    FCE_QUERY_FAST = 2,  /* inverted index + rerank; does NOT fall back to brute-force */
+    FCE_QUERY_TFIDF = 3, /* TF-IDF candidate retrieval + RI rerank */
 } fce_query_mode_t;
 
 /* Sparse vector storage: keep top-K non-zero elements per vector.
@@ -78,7 +76,7 @@ typedef enum {
  * Top-32 gives 12x compression (768→64 bytes/vector) with minimal quality loss. */
 enum { FCE_SPARSE_NNZ_DEFAULT = 32 };
 
-/* M-1 (review 0011 §M-1): sentinel value for sparse index padding.
+/* M-1: sentinel value for sparse index padding.
  * 0xFFFF marks empty slots; must be > any valid dimension index. */
 _Static_assert(FCE_SEM_DIM < 0xFFFF,
                "FCE_SEM_DIM must be < 0xFFFF so the sparse-index sentinel is unambiguous");
@@ -94,22 +92,22 @@ typedef struct {
     float threshold;
     int max_edges;
     fce_query_mode_t query_mode;
-    bool sparse_vectors;     /* use sparse storage for enriched/doc vectors.
-                             * L-4 (review 0005 §L-4), M-2 (review 0006 §M-2):
-                             * WARNING — sparse mode changes RANKING, not just
-                             * precision.  The query magnitude is computed over
-                             * all 768 dims but the document magnitude over only
-                             * the top-K retained dims, producing a non-monotone
-                             * cosine that can reorder results vs dense mode.
-                             * Callers that assume sparse mode is a lossy-but-
-                             * rank-preserving optimization will get subtly wrong
-                             * top-k ordering. Use dense mode for faithful rank-
-                             * order; sparse mode is a memory/speed trade-off
-                             * only.  Making cosine monotone would require per-
-                             * document query magnitude (different docs have
-                             * different sparse indices), defeating the fast
-                             * pre-quantized query path. */
-    int sparse_nnz;          /* non-zero entries per vector (default 32) */
+    bool sparse_vectors; /* use sparse storage for enriched/doc vectors.
+                          * L-4, M-2:
+                          * WARNING — sparse mode changes RANKING, not just
+                          * precision. The query magnitude is computed over
+                          * all 768 dims but the document magnitude over only
+                          * the top-K retained dims, producing a non-monotone
+                          * cosine that can reorder results vs dense mode.
+                          * Callers that assume sparse mode is a lossy-but-
+                          * rank-preserving optimization will get subtly wrong
+                          * top-k ordering. Use dense mode for faithful rank-
+                          * order; sparse mode is a memory/speed trade-off
+                          * only. Making cosine monotone would require per-
+                          * document query magnitude (different docs have
+                          * different sparse indices), defeating the fast
+                          * pre-quantized query path. */
+    int sparse_nnz;      /* non-zero entries per vector (default 32) */
 } fce_sem_config_t;
 
 /* Get default config (can be overridden via env vars). */
@@ -126,7 +124,7 @@ enum { FCE_SEM_MAX_TOKENS = 512 };
 /* Split a name into tokens: camelCase, snake_case, dot.separated.
  * Writes up to max_out tokens into out. Returns token count.
  * Tokens are lowercased. Caller must free each token.
- * I1 (review 0003 §I1): shares the no-concurrent-shutdown requirement
+ * I1: shares the no-concurrent-shutdown requirement
  * with fce_sem_random_index — reads g_abbrev_ht without the reader-count
  * bracket. */
 int fce_sem_tokenize(const char *name, char **out, int max_out);
@@ -136,8 +134,8 @@ int fce_sem_tokenize(const char *name, char **out, int max_out);
  * token_counts_out[f] = number of tokens for name f.
  * Caller must free each individual token string. */
 void fce_sem_tokenize_batch(const char **names, int count,
-                             char **all_tokens_out, int *token_counts_out,
-                             int max_out);
+                            char **all_tokens_out, int *token_counts_out,
+                            int max_out);
 
 /* ── Dense vectors ───────────────────────────────────────────────── */
 
@@ -161,7 +159,7 @@ void fce_sem_ensure_ready(void);
 /* Free global resources (pretrained token map).
  * Safe to call even if ensure_ready was never called.
  * After shutdown, ensure_ready can be called again to re-initialize.
- * L-3 (review 0005 §L-3): env-var caches (FCE_BRUTE_WORKERS, FCE_STACK_SIZE)
+ * L-3: env-var caches (FCE_BRUTE_WORKERS, FCE_STACK_SIZE)
  * are never reset by shutdown — changes to these env vars after a
  * shutdown/re-init cycle are silently ignored. This is consistent with
  * the env-var-read-once semantics but inconsistent with the re-init
@@ -257,10 +255,10 @@ float fce_sem_corpus_idf(const fce_sem_corpus_t *corpus, const char *token);
  * (the normal path), this dequantizes into a _Thread_local scratch buffer.
  * The returned pointer is only valid until the next call to this function
  * from the SAME thread.
- *   - DO NOT cache the pointer across calls
- *   - DO NOT hold two ri_vec pointers simultaneously (the second call
- *     overwrites the first)
- *   - DO NOT pass the pointer to a function that may itself call ri_vec
+ * - DO NOT cache the pointer across calls
+ * - DO NOT hold two ri_vec pointers simultaneously (the second call
+ * overwrites the first)
+ * - DO NOT pass the pointer to a function that may itself call ri_vec
  * Each function has its own _Thread_local scratch, so calling
  * fce_sem_corpus_token_at() does NOT invalidate a pointer from this function.
  * If you need a stable copy, memcpy the data (fce_sem_dup_ri_vec does
@@ -288,7 +286,7 @@ void fce_sem_corpus_free(fce_sem_corpus_t *corpus);
  * Tokenizes each name, registers tokens in the corpus for IDF counting.
  * This avoids the overhead of returning String[][] to Java. */
 void fce_sem_corpus_add_docs_tokenized(fce_sem_corpus_t *corpus,
-                                        const char **names, int count);
+                                       const char **names, int count);
 
 /* Read source files, chunk by } boundaries, tokenize, and add to corpus.
  * All work happens in C — no intermediate Java objects.
@@ -297,22 +295,22 @@ void fce_sem_corpus_add_docs_tokenized(fce_sem_corpus_t *corpus,
  * max_tokens_per_chunk caps tokens per chunk (0 = FCE_SEM_MAX_TOKENS).
  * Returns total documents added, or -1 on error.
  *
- * DoS BOUNDS (review 0002 §4.4):
- *   - per-file: 64 MB default, configurable via FCE_MAX_FILE_SIZE env var
- *     (subject to errno=ERANGE rejection, so LONG_MAX is never accepted)
- *   - per-doc: 512 tokens (FCE_SEM_MAX_TOKENS) hard limit
- *   - per-batch: 5000 documents buffered at a time, then flushed to the corpus
- *   - corpus total vocab: 5 M tokens (FCE_SEM_MAX_ENTRY_COUNT)
- *   - corpus total doc count: 1 M documents (FCE_SEM_MAX_DOC_COUNT)
- *   The library is offline-only and trusts the caller.
+ * DoS BOUNDS:
+ * - per-file: 64 MB default, configurable via FCE_MAX_FILE_SIZE env var
+ * (subject to errno=ERANGE rejection, so LONG_MAX is never accepted)
+ * - per-doc: 512 tokens (FCE_SEM_MAX_TOKENS) hard limit
+ * - per-batch: 5000 documents buffered at a time, then flushed to the corpus
+ * - corpus total vocab: 5 M tokens (FCE_SEM_MAX_ENTRY_COUNT)
+ * - corpus total doc count: 1 M documents (FCE_SEM_MAX_DOC_COUNT)
+ * The library is offline-only and trusts the caller.
  *
- *   file_doc_counts: caller-allocated array of at least path_count ints.
- *   On return, file_doc_counts[fi] is the number of documents contributed
- *   by paths[fi]. Passing a shorter array is undefined behavior. */
+ * file_doc_counts: caller-allocated array of at least path_count ints.
+ * On return, file_doc_counts[fi] is the number of documents contributed
+ * by paths[fi]. Passing a shorter array is undefined behavior. */
 int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
-                              const char **paths, int path_count,
-                              int chunk_size, int *file_doc_counts,
-                              int max_tokens_per_chunk);
+                             const char **paths, int path_count,
+                             int chunk_size, int *file_doc_counts,
+                             int max_tokens_per_chunk);
 
 /* ── Combined scoring ────────────────────────────────────────────── */
 
@@ -321,7 +319,7 @@ float fce_sem_combined_score(const fce_sem_func_t *a, const fce_sem_func_t *b,
                              const fce_sem_config_t *cfg);
 
 /* Module proximity multiplier based on file paths.
- * L-5 (review 0011 §L-5): path comparison is byte-wise over '/' only.
+ * L-5: path comparison is byte-wise over '/' only.
  * Multi-byte UTF-8 path segments and Windows '\' separators are not handled;
  * cross-platform indexers feeding backslash paths get a flat proximity of 1.0.
  * For the stated corpora (Unix-style repo paths) this is fine. */
@@ -338,20 +336,20 @@ typedef struct {
  * Results are sorted descending by score (ties broken by index ascending for
  * deterministic output). Output written to results_out (caller-allocated).
  * count_out receives the number of results (<= top_k).
- * CONTRACT (review 0011 §M-1): corpus-side tfidf_indices MUST be sorted
+ * CONTRACT: corpus-side tfidf_indices MUST be sorted
  * ascending per-item even in release builds. Unsorted input silently
  * produces wrong scores via the two-pointer merge in fce_sparse_tfidf_cosine.
  * The JNI layer enforces this; direct C callers must ensure it themselves. */
 void fce_sem_rank(fce_sem_func_t *query, fce_sem_func_t *corpus,
-                   uint32_t corpus_size, uint32_t top_k,
-                   const fce_sem_config_t *cfg,
-                   fce_sem_ranked_t *results_out, uint32_t *count_out);
+                  uint32_t corpus_size, uint32_t top_k,
+                  const fce_sem_config_t *cfg,
+                  fce_sem_ranked_t *results_out, uint32_t *count_out);
 
 /* Search with minimum score threshold. */
 void fce_sem_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
-                     uint32_t corpus_size, uint32_t top_k, float min_score,
-                     const fce_sem_config_t *cfg,
-                     fce_sem_ranked_t *results_out, uint32_t *count_out);
+                    uint32_t corpus_size, uint32_t top_k, float min_score,
+                    const fce_sem_config_t *cfg,
+                    fce_sem_ranked_t *results_out, uint32_t *count_out);
 
 /* ── Simple API ──────────────────────────────────────────────────── */
 
@@ -364,25 +362,24 @@ float fce_sem_simple_score(fce_sem_func_t *a, fce_sem_func_t *b);
  * No inverted-index fast path — every corpus entry is scored. For large
  * corpora with a batch API, use simple_rank_flat instead. */
 void fce_sem_simple_rank(fce_sem_func_t *query, fce_sem_func_t *corpus,
-                          uint32_t corpus_size, uint32_t top_k,
-                          fce_sem_ranked_t *results_out, uint32_t *count_out);
+                         uint32_t corpus_size, uint32_t top_k,
+                         fce_sem_ranked_t *results_out, uint32_t *count_out);
 
 /* Search with min_score threshold using simple scoring. */
 void fce_sem_simple_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
-                            uint32_t corpus_size, uint32_t top_k,
-                            float min_score,
-                            fce_sem_ranked_t *results_out, uint32_t *count_out);
+                           uint32_t corpus_size, uint32_t top_k,
+                           float min_score,
+                           fce_sem_ranked_t *results_out, uint32_t *count_out);
 
 /* ── Batch ranking (flat arrays, zero struct marshaling) ────────── */
 
-/*
- * Rank corpus against a query using flat pre-extracted arrays.
+/* * Rank corpus against a query using flat pre-extracted arrays.
  * All scoring happens in C — no per-item JNI overhead.
  *
  * IMPORTANT: all_tfidf_indices and q_tfidf_indices MUST be sorted ascending
  * per-document (row). The sparse TF-IDF cosine merge relies on this invariant.
  *
- * SCORING (review 0002 §5.2): this function intentionally uses RI-only
+ * SCORING: this function intentionally uses RI-only
  * scoring (cosine of the random-index vectors). The TF-IDF weights and
  * indices in the flat layout are accepted as input for layout symmetry
  * with the structured API, but they are NOT consumed by the scorer.
@@ -400,30 +397,29 @@ void fce_sem_simple_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
  * results, use fce_sem_simple_search with fce_sem_func_t structs.
  *
  * Corpus layout (flat, row-major):
- *   all_tfidf_weights[f * max_tokens + t]  — IDF weight for token t in func f
- *   all_tfidf_indices[f * max_tokens + t]  — vocabulary index for token t
- *   tfidf_lens[f]                          — number of tokens in func f
- *   all_ri_vecs[f * FCE_SEM_DIM + d]       — RI vector dimension d for func f
- *   file_paths[f]                          — file path string for func f
+ * all_tfidf_weights[f * max_tokens + t] — IDF weight for token t in func f
+ * all_tfidf_indices[f * max_tokens + t] — vocabulary index for token t
+ * tfidf_lens[f] — number of tokens in func f
+ * all_ri_vecs[f * FCE_SEM_DIM + d] — RI vector dimension d for func f
+ * file_paths[f] — file path string for func f
  *
  * Query layout:
- *   q_tfidf_indices[0..q_tfidf_len-1]  — vocabulary indices
- *   q_tfidf_weights[0..q_tfidf_len-1]  — corresponding IDF weights
- *   q_ri_vec[0..FCE_SEM_DIM-1]         — summed RI vector
+ * q_tfidf_indices[0..q_tfidf_len-1] — vocabulary indices
+ * q_tfidf_weights[0..q_tfidf_len-1] — corresponding IDF weights
+ * q_ri_vec[0..FCE_SEM_DIM-1] — summed RI vector
  *
- * Results are sorted by score descending.
- */
+ * Results are sorted by score descending. */
 void fce_sem_simple_rank_flat(
     /* corpus (flat) */
     const float *all_tfidf_weights,
-    const int   *all_tfidf_indices,
-    const int   *tfidf_lens,
+    const int *all_tfidf_indices,
+    const int *tfidf_lens,
     const float *all_ri_vecs,
     const char **file_paths,
     uint32_t corpus_size,
     int max_tokens,
     /* query */
-    const int   *q_tfidf_indices,
+    const int *q_tfidf_indices,
     const float *q_tfidf_weights,
     int q_tfidf_len,
     const float *q_ri_vec,
@@ -451,20 +447,20 @@ void fce_sem_simple_rank_flat(
  * at least one query token). Use fce_sem_search_query_bruteforce for
  * exhaustive search when this matters. */
 void fce_sem_search_query(const fce_sem_corpus_t *corpus,
-                           const char *query,
-                           uint32_t top_k,
-                           fce_sem_ranked_t *results_out,
-                           uint32_t *count_out,
-                           const fce_sem_config_t *cfg);
+                          const char *query,
+                          uint32_t top_k,
+                          fce_sem_ranked_t *results_out,
+                          uint32_t *count_out,
+                          const fce_sem_config_t *cfg);
 
 /* Brute-force search: scans ALL document vectors with cosine similarity.
  * Slower but guaranteed to find the global top-k. Use when the inverted
  * index is unavailable or when exhaustive search is required. */
 void fce_sem_search_query_bruteforce(const fce_sem_corpus_t *corpus,
-                                      const char *query,
-                                      uint32_t top_k,
-                                      fce_sem_ranked_t *results_out,
-                                      uint32_t *count_out);
+                                     const char *query,
+                                     uint32_t top_k,
+                                     fce_sem_ranked_t *results_out,
+                                     uint32_t *count_out);
 
 /* TF-IDF hybrid search: uses TF-IDF sparse cosine for candidate retrieval,
  * then reranks with RI cosine. Better candidate quality than the keyword
@@ -472,16 +468,16 @@ void fce_sem_search_query_bruteforce(const fce_sem_corpus_t *corpus,
  * cfg controls the search path (same semantics as fce_sem_search_query).
  * Pass NULL to use AUTO (backward compatible). */
 void fce_sem_search_query_tfidf(const fce_sem_corpus_t *corpus,
-                                 const char *query,
-                                 uint32_t top_k,
-                                 fce_sem_ranked_t *results_out,
-                                 uint32_t *count_out,
-                                 const fce_sem_config_t *cfg);
+                                const char *query,
+                                uint32_t top_k,
+                                fce_sem_ranked_t *results_out,
+                                uint32_t *count_out,
+                                const fce_sem_config_t *cfg);
 
 /* Return the number of candidates the inverted index would retrieve
  * for a given query. Useful for understanding search selectivity. */
 int fce_sem_search_candidate_count(const fce_sem_corpus_t *corpus,
-                                    const char *query);
+                                   const char *query);
 
 /* ── Graph diffusion ─────────────────────────────────────────────── */
 

@@ -1,9 +1,7 @@
-/*
- * compat_thread.c — Portable thread, mutex, and aligned allocation.
+/* * compat_thread.c — Portable thread, mutex, and aligned allocation.
  *
  * POSIX: thin wrappers around pthreads and posix_memalign.
- * Windows: CreateThread, CRITICAL_SECTION, _aligned_malloc.
- */
+ * Windows: CreateThread, CRITICAL_SECTION, _aligned_malloc. */
 #include "foundation/constants.h"
 #include "foundation/compat_thread.h"
 

@@ -1,6 +1,4 @@
-/*
- * log.c — Structured key-value logging to stderr.
- */
+/* * log.c — Structured key-value logging to stderr. */
 #include "foundation/log.h"
 #include "foundation/constants.h"
 #include <inttypes.h>
@@ -9,7 +7,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-/* C-2 (review 0002 §3.1): g_log_level and g_log_sink are _Atomic so concurrent
+/* C-2: g_log_level and g_log_sink are _Atomic so concurrent
  * fce_log / fce_log_set_level / fce_log_set_sink from different threads do
  * not constitute a data race (UB on weakly-ordered architectures). */
 static _Atomic FCELogLevel g_log_level = FCE_LOG_INFO;
@@ -48,7 +46,7 @@ void fce_log(FCELogLevel level, const char *msg, ...) {
     }
 
     /* Build the log line into a buffer ONCE — no double va_list iteration.
-     * Silently truncates at FCE_SZ_512 bytes (review 0002 §5.6). This is
+     * Silently truncates at FCE_SZ_512 bytes. This is
      * acceptable for the structured-key=value format because the loss is
      * always in the last value, and the keys/values passed are typically
      * short (pass=defs elapsed_ms=42, etc.). */
@@ -76,7 +74,7 @@ void fce_log(FCELogLevel level, const char *msg, ...) {
          * error. Clamp to 0 so the next snprintf doesn't compute an underflowed
          * pointer. Also clamp to buffer size so the next write is in-bounds. */
         if (pos < 0) pos = 0;
-        /* L-2 (review 0006 §L-2): snprintf returns the number of chars that
+        /* L-2: snprintf returns the number of chars that
          * WOULD have been written, so pos can exceed sizeof(line_buf). Normalize
          * after each write so the next snprintf call computes a valid size. */
         if (pos > (int)sizeof(line_buf) - 1) pos = (int)sizeof(line_buf) - 1;
@@ -86,7 +84,7 @@ void fce_log(FCELogLevel level, const char *msg, ...) {
     /* When a sink is registered it takes over all output (exclusive).
      * Snapshot the sink pointer atomically; calling through a stale
      * non-NULL pointer is fine because the sink contract is "lives for the
-     * whole process lifetime" (C-2 review 0002 §7.3). */
+     * whole process lifetime". */
     fce_log_sink_fn sink = atomic_load_explicit(&g_log_sink, memory_order_acquire);
     if (sink) {
         sink(line_buf);

@@ -66,7 +66,7 @@ def is_code_relevant(token_str: str) -> bool:
     if not s:
         return False
 
-    # Remove BPE markers (Ġ = space prefix, ▁ = sentencepiece, Ċ/ċ = newline in Qwen)
+    # Remove BPE markers (Ġ = space prefix, ▁ = sentencepiece, Ċ/ċ = newline marker)
     clean = s.lstrip("\u0120\u2581")  # Ġ, ▁
     if not clean:
         return False

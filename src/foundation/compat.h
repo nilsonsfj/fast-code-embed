@@ -1,10 +1,8 @@
-/*
- * compat.h — Cross-platform compatibility macros and shims.
+/* * compat.h — Cross-platform compatibility macros and shims.
  *
  * Provides portable TLS, sleep, strdup/strndup, and getline across
  * POSIX (macOS/Linux) and Windows. Include this instead of using
- * platform-specific macros directly.
- */
+ * platform-specific macros directly. */
 #ifndef FCE_COMPAT_H
 #define FCE_COMPAT_H
 

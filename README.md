@@ -52,6 +52,17 @@ fce_sem_corpus_free(corp);
 A first-class Java binding is available under `java/`. Full details in
 [java/README.md](java/README.md). In short:
 
+**Maven:**
+```xml
+<dependency>
+    <groupId>io.github.nilsonsfj</groupId>
+    <artifactId>fast-code-embed</artifactId>
+    <version>0.0.1</version>
+</dependency>
+```
+
+**From source:**
+
 ```bash
 # Build the C library, then the Java binding
 make
@@ -95,7 +106,7 @@ the library builds two complementary representations:
 For advanced use, you can also wire in your own call graph, type system, or AST
 via the `api_vec`, `type_vec`, `decorator_vec`, and `struct_profile[25]` fields
 in `fce_sem_func_t`. Search path is configurable via `fce_query_mode_t`
-(AUTO, BRUTE, FAST, TFIDF) — see [CONFIGURABLE-QUERY-MODES.md](CONFIGURABLE-QUERY-MODES.md).
+(AUTO, BRUTE, FAST, TFIDF) — see [CONFIGURABLE-QUERY-MODES.md](docs/CONFIGURABLE-QUERY-MODES.md).
 
 ## Platform Support
 

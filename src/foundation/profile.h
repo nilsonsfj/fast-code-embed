@@ -1,5 +1,4 @@
-/*
- * profile.h — Activatable fine-grained performance profiling.
+/* * profile.h — Activatable fine-grained performance profiling.
  *
  * Enable via environment variable: FCE_PROFILE=1 (or any non-empty non-"0" value)
  * Init is called once at program startup (from main.c).
@@ -8,10 +7,9 @@
  * effectively zero overhead.
  *
  * Output format (structured log lines, parseable):
- *   level=info msg=prof phase=<pass> sub=<subphase> ms=<N> us=<N> items=<N> rate_per_s=<N>
+ * level=info msg=prof phase=<pass> sub=<subphase> ms=<N> us=<N> items=<N> rate_per_s=<N>
  *
- * Grep for `msg=prof` to get a full profile report.
- */
+ * Grep for `msg=prof` to get a full profile report. */
 #ifndef FCE_PROFILE_H
 #define FCE_PROFILE_H
 

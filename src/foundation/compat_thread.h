@@ -1,9 +1,7 @@
-/*
- * compat_thread.h — Portable threading: pthreads on POSIX, Win32 threads on Windows.
+/* * compat_thread.h — Portable threading: pthreads on POSIX, Win32 threads on Windows.
  *
  * Provides: thread create/join, mutex, aligned allocation.
- * All have zero overhead on POSIX (thin inlines or macros).
- */
+ * All have zero overhead on POSIX (thin inlines or macros). */
 #ifndef FCE_COMPAT_THREAD_H
 #define FCE_COMPAT_THREAD_H
 

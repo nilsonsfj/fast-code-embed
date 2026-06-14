@@ -1,6 +1,4 @@
-/*
- * constants.h — Project-wide named constants.
- */
+/* * constants.h — Project-wide named constants. */
 #ifndef FCE_CONSTANTS_H
 #define FCE_CONSTANTS_H
 

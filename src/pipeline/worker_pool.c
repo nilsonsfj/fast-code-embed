@@ -1,14 +1,14 @@
-/*
- * worker_pool.c — Parallel-for dispatch with pthreads.
+/* * worker_pool.c — Parallel-for dispatch with pthreads.
  *
  * Uses pthreads with configurable stacks and atomic work-stealing index.
  * Each worker pulls indices from a shared atomic counter — zero
- * contention, natural load balancing across heterogeneous cores.
- */
+ * contention, natural load balancing across heterogeneous cores. */
 #include "pipeline/worker_pool.h"
 #include "foundation/constants.h"
 
-enum { WP_TRUE = 1, WP_MIN = 1, WP_STEP = 1 };
+enum { WP_TRUE = 1,
+       WP_MIN = 1,
+       WP_STEP = 1 };
 #include "foundation/platform.h"
 #include "foundation/compat_thread.h"
 
@@ -20,10 +20,10 @@ enum { WP_TRUE = 1, WP_MIN = 1, WP_STEP = 1 };
  * Default 1 MB; override via FCE_STACK_SIZE env var (in bytes). */
 #define FCE_DEFAULT_WORKER_STACK ((size_t)1 * FCE_SZ_1K * FCE_SZ_1K)
 
-/* M1 (review 0002 §M1): cache FCE_STACK_SIZE at init.
+/* M1: cache FCE_STACK_SIZE at init.
  * fce_safe_getenv iterates environ directly and is NOT safe against
- * concurrent setenv/putenv.  Read once, store the result. */
-static size_t g_cached_stack_size = 0;   /* 0 = not yet cached */
+ * concurrent setenv/putenv. Read once, store the result. */
+static size_t g_cached_stack_size = 0; /* 0 = not yet cached */
 static fce_once_t g_stack_size_once = FCE_ONCE_INIT;
 static void init_stack_size(void) {
     size_t stack_size = FCE_DEFAULT_WORKER_STACK;
@@ -75,12 +75,13 @@ static void run_pthreads_static(int count, fce_parallel_fn fn, void *ctx, int nw
     fce_thread_t *threads = (fce_thread_t *)malloc((size_t)nworkers * sizeof(fce_thread_t));
     static_chunk_arg_t *args = (static_chunk_arg_t *)malloc((size_t)total_workers * sizeof(static_chunk_arg_t));
     if (!threads || !args) {
-        free(threads); free(args);
+        free(threads);
+        free(args);
         run_serial(count, fn, ctx);
         return;
     }
 
-    /* M1 (review 0002 §M1): use cached stack size. */
+    /* M1: use cached stack size. */
     fce_once(&g_stack_size_once, init_stack_size);
     size_t stack_size = g_cached_stack_size;
 
@@ -88,7 +89,7 @@ static void run_pthreads_static(int count, fce_parallel_fn fn, void *ctx, int nw
     int offset = 0;
     for (int i = 0; i < total_workers; i++) {
         int sz = chunk_size + (i < remainder ? 1 : 0);
-        args[i] = (static_chunk_arg_t){ .fn = fn, .ctx = ctx, .start = offset, .end = offset + sz };
+        args[i] = (static_chunk_arg_t){.fn = fn, .ctx = ctx, .start = offset, .end = offset + sz};
         offset += sz;
     }
 
@@ -154,7 +155,7 @@ static void run_pthreads(int count, fce_parallel_fn fn, void *ctx, int nworkers)
         .count = count,
     };
 
-    /* M1 (review 0002 §M1): use cached stack size. */
+    /* M1: use cached stack size. */
     fce_once(&g_stack_size_once, init_stack_size);
     size_t stack_size = g_cached_stack_size;
 

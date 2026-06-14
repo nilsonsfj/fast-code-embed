@@ -51,7 +51,7 @@ public class FuncDescriptor {
      * @throws IllegalArgumentException if arrays have different lengths
      */
     public void setTfidf(int[] indices, float[] weights) {
-        /* J-2 (review 0002 §2.6): the previous code would NPE on null input
+        /* J-2: the previous code would NPE on null input
          * with no argument name in the stack. Objects.requireNonNull gives
          * a useful diagnostic ("indices" or "weights") for the common
          * "I passed getIdf() == null" mistake. */
@@ -89,7 +89,7 @@ public class FuncDescriptor {
      * @throws IllegalArgumentException if vec.length != 768
      */
     public void setRiVec(float[] vec) {
-        /* J-2 (review 0002 §2.6): same as setTfidf. */
+        /* J-2: same as setTfidf. */
         Objects.requireNonNull(vec, "vec");
         if (vec.length != 768) {
             throw new IllegalArgumentException("RI vector must be 768 dimensions, got " + vec.length);

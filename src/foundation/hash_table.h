@@ -1,12 +1,10 @@
-/*
- * hash_table.h — Robin Hood open-addressing hash table (string → void*).
+/* * hash_table.h — Robin Hood open-addressing hash table (string → void*).
  *
  * Design decisions:
- *   - Keys are interned or arena-allocated strings (NOT copied by the table)
- *   - Open addressing with Robin Hood insertion for bounded probe distance
- *   - Power-of-2 capacity with 75% load factor trigger for resize
- *   - Tombstone-free deletion via backward shift
- */
+ * - Keys are interned or arena-allocated strings (NOT copied by the table)
+ * - Open addressing with Robin Hood insertion for bounded probe distance
+ * - Power-of-2 capacity with 75% load factor trigger for resize
+ * - Tombstone-free deletion via backward shift */
 #ifndef FCE_HASH_TABLE_H
 #define FCE_HASH_TABLE_H
 
@@ -35,7 +33,7 @@ FCEHashTable *fce_ht_create(uint32_t initial_capacity);
 /* Free the hash table (does NOT free keys or values). */
 void fce_ht_free(FCEHashTable *ht);
 
-/* THREAD-SAFETY (review 0002 §3.5): fce_ht_* is NOT thread-safe. Concurrent
+/* THREAD-SAFETY: fce_ht_* is NOT thread-safe. Concurrent
  * fce_ht_set / fce_ht_get / fce_ht_delete on the same table will corrupt the
  * probe sequence (the resize check inside set is not atomic with the
  * insert). Externalise synchronization if needed. Read-mostly workloads
@@ -47,7 +45,7 @@ void fce_ht_free(FCEHashTable *ht);
 /* Insert or update. Returns previous value (NULL if new key or OOM).
  * If 'inserted' is non-NULL, set to true when a new key was added,
  * false on update or OOM — disambiguates the NULL return.
- * B4 (review 0010 §B4): callers MUST check 'inserted' to distinguish
+ * B4: callers MUST check 'inserted' to distinguish
  * "new insert, no previous value" (inserted=true, return=NULL) from
  * "OOM during resize" (inserted unchanged, return=NULL). Ignoring
  * 'inserted' and relying solely on the return value is an API trap. */

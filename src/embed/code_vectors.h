@@ -13,8 +13,7 @@
  * (30 MB vs 120 MB) and equal on runtime.
  *
  * Source: https://huggingface.co/nomic-ai/nomic-embed-code
- * License: Apache 2.0
- */
+ * License: Apache 2.0 */
 #ifndef FCE_EMBED_VECTORS_H
 #define FCE_EMBED_VECTORS_H
 
@@ -30,7 +29,7 @@ extern const unsigned int FCE_PRETRAINED_VECTOR_BLOB_LEN;
 
 /* Access the int8 vector for token index i. Zero-copy pointer into blob. */
 static inline const int8_t *fce_pretrained_vec_at(int i) {
-    return (const int8_t *)(FCE_PRETRAINED_VECTOR_BLOB + 8 + (size_t)i * FCE_PRETRAINED_DIM);
+ return (const int8_t *)(FCE_PRETRAINED_VECTOR_BLOB + 8 + (size_t)i * FCE_PRETRAINED_DIM);
 }
 
 /* Token strings (separate header to keep this file clean). */

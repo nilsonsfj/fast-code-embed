@@ -1,6 +1,4 @@
-/*
- * profile.c — Activatable profiling implementation.
- */
+/* * profile.c — Activatable profiling implementation. */
 /* Define POSIX feature level on Linux for clock_gettime support.
  * On macOS, clock_gettime is available by default. */
 #if defined(__linux__)

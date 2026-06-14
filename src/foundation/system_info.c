@@ -1,16 +1,15 @@
-/*
- * system_info.c — CPU core count and RAM detection.
+/* * system_info.c — CPU core count and RAM detection.
  *
  * macOS: sysctlbyname for core counts, hw.memsize for RAM.
  * BSD: sysconf + sysctl(HW_PHYSMEM64 / HW_PHYSMEM).
  * Linux: sysconf + sysinfo().
  * Windows: GetSystemInfo + GlobalMemoryStatusEx.
  *
- * Results are cached after first call (immutable hardware properties).
- */
+ * Results are cached after first call (immutable hardware properties). */
 #include "foundation/constants.h"
 
-enum { DEFAULT_CORES = 1, MIN_WORKERS = 1 };
+enum { DEFAULT_CORES = 1,
+       MIN_WORKERS = 1 };
 #include "foundation/platform.h"
 #include <stdint.h> // uint64_t
 #include <string.h>
@@ -89,9 +88,9 @@ static fce_system_info_t detect_system_bsd(void) {
     info.perf_cores = info.total_cores;
 
 #if defined(__OpenBSD__)
-    int mib[2] = { CTL_HW, HW_PHYSMEM };
+    int mib[2] = {CTL_HW, HW_PHYSMEM};
 #else
-    int mib[2] = { CTL_HW, HW_PHYSMEM64 };
+    int mib[2] = {CTL_HW, HW_PHYSMEM64};
 #endif
     uint64_t physmem = 0;
     size_t len = sizeof(physmem);
@@ -170,7 +169,7 @@ fce_system_info_t fce_system_info(void) {
 }
 
 int fce_default_worker_count(bool initial) {
-    /* L-2 (review 0002 §3.6): fce_system_info() is thread-safe by way of
+    /* L-2: fce_system_info() is thread-safe by way of
      * the underlying fce_once(&info_once, init_system_info). After the
      * one-time init, the returned `cached_info` is a plain struct copy
      * (by value), so concurrent reads on this path cannot tear. Calls

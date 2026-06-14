@@ -1,9 +1,7 @@
-/*
- * bench_mem_query.c — Index directory, measure memory, benchmark queries.
+/* * bench_mem_query.c — Index directory, measure memory, benchmark queries.
  *
- * Build:  cc -O2 -std=c11 -Isrc bench_mem_query.c -Lbuild -lstatic_nomic -lpthread -lm -o bench_mem_query
- * Run:    ./bench_mem_query <directory> [chunk_size]
- */
+ * Build: cc -O2 -std=c11 -Isrc bench_mem_query.c -Lbuild -lstatic_nomic -lpthread -lm -o bench_mem_query
+ * Run: ./bench_mem_query <directory> [chunk_size] */
 #include "semantic/semantic.h"
 #include "foundation/platform.h"
 
@@ -25,7 +23,7 @@
 #define MAX_PATH_LEN 1024
 #define MAX_TOKENS_PER_CHUNK 256
 
-static const char *INCLUDE_EXTS[] = { ".c", ".h", ".cpp", ".hpp", ".java", ".py", ".rs", ".go", ".js", ".ts", NULL };
+static const char *INCLUDE_EXTS[] = {".c", ".h", ".cpp", ".hpp", ".java", ".py", ".rs", ".go", ".js", ".ts", NULL};
 
 static int should_include(const char *path) {
     size_t len = strlen(path);
@@ -40,21 +38,35 @@ static char *read_file(const char *path, size_t *out_len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     struct stat st;
-    if (fstat(fileno(f), &st) != 0 || st.st_size <= 0) { fclose(f); return NULL; }
+    if (fstat(fileno(f), &st) != 0 || st.st_size <= 0) {
+        fclose(f);
+        return NULL;
+    }
     char *buf = (char *)malloc((size_t)st.st_size);
-    if (!buf) { fclose(f); return NULL; }
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
     size_t nread = fread(buf, 1, (size_t)st.st_size, f);
     /* check ferror BEFORE fclose, mirroring the hardened
      * pattern in semantic.c:551-557 and index_dir.c. A short read with
      * ferror set means I/O error (not EOF); discard truncated data. */
     int read_err = (nread != (size_t)st.st_size && ferror(f));
     fclose(f);
-    if (read_err) { free(buf); *out_len = 0; return NULL; }
+    if (read_err) {
+        free(buf);
+        *out_len = 0;
+        return NULL;
+    }
     *out_len = nread;
     return buf;
 }
 
-typedef struct { char **paths; int count; int capacity; } file_list_t;
+typedef struct {
+    char **paths;
+    int count;
+    int capacity;
+} file_list_t;
 static void file_list_add(file_list_t *list, const char *path) {
     if (list->count >= list->capacity) {
         int new_cap = list->capacity ? list->capacity * 2 : 10000;
@@ -64,24 +76,30 @@ static void file_list_add(file_list_t *list, const char *path) {
         list->capacity = new_cap;
     }
     list->paths[list->count] = strdup(path);
-    if (!list->paths[list->count]) return;  /* C5: skip on OOM */
+    if (!list->paths[list->count]) return; /* C5: skip on OOM */
     list->count++;
 }
 
-/* C5 (review 2004): iterative directory walk — prevents stack overflow
- * on deep directory trees.  Mirrors the hardened walk_dir in index_dir.c. */
+/* C5: iterative directory walk — prevents stack overflow
+ * on deep directory trees. Mirrors the hardened walk_dir in index_dir.c. */
 static void walk_dir(const char *root, file_list_t *list) {
     int stack_cap = 256;
     int stack_len = 0;
     char **dir_stack = (char **)malloc((size_t)stack_cap * sizeof(char *));
     if (!dir_stack) return;
     dir_stack[stack_len++] = strdup(root);
-    if (!dir_stack[0]) { free(dir_stack); return; }
+    if (!dir_stack[0]) {
+        free(dir_stack);
+        return;
+    }
 
     while (stack_len > 0) {
         char *dirpath = dir_stack[--stack_len];
         DIR *dir = opendir(dirpath);
-        if (!dir) { free(dirpath); continue; }
+        if (!dir) {
+            free(dirpath);
+            continue;
+        }
         struct dirent *entry;
         while ((entry = readdir(dir)) != NULL) {
             if (entry->d_name[0] == '.') continue;
@@ -103,7 +121,7 @@ static void walk_dir(const char *root, file_list_t *list) {
                     stack_cap = new_cap;
                 }
                 dir_stack[stack_len] = strdup(fullpath);
-                if (!dir_stack[stack_len]) continue;  /* C5: don't bump on OOM */
+                if (!dir_stack[stack_len]) continue; /* C5: don't bump on OOM */
                 stack_len++;
             } else if (S_ISREG(st.st_mode) && should_include(fullpath)) {
                 file_list_add(list, fullpath);
@@ -136,7 +154,7 @@ static long get_current_rss_bytes(void) {
     struct mach_task_basic_info info;
     mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
     kern_return_t kr = task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
-                                  (task_info_t)&info, &count);
+                                 (task_info_t)&info, &count);
     if (kr == KERN_SUCCESS) return (long)info.resident_size;
     return -1;
 #elif defined(__linux__)
@@ -148,7 +166,7 @@ static long get_current_rss_bytes(void) {
         if (sscanf(line, "VmRSS: %ld kB", &rss_kb) == 1) break;
     }
     fclose(f);
-    /* L-3 (review 0007 §L-3): return -1 on parse failure, not -1024.
+    /* L-3: return -1 on parse failure, not -1024.
      * rss_kb stays -1 if no VmRSS line was found. */
     return rss_kb > 0 ? rss_kb * 1024 : -1;
 #else
@@ -157,7 +175,7 @@ static long get_current_rss_bytes(void) {
 }
 
 int main(int argc, char **argv) {
-    setbuf(stdout, NULL);  /* Disable buffering for incremental output */
+    setbuf(stdout, NULL); /* Disable buffering for incremental output */
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <directory> [chunk_size] [--brute-only] [--sparse[=N]]\n", argv[0]);
         return 1;
@@ -170,7 +188,7 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--brute-only") == 0) {
             brute_only = 1;
         } else if (strcmp(argv[i], "--sparse") == 0) {
-            sparse_nnz = 32;  /* default top-32 NNZ */
+            sparse_nnz = 32; /* default top-32 NNZ */
         } else if (strncmp(argv[i], "--sparse=", 9) == 0) {
             sparse_nnz = atoi(argv[i] + 9);
             if (sparse_nnz <= 0) sparse_nnz = 32;
@@ -198,7 +216,7 @@ int main(int argc, char **argv) {
     clock_gettime(CLOCK_MONOTONIC, &t0);
     file_list_t files = {0};
     walk_dir(root_dir, &files);
-    printf("  Walk directory:           %8.1f ms  (%d files)\n", ms_since(t0), files.count);
+    printf(" Walk directory: %8.1f ms (%d files)\n", ms_since(t0), files.count);
 
     if (files.count == 0) {
         printf("No source files found.\n");
@@ -244,13 +262,16 @@ int main(int argc, char **argv) {
         char *content = read_file(files.paths[f], &len);
         if (!content) continue;
         files_processed++;
-        for (size_t offset = 0; offset < len; ) {
+        for (size_t offset = 0; offset < len;) {
             /* Find next } at or after offset+chunk_size for semantic split. */
             size_t end = offset + (size_t)chunk_size;
             if (end < len) {
                 size_t found = 0;
                 for (size_t i = end; i < len; i++) {
-                    if (content[i] == '}') { found = i + 1; break; }
+                    if (content[i] == '}') {
+                        found = i + 1;
+                        break;
+                    }
                 }
                 end = found ? found : len; /* no } left → take rest of file */
             } else {
@@ -258,17 +279,23 @@ int main(int argc, char **argv) {
             }
             size_t chunk_len = end - offset;
             char *chunk = (char *)malloc(chunk_len + 1);
-            if (!chunk) { offset = end; continue; }
+            if (!chunk) {
+                offset = end;
+                continue;
+            }
             memcpy(chunk, content + offset, chunk_len);
             chunk[chunk_len] = '\0';
             char *tok_buf[MAX_TOKENS_PER_CHUNK];
             int ntok = fce_sem_tokenize(chunk, tok_buf, MAX_TOKENS_PER_CHUNK);
             free(chunk);
 
-            /* C6 (review 2004): skip zero-token chunks — they are rejected by
+            /* C6: skip zero-token chunks — they are rejected by
              * add_docs_batch (doc_map[d] = -1) so recording a doc_paths entry
              * would misalign the index mapping. */
-            if (ntok == 0) { offset = end; continue; }
+            if (ntok == 0) {
+                offset = end;
+                continue;
+            }
 
             int base = batch_used * MAX_TOKENS_PER_CHUNK;
             for (int t = 0; t < ntok; t++) all_tokens[base + t] = tok_buf[t];
@@ -282,7 +309,7 @@ int main(int argc, char **argv) {
             total_chunks++;
             offset = end;
             if (batch_used >= BATCH_SIZE) {
-                /* L-4 (review 0007 §L-4): track how many docs the batch actually
+                /* L-4: track how many docs the batch actually
                  * accepted so doc_paths stays aligned with the corpus doc index.
                  * Rejected docs (vocab cap, doc cap, OOM rollback) don't appear in
                  * the corpus, so their path entries must be removed. */
@@ -315,7 +342,7 @@ int main(int argc, char **argv) {
     }
     free(all_tokens);
     free(token_counts);
-    printf("  Read + chunk + tokenize:  %8.1f ms  (%d chunks from %d files)\n",
+    printf(" Read + chunk + tokenize: %8.1f ms (%d chunks from %d files)\n",
            ms_since(t0), total_chunks, files_processed);
 
     /* ── 3. Finalize corpus ─────────────────────────────────────── */
@@ -328,24 +355,24 @@ int main(int argc, char **argv) {
     long rss_after_finalize = get_current_rss_bytes();
     long peak_rss = get_peak_rss_bytes();
 
-    printf("  Corpus finalize:          %8.1f ms\n", build_ms);
+    printf(" Corpus finalize: %8.1f ms\n", build_ms);
     fflush(stdout);
     printf("\n");
-    printf("  ── Memory ──────────────────────────────────\n");
-    printf("  RSS before finalize:      %8.1f GB\n", rss_before_finalize / 1073741824.0);
-    printf("  RSS after finalize:       %8.1f GB\n", rss_after_finalize / 1073741824.0);
-    printf("  Peak RSS:                 %8.1f GB\n", peak_rss / 1073741824.0);
+    printf(" ── Memory ──────────────────────────────────\n");
+    printf(" RSS before finalize: %8.1f GB\n", rss_before_finalize / 1073741824.0);
+    printf(" RSS after finalize: %8.1f GB\n", rss_after_finalize / 1073741824.0);
+    printf(" Peak RSS: %8.1f GB\n", peak_rss / 1073741824.0);
 
     int vocab = fce_sem_corpus_token_count(corp);
     int ndocs = fce_sem_corpus_doc_count(corp);
     printf("\n");
-    printf("  ── Corpus ──────────────────────────────────\n");
-    printf("  Vocabulary:      %d tokens\n", vocab);
-    printf("  Documents:       %d\n", ndocs);
+    printf(" ── Corpus ──────────────────────────────────\n");
+    printf(" Vocabulary: %d tokens\n", vocab);
+    printf(" Documents: %d\n", ndocs);
 
     /* ── 4. Query benchmarks ──────────────────────────────────── */
     printf("\n");
-    printf("  ── Query Benchmarks ───────────────────────\n");
+    printf(" ── Query Benchmarks ───────────────────────\n");
     fflush(stdout);
 
     fce_sem_config_t fast_cfg = fce_sem_get_config();
@@ -371,7 +398,7 @@ int main(int argc, char **argv) {
 
     for (int ki = 0; ki < ntop_ks; ki++) {
         int top_k = top_ks[ki];
-        printf("\n  top_k = %d\n", top_k);
+        printf("\n top_k = %d\n", top_k);
         double total_fast_ms = 0;
         double total_tfidf_ms = 0;
         double total_brute_ms = 0;
@@ -382,11 +409,13 @@ int main(int argc, char **argv) {
             fce_sem_ranked_t *fast_results = (fce_sem_ranked_t *)malloc(top_k * sizeof(fce_sem_ranked_t));
             fce_sem_ranked_t *tfidf_results = (fce_sem_ranked_t *)malloc(top_k * sizeof(fce_sem_ranked_t));
             fce_sem_ranked_t *brute_results = (fce_sem_ranked_t *)malloc(top_k * sizeof(fce_sem_ranked_t));
-            /* L-1 (review 0007 §L-1): check all three malloc results before
+            /* L-1: check all three malloc results before
              * passing them to search functions which write directly into them. */
             if (!fast_results || !tfidf_results || !brute_results) {
                 fprintf(stderr, "OOM allocating result buffers, skipping query %d\n", qi);
-                free(fast_results); free(tfidf_results); free(brute_results);
+                free(fast_results);
+                free(tfidf_results);
+                free(brute_results);
                 continue;
             }
             uint32_t fast_count = 0, tfidf_count = 0, brute_count = 0;
@@ -428,23 +457,29 @@ int main(int argc, char **argv) {
             int overlap_fast = 0, overlap_tfidf = 0;
             for (int i = 0; i < (int)fast_count; i++) {
                 for (int j = 0; j < (int)brute_count; j++) {
-                    if (fast_results[i].index == brute_results[j].index) { overlap_fast++; break; }
+                    if (fast_results[i].index == brute_results[j].index) {
+                        overlap_fast++;
+                        break;
+                    }
                 }
             }
             for (int i = 0; i < (int)tfidf_count; i++) {
                 for (int j = 0; j < (int)brute_count; j++) {
-                    if (tfidf_results[i].index == brute_results[j].index) { overlap_tfidf++; break; }
+                    if (tfidf_results[i].index == brute_results[j].index) {
+                        overlap_tfidf++;
+                        break;
+                    }
                 }
             }
 
-            printf("\n    %-30s  fast=%5.0fms tfidf=%5.0fms brute=%5.0fms  cands=%d\n",
+            printf("\n %-30s fast=%5.0fms tfidf=%5.0fms brute=%5.0fms cands=%d\n",
                    qstr, fast_ms, tfidf_ms, brute_ms, ncand);
-            printf("      overlap with brute: fast=%d/%d  tfidf=%d/%d\n",
+            printf(" overlap with brute: fast=%d/%d tfidf=%d/%d\n",
                    overlap_fast, top_k, overlap_tfidf, top_k);
 
             /* Print side-by-side results (top 5). */
             int show = (top_k < 5) ? top_k : 5;
-            printf("      %-4s %-28s %-4s %-28s %-4s %-28s\n",
+            printf(" %-4s %-28s %-4s %-28s %-4s %-28s\n",
                    "Fast", "", "TFIDF", "", "Brute", "");
             for (int r = 0; r < show; r++) {
                 const char *ffname = "?", *tfname = "?", *bfname = "?";
@@ -453,19 +488,22 @@ int main(int argc, char **argv) {
                 if (r < (int)fast_count) {
                     uint32_t idx = fast_results[r].index;
                     const char *p = (idx < (uint32_t)doc_path_count) ? doc_paths[idx] : "?";
-                    ffname = strrchr(p, '/'); ffname = ffname ? ffname + 1 : p;
+                    ffname = strrchr(p, '/');
+                    ffname = ffname ? ffname + 1 : p;
                     fscore = fast_results[r].score;
                 }
                 if (r < (int)tfidf_count) {
                     uint32_t idx = tfidf_results[r].index;
                     const char *p = (idx < (uint32_t)doc_path_count) ? doc_paths[idx] : "?";
-                    tfname = strrchr(p, '/'); tfname = tfname ? tfname + 1 : p;
+                    tfname = strrchr(p, '/');
+                    tfname = tfname ? tfname + 1 : p;
                     tfscore = tfidf_results[r].score;
                 }
                 if (r < (int)brute_count) {
                     uint32_t idx = brute_results[r].index;
                     const char *p = (idx < (uint32_t)doc_path_count) ? doc_paths[idx] : "?";
-                    bfname = strrchr(p, '/'); bfname = bfname ? bfname + 1 : p;
+                    bfname = strrchr(p, '/');
+                    bfname = bfname ? bfname + 1 : p;
                     bscore = brute_results[r].score;
                 }
 
@@ -473,7 +511,7 @@ int main(int argc, char **argv) {
                                 fast_results[r].index == brute_results[r].index);
                 int match_tf = (r < (int)tfidf_count && r < (int)brute_count &&
                                 tfidf_results[r].index == brute_results[r].index);
-                printf("      [%d]%.3f %-22s [%d]%.3f %-22s [%d]%.3f %-22s%s%s\n",
+                printf(" [%d]%.3f %-22s [%d]%.3f %-22s [%d]%.3f %-22s%s%s\n",
                        r, fscore, ffname, r, tfscore, tfname, r, bscore, bfname,
                        match_bf ? " <<" : "", match_tf ? " <<" : "");
             }
@@ -482,16 +520,16 @@ int main(int argc, char **argv) {
             free(tfidf_results);
             free(brute_results);
         }
-        printf("\n    Average:  fast=%5.0fms  tfidf=%5.0fms  brute=%5.0fms\n",
+        printf("\n Average: fast=%5.0fms tfidf=%5.0fms brute=%5.0fms\n",
                total_fast_ms / nqueries, total_tfidf_ms / nqueries, total_brute_ms / nqueries);
     }
 
     /* ── Summary ─────────────────────────────────────────────── */
     double total_ms = ms_since(t_total);
-    printf("\n  ── Final Summary ─────────────────────────────\n");
-    printf("  Total time:      %.1f ms\n", total_ms);
-    printf("  Peak RSS:        %.1f GB\n", peak_rss / 1073741824.0);
-    printf("  Post-build RSS:  %.1f GB\n", rss_after_finalize / 1073741824.0);
+    printf("\n ── Final Summary ─────────────────────────────\n");
+    printf(" Total time: %.1f ms\n", total_ms);
+    printf(" Peak RSS: %.1f GB\n", peak_rss / 1073741824.0);
+    printf(" Post-build RSS: %.1f GB\n", rss_after_finalize / 1073741824.0);
 
     /* Cleanup */
     free(doc_paths);

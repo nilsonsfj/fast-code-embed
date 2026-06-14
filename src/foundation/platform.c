@@ -1,8 +1,6 @@
-/*
- * platform.c — OS abstraction implementations.
+/* * platform.c — OS abstraction implementations.
  *
- * macOS, Linux, and Windows. Platform-specific code behind #ifdef guards.
- */
+ * macOS, Linux, and Windows. Platform-specific code behind #ifdef guards. */
 /* Define POSIX feature level before any system headers for clock_gettime support.
  * On macOS, clock_gettime is available without restricting feature macros,
  * and restricting them hides BSD types (u_int, u_char, etc.) used by
@@ -274,15 +272,15 @@ extern char **environ;
 #endif
 
 /* Safe getenv: iterates environ directly (NOT safe with concurrent setenv/putenv).
- * M-1 (review 0001 §M-1): the environ array can be reallocated by concurrent
- * setenv/putenv — a concurrent reader would dereference freed memory.  This
+ * M-1: the environ array can be reallocated by concurrent
+ * setenv/putenv — a concurrent reader would dereference freed memory. This
  * function is safe against concurrent getenv() calls (each copies to its own
  * buffer) but NOT against concurrent setenv/putenv.
  * Safe for: init paths, infrequent calls, or calls where the caller accepts
- * the risk.  NOT safe for hot concurrent paths — cache the result at init
+ * the risk. NOT safe for hot concurrent paths — cache the result at init
  * instead (see FCE_BRUTE_WORKERS / FCE_STACK_SIZE in semantic.c / worker_pool.c). */
 const char *fce_safe_getenv(const char *name, char *buf, size_t buf_sz, const char *fallback) {
-    if (buf_sz == 0) return NULL;  /* L4 (review 0003 §L4): prevent underflow */
+    if (buf_sz == 0) return NULL; /* L4: prevent underflow */
     char **env = FCE_ENVIRON;
     if (env) {
         size_t nlen = strlen(name);
@@ -290,7 +288,7 @@ const char *fce_safe_getenv(const char *name, char *buf, size_t buf_sz, const ch
             if (strncmp(*env, name, nlen) == 0 && (*env)[nlen] == '=') {
                 const char *val = *env + nlen + 1;
                 snprintf(buf, buf_sz, "%s", val);
-                /* M-1 (review 0001 §M-1): detect truncation — if the source
+                /* M-1: detect truncation — if the source
                  * value is longer than the buffer can hold, reject it to
                  * prevent strtol/strtod from parsing a truncated number.
                  * A value of exactly buf_sz-1 bytes fits (with NUL), so the

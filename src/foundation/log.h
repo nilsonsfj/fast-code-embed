@@ -1,13 +1,11 @@
-/*
- * log.h — Structured key-value logging to stderr.
+/* * log.h — Structured key-value logging to stderr.
  *
  * Design:
- *   - All output goes to stderr (stdout is reserved for MCP JSON-RPC)
- *   - Structured format: "level=info msg=pass.timing pass=defs elapsed_ms=42"
- *   - Levels: DEBUG, INFO, WARN, ERROR
- *   - Level filtering at compile time (FCE_LOG_MIN_LEVEL) and runtime
- *   - Thread-safe (each fprintf is atomic on POSIX for lines < PIPE_BUF)
- */
+ * - All output goes to stderr (stdout is reserved for MCP JSON-RPC)
+ * - Structured format: "level=info msg=pass.timing pass=defs elapsed_ms=42"
+ * - Levels: DEBUG, INFO, WARN, ERROR
+ * - Level filtering at compile time (FCE_LOG_MIN_LEVEL) and runtime
+ * - Thread-safe (each fprintf is atomic on POSIX for lines < PIPE_BUF) */
 #ifndef FCE_LOG_H
 #define FCE_LOG_H
 
@@ -32,15 +30,14 @@ FCELogLevel fce_log_get_level(void);
  * Terminated by NULL key.
  *
  * Example:
- *   fce_log(FCE_LOG_INFO, "pass.timing",
- *           "pass", "defs", "elapsed_ms", "42", NULL);
+ * fce_log(FCE_LOG_INFO, "pass.timing",
+ * "pass", "defs", "elapsed_ms", "42", NULL);
  *
  * Output:
- *   level=info msg=pass.timing pass=defs elapsed_ms=42
- */
+ * level=info msg=pass.timing pass=defs elapsed_ms=42 */
 void fce_log(FCELogLevel level, const char *msg, ...);
 
-/* Convenience macros. C-2 (review 0002 §5.8 / 0001 §5.7):
+/* Convenience macros. C-2:
  * __VA_OPT__ is a C23 feature, but the Makefile uses -std=c11. The GNU
  * `, ##__VA_ARGS__` extension is supported by GCC, Clang, and most other
  * compilers we target, and lets the macros work in C11 mode. With the
@@ -53,8 +50,8 @@ void fce_log(FCELogLevel level, const char *msg, ...);
  * to the call site, not the macro definition. The suppression is narrow
  * (this single warning) and intentional. */
 #define fce_log_debug(msg, ...) fce_log(FCE_LOG_DEBUG, msg, ##__VA_ARGS__, NULL)
-#define fce_log_info(msg, ...)  fce_log(FCE_LOG_INFO,  msg, ##__VA_ARGS__, NULL)
-#define fce_log_warn(msg, ...)  fce_log(FCE_LOG_WARN,  msg, ##__VA_ARGS__, NULL)
+#define fce_log_info(msg, ...) fce_log(FCE_LOG_INFO, msg, ##__VA_ARGS__, NULL)
+#define fce_log_warn(msg, ...) fce_log(FCE_LOG_WARN, msg, ##__VA_ARGS__, NULL)
 #define fce_log_error(msg, ...) fce_log(FCE_LOG_ERROR, msg, ##__VA_ARGS__, NULL)
 
 /* Log with integer value (avoids sprintf for common case). */
@@ -62,7 +59,7 @@ void fce_log_int(FCELogLevel level, const char *msg, const char *key, int64_t va
 
 /* Optional log sink callback — called with the formatted log line.
  *
- * CONTRACT (review 0002 §7.3): the sink pointer MUST remain valid for the
+ * CONTRACT: the sink pointer MUST remain valid for the
  * lifetime of any thread that might call fce_log() after set_sink. The
  * library dereferences the pointer on every log call. There is no
  * reference counting — unregister the sink (pass NULL) before freeing the

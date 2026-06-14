@@ -1,12 +1,10 @@
-/*
- * bench_c.c — Benchmark fast-code-embed using its own source code.
+/* * bench_c.c — Benchmark fast-code-embed using its own source code.
  *
  * Measures: init, tokenization, corpus build (single + batch),
- *           IDF lookup, RI vector access, simple scoring, ranking.
+ * IDF lookup, RI vector access, simple scoring, ranking.
  *
- * Build:  cc -O2 -std=c11 -Isrc bench_c.c -Lbuild -lstatic_nomic -lpthread -lm -o bench_c
- * Run:    ./bench_c
- */
+ * Build: cc -O2 -std=c11 -Isrc bench_c.c -Lbuild -lstatic_nomic -lpthread -lm -o bench_c
+ * Run: ./bench_c */
 #include "semantic/semantic.h"
 #include "foundation/platform.h"
 
@@ -20,7 +18,7 @@
 
 typedef struct {
     const char *path;
-    const char *full_name;  /* unsplit name, used for tokenize benchmark */
+    const char *full_name; /* unsplit name, used for tokenize benchmark */
     const char *tokens[12];
     int ntokens;
 } bench_func_t;
@@ -133,7 +131,7 @@ int main(void) {
     clock_gettime(CLOCK_MONOTONIC, &t0);
     fce_sem_ensure_ready();
     double init_ms = ms_since(t0);
-    printf("  init (ensure_ready)         %8.2f ms\n", init_ms);
+    printf(" init (ensure_ready) %8.2f ms\n", init_ms);
 
     /* ── 2. Tokenize (full names, exercises camel/snake splits + abbrev expansion) ── */
     char *tok_buf[64];
@@ -146,7 +144,7 @@ int main(void) {
         }
     }
     double tokenize_ms = ms_since(t0);
-    printf("  tokenize %d func names × %d   %8.2f ms  (%.1f µs/call)\n",
+    printf(" tokenize %d func names × %d %8.2f ms (%.1f µs/call)\n",
            (int)CORPUS_SIZE, iterations, tokenize_ms,
            tokenize_ms * 1000.0 / (CORPUS_SIZE * iterations));
 
@@ -163,7 +161,7 @@ int main(void) {
         }
     }
     double batch_tok_ms = ms_since(t0);
-    printf("  tokenize_batch %d × %d         %8.2f ms  (%.1f µs/call)\n",
+    printf(" tokenize_batch %d × %d %8.2f ms (%.1f µs/call)\n",
            (int)CORPUS_SIZE, iterations, batch_tok_ms,
            batch_tok_ms * 1000.0 / (CORPUS_SIZE * iterations));
 
@@ -175,7 +173,7 @@ int main(void) {
     }
     fce_sem_corpus_finalize(corp_single);
     double single_ms = ms_since(t0);
-    printf("  corpus build (single doc)    %8.2f ms\n", single_ms);
+    printf(" corpus build (single doc) %8.2f ms\n", single_ms);
 
     /* ── 4. Corpus build (batch) ─────────────────────────────── */
     clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -197,7 +195,7 @@ int main(void) {
     fce_sem_corpus_add_docs_batch(corp_batch, all_tokens, token_counts, CORPUS_SIZE, max_tok, NULL);
     fce_sem_corpus_finalize(corp_batch);
     double batch_ms = ms_since(t0);
-    printf("  corpus build (batch)         %8.2f ms  (%.1fx faster)\n",
+    printf(" corpus build (batch) %8.2f ms (%.1fx faster)\n",
            batch_ms, single_ms / batch_ms);
 
     free(all_tokens);
@@ -211,7 +209,7 @@ int main(void) {
         }
     }
     double idf_ms = ms_since(t0);
-    printf("  IDF lookup %d × %d            %8.2f ms  (%.1f µs/call)\n",
+    printf(" IDF lookup %d × %d %8.2f ms (%.1f µs/call)\n",
            (int)CORPUS_SIZE, iterations, idf_ms,
            idf_ms * 1000.0 / (CORPUS_SIZE * iterations));
 
@@ -223,7 +221,7 @@ int main(void) {
         }
     }
     double ri_ms = ms_since(t0);
-    printf("  RI vec access %d × %d         %8.2f ms  (%.1f µs/call)\n",
+    printf(" RI vec access %d × %d %8.2f ms (%.1f µs/call)\n",
            (int)CORPUS_SIZE, iterations, ri_ms,
            ri_ms * 1000.0 / (CORPUS_SIZE * iterations));
 
@@ -256,7 +254,7 @@ int main(void) {
     }
     double score_ms = ms_since(t0);
     int unique_pairs = npairs / 2;
-    printf("  simple_score %d pairs × %d    %8.2f ms  (%.1f µs/pair)\n",
+    printf(" simple_score %d pairs × %d %8.2f ms (%.1f µs/pair)\n",
            unique_pairs, iterations, score_ms,
            score_ms * 1000.0 / (unique_pairs * iterations));
 
@@ -269,16 +267,16 @@ int main(void) {
         fce_sem_simple_rank(&funcs[0], funcs, (uint32_t)CORPUS_SIZE, 10, results, &count);
     }
     double rank_ms = ms_since(t0);
-    printf("  simple_rank (top 10) × %d    %8.2f ms  (%.1f µs/call)\n",
+    printf(" simple_rank (top 10) × %d %8.2f ms (%.1f µs/call)\n",
            iterations, rank_ms, rank_ms * 1000.0 / iterations);
 
     /* ── Summary ─────────────────────────────────────────────── */
     printf("\n");
-    printf("  Corpus size: %d functions\n", (int)CORPUS_SIZE);
-    printf("  Vocabulary:  %d tokens\n", fce_sem_corpus_token_count(corp_batch));
-    printf("  Top match:   results[0] = idx %d, score %.4f\n",
+    printf(" Corpus size: %d functions\n", (int)CORPUS_SIZE);
+    printf(" Vocabulary: %d tokens\n", fce_sem_corpus_token_count(corp_batch));
+    printf(" Top match: results[0] = idx %d, score %.4f\n",
            results[0].index, results[0].score);
-    printf("  score_sum:   %.6f (prevents optimization)\n", score_sum);
+    printf(" score_sum: %.6f (prevents optimization)\n", score_sum);
 
     /* Cleanup */
     for (size_t c = 0; c < CORPUS_SIZE; c++) {
