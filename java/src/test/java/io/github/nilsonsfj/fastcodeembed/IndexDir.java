@@ -1,4 +1,4 @@
-package com.github.nilsonsfj.fastcodeembed;
+package io.github.nilsonsfj.fastcodeembed;
 
 import java.io.IOException;
 import java.nio.file.*;

@@ -54,13 +54,13 @@ echo ""
 echo "=== Running tests ==="
 java -cp "$CLASSES_DIR" -Djava.library.path="$NATIVE_DIR" \
     -Xcheck:jni \
-    com.github.nilsonsfj.fastcodeembed.FastCodeEmbedTest
+    io.github.nilsonsfj.fastcodeembed.FastCodeEmbedTest
 
 if [ "${1:-}" = "bench" ]; then
     echo ""
     echo "=== Running benchmark ==="
     java -cp "$CLASSES_DIR" -Djava.library.path="$NATIVE_DIR" \
-        com.github.nilsonsfj.fastcodeembed.BenchJava
+        io.github.nilsonsfj.fastcodeembed.BenchJava
 fi
 
 if [ "${1:-}" = "memquery" ]; then
@@ -68,14 +68,14 @@ if [ "${1:-}" = "memquery" ]; then
     echo "=== Running memory + query benchmark ==="
     shift
     java -cp "$CLASSES_DIR" -Djava.library.path="$NATIVE_DIR" \
-        com.github.nilsonsfj.fastcodeembed.BenchMemQuery "$@"
+        io.github.nilsonsfj.fastcodeembed.BenchMemQuery "$@"
 fi
 
 if [ "${1:-}" = "index" ]; then
     echo ""
     echo "=== Running indexer ==="
     java -cp "$CLASSES_DIR" -Djava.library.path="$NATIVE_DIR" \
-        com.github.nilsonsfj.fastcodeembed.IndexDir "${2:-}" "${3:-}"
+        io.github.nilsonsfj.fastcodeembed.IndexDir "${2:-}" "${3:-}"
 fi
 
 echo ""

@@ -1,0 +1,222 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: libfast_code_embed.a
+            arch: x86_64
+            cross: false
+          - os: ubuntu-latest
+            artifact: libfast_code_embed.a
+            arch: aarch64
+            cross: true
+          - os: macos-latest
+            artifact: libfast_code_embed.a
+            arch: arm64
+            cross: false
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.arch }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compiler
+        if: matrix.cross
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build static library
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            make clean && make -j4 lib \
+              CC=aarch64-linux-gnu-gcc \
+              AR=aarch64-linux-gnu-ar \
+              CFLAGS="-O2 -Wall -Wextra -Wpedantic -std=c11 -DNDEBUG -fPIC"
+          else
+            make clean && make -j4 lib
+          fi
+          cp build/libfast_code_embed.a "build/libfast_code_embed.a-${{ matrix.arch }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libfast_code_embed.a-${{ matrix.arch }}
+          path: build/libfast_code_embed.a-${{ matrix.arch }}
+
+  java-artifacts:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            libname: libfast_code_embed_jni.so
+            arch: x86_64
+            cross: false
+            java_arch: x64
+          - os: ubuntu-latest
+            libname: libfast_code_embed_jni.so
+            arch: aarch64
+            cross: true
+            java_arch: aarch64
+          - os: macos-latest
+            libname: libfast_code_embed_jni.dylib
+            arch: arm64
+            cross: false
+            java_arch: aarch64
+
+    runs-on: ${{ matrix.os }}
+    name: Java JNI (${{ matrix.arch }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          architecture: ${{ matrix.java_arch }}
+
+      - name: Install cross-compiler
+        if: matrix.cross
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build C library
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            make clean && make -j4 lib \
+              CC=aarch64-linux-gnu-gcc \
+              AR=aarch64-linux-gnu-ar \
+              CFLAGS="-O2 -Wall -Wextra -Wpedantic -std=c11 -DNDEBUG -fPIC"
+          else
+            make clean && make -j4 lib
+          fi
+
+      - name: Build JNI shared library
+        if: "!matrix.cross"
+        run: |
+          cd java && ./build.sh
+          cp lib/native/${{ matrix.libname }} "lib/native/${{ matrix.libname }}-${{ matrix.arch }}"
+
+      - name: Build JNI shared library (cross)
+        if: matrix.cross
+        run: |
+          cd java
+          PROJECT_ROOT="$(dirname "$(pwd)")"
+          JNI_INCLUDE="$JAVA_HOME/include"
+          JNI_PLATFORM_INCLUDE="$JNI_INCLUDE/linux"
+          mkdir -p lib/native
+          aarch64-linux-gnu-gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
+            -Werror=uninitialized -Werror=maybe-uninitialized \
+            -DNDEBUG \
+            -I"$PROJECT_ROOT/src" \
+            -I"$JNI_INCLUDE" -I"$JNI_PLATFORM_INCLUDE" \
+            src/main/native/fast_code_embed_jni.c \
+            -L../build -lfast_code_embed \
+            -lpthread -lm \
+            -o lib/native/libfast_code_embed_jni.so
+          cp lib/native/libfast_code_embed_jni.so "lib/native/libfast_code_embed_jni.so-${{ matrix.arch }}"
+
+      - name: Upload JNI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.libname }}-${{ matrix.arch }}
+          path: java/lib/native/${{ matrix.libname }}-${{ matrix.arch }}
+
+  create-release:
+    needs: [release, java-artifacts]
+    runs-on: ubuntu-latest
+    name: Create GitHub Release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release_assets
+          find artifacts -type f -exec cp {} release_assets/ \;
+          ls -la release_assets/
+
+      - name: Extract changelog
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Extract section for this version from CHANGELOG.md
+          awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md > release_notes.md
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          cat release_notes.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.md
+          generate_release_notes: false
+          files: |
+            release_assets/*
+
+  maven-publish:
+    needs: [java-artifacts]
+    runs-on: ubuntu-latest
+    name: Publish to Maven Central
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format LONG
+
+      - name: Configure Maven settings
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml << 'EOF'
+          <settings>
+            <servers>
+              <server>
+                <id>central</id>
+                <username>${{ secrets.OSSRH_USERNAME }}</username>
+                <password>${{ secrets.OSSRH_TOKEN }}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mvn versions:set -f java/pom.xml -DnewVersion="$VERSION" -DgenerateBackupPoms=false
+
+      - name: Publish to Maven Central
+        run: |
+          mvn deploy -f java/pom.xml -DskipTests \
+            -Dgpg.passphrase="${{ secrets.GPG_PASSPHRASE }}" \
+            -Dossrh.username="${{ secrets.OSSRH_USERNAME }}" \
+            -Dossrh.password="${{ secrets.OSSRH_TOKEN }}"
+        env:
+          MAVEN_OPTS: -Xmx512m

@@ -1,4 +1,4 @@
-package com.github.nilsonsfj.fastcodeembed;
+package io.github.nilsonsfj.fastcodeembed;
 
 /**
  * Benchmark fast-code-embed Java binding using the project's own source code.

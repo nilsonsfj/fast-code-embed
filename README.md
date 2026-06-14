@@ -59,7 +59,7 @@ cd java && ./build.sh
 ```
 
 ```java
-import com.github.nilsonsfj.fastcodeembed.*;
+import io.github.nilsonsfj.fastcodeembed.*;
 
 FastCodeEmbed.init();
 
@@ -78,7 +78,7 @@ try (Corpus corp = new Corpus()) {
 }
 ```
 
-All classes are in `com.github.nilsonsfj.fastcodeembed`:
+All classes are in `io.github.nilsonsfj.fastcodeembed`:
 `FastCodeEmbed`, `Corpus`, `FuncDescriptor`, `SearchResult`, `NativeLibrary`.
 
 ## How it works
@@ -96,6 +96,16 @@ For advanced use, you can also wire in your own call graph, type system, or AST
 via the `api_vec`, `type_vec`, `decorator_vec`, and `struct_profile[25]` fields
 in `fce_sem_func_t`. Search path is configurable via `fce_query_mode_t`
 (AUTO, BRUTE, FAST, TFIDF) — see [CONFIGURABLE-QUERY-MODES.md](CONFIGURABLE-QUERY-MODES.md).
+
+## Platform Support
+
+| Platform | Architecture | Status |
+|----------|-------------|--------|
+| Linux | x86_64 | Fully supported |
+| Linux | aarch64 | Supported (cross-compiled) |
+| macOS | arm64 (Apple Silicon) | Fully supported |
+| macOS | x86_64 | Supported |
+| Windows | x86_64 | Partial (single-threaded recommended) |
 
 ## Regenerating the Embedding Table
 

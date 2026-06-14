@@ -1,4 +1,4 @@
-package com.github.nilsonsfj.fastcodeembed;
+package io.github.nilsonsfj.fastcodeembed;
 
 /**
  * Standalone test runner for Java JNI binding — no test framework needed.

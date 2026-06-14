@@ -22,7 +22,7 @@ cd java && ./build.sh   # compile JNI + Java, run tests
 ## Usage
 
 ```java
-import com.github.nilsonsfj.fastcodeembed.*;
+import io.github.nilsonsfj.fastcodeembed.*;
 
 public class Example {
     public static void main(String[] args) {

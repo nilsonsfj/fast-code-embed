@@ -1,4 +1,4 @@
-package com.github.nilsonsfj.fastcodeembed;
+package io.github.nilsonsfj.fastcodeembed;
 
 /**
  * Java binding for the <a href="https://github.com/nilsonsfj/fast-code-embed">fast-code-embed</a> C library.

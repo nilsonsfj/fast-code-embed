@@ -1,4 +1,4 @@
-package com.github.nilsonsfj.fastcodeembed;
+package io.github.nilsonsfj.fastcodeembed;
 
 /**
  * Wraps a native {@code fce_sem_corpus_t} for building IDF weights and

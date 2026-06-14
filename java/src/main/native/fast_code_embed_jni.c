@@ -477,7 +477,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     }
 
     /* Cache FuncDescriptor class + field IDs */
-    jclass local_func = (*env)->FindClass(env, "com/github/nilsonsfj/fastcodeembed/FuncDescriptor");
+    jclass local_func = (*env)->FindClass(env, "io/github/nilsonsfj/fastcodeembed/FuncDescriptor");
     if (!local_func) goto fail;
     cls_func = (*env)->NewGlobalRef(env, local_func);
     (*env)->DeleteLocalRef(env, local_func);
@@ -492,7 +492,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     }
 
     /* Cache SearchResult class + constructor */
-    jclass local_sr = (*env)->FindClass(env, "com/github/nilsonsfj/fastcodeembed/SearchResult");
+    jclass local_sr = (*env)->FindClass(env, "io/github/nilsonsfj/fastcodeembed/SearchResult");
     if (!local_sr) goto fail;
     cls_search_result = (*env)->NewGlobalRef(env, local_sr);
     (*env)->DeleteLocalRef(env, local_sr);
@@ -564,7 +564,7 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
 
 /* ── Corpus JNI ─────────────────────────────────────────────────── */
 
-JNIEXPORT jlong JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nCreateCorpus(
+JNIEXPORT jlong JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nCreateCorpus(
     JNIEnv *env, jclass cls) {
     (void)env;
     (void)cls;
@@ -591,7 +591,7 @@ JNIEXPORT jlong JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nC
     return h;
 }
 
-JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nFreeCorpus(
+JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nFreeCorpus(
     JNIEnv *env, jclass cls, jlong handle) {
     (void)env;
     (void)cls;
@@ -605,7 +605,7 @@ JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nFr
     fce_sem_corpus_free((fce_sem_corpus_t *)ptr);
 }
 
-JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDoc(
+JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDoc(
     JNIEnv *env, jclass cls, jlong handle, jobjectArray jtokens) {
     (void)cls;
     /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
@@ -657,7 +657,7 @@ adddoc_cleanup:
     release_handle(handle);
 }
 
-JNIEXPORT jintArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDocsBatch(
+JNIEXPORT jintArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDocsBatch(
     JNIEnv *env, jclass cls, jlong handle, jobjectArray jdocs, jint maxTokensPerDoc) {
     (void)cls;
     /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
@@ -778,7 +778,7 @@ addbatch_cleanup:
     return jresult;
 }
 
-JNIEXPORT jboolean JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nFinalizeCorpus(
+JNIEXPORT jboolean JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nFinalizeCorpus(
     JNIEnv *env, jclass cls, jlong handle) {
     (void)env; (void)cls;
     /* C-1 (review 0004 §C-1): use acquire_handle / release_handle.
@@ -791,7 +791,7 @@ JNIEXPORT jboolean JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed
     return rc == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDocsTokenized(
+JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDocsTokenized(
     JNIEnv *env, jclass cls, jlong handle, jobjectArray jnames) {
     (void)cls;
     /* L3 (review 0006 §L3): Partial-state semantics — on mid-batch failure
@@ -861,7 +861,7 @@ addtok_cleanup:
     release_handle(handle);
 }
 
-JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddFiles(
+JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddFiles(
     JNIEnv *env, jclass cls, jlong handle, jobjectArray jpaths, jint chunkSize,
     jintArray jFileDocCounts, jint maxTokensPerChunk) {
     (void)cls;
@@ -930,7 +930,7 @@ addfiles_cleanup:
     return result;
 }
 
-JNIEXPORT jfloat JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetIdf(
+JNIEXPORT jfloat JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetIdf(
     JNIEnv *env, jclass cls, jlong handle, jstring jtoken) {
     (void)cls;
     /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
@@ -954,7 +954,7 @@ JNIEXPORT jfloat JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_n
     return idf;
 }
 
-JNIEXPORT jfloatArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetRiVec(
+JNIEXPORT jfloatArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetRiVec(
     JNIEnv *env, jclass cls, jlong handle, jstring jtoken) {
     (void)cls;
     /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
@@ -992,7 +992,7 @@ JNIEXPORT jfloatArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEm
     return result;
 }
 
-JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetDocCount(
+JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetDocCount(
     JNIEnv *env, jclass cls, jlong handle) {
     (void)env; (void)cls;
     /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
@@ -1003,7 +1003,7 @@ JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGe
     return count;
 }
 
-JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetTokenCount(
+JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetTokenCount(
     JNIEnv *env, jclass cls, jlong handle) {
     (void)env; (void)cls;
     /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
@@ -1016,13 +1016,13 @@ JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGe
 
 /* ── Static Nomic Search JNI ────────────────────────────────────── */
 
-JNIEXPORT void JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_init(
+JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_init(
     JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
     fce_sem_ensure_ready();
 }
 
-JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_tokenize(
+JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_tokenize(
     JNIEnv *env, jclass cls, jstring jname) {
     (void)cls;
     /* H1 (review 0005 §H1): null jstring → GetStringUTFChars(env, NULL, …) is UB
@@ -1077,7 +1077,7 @@ tokenize_cleanup:
     return NULL;
 }
 
-JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nTokenizeBatch(
+JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nTokenizeBatch(
     JNIEnv *env, jclass cls, jobjectArray jnames) {
     (void)cls;
     /* H1 (review 0007 §H1): null-guard the array argument. */
@@ -1197,7 +1197,7 @@ tokenize_cleanup_input:
     return NULL;
 }
 
-JNIEXPORT jfloat JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_proximity(
+JNIEXPORT jfloat JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_proximity(
     JNIEnv *env, jclass cls, jstring jpathA, jstring jpathB) {
     (void)cls;
     /* H1 (review 0005 §H1): null jstring → GetStringUTFChars(env, NULL, …) is UB
@@ -1232,7 +1232,7 @@ JNIEXPORT jfloat JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_p
  * consider gating behind a size assertion or removing once all callers
  * have migrated to the flat API. */
 
-JNIEXPORT jfloat JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_simpleScore(
+JNIEXPORT jfloat JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_simpleScore(
     JNIEnv *env, jclass cls, jobject ja, jobject jb) {
     (void)cls;
     char *pathA = NULL, *pathB = NULL;
@@ -1256,7 +1256,7 @@ JNIEXPORT jfloat JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_s
     return score;
 }
 
-JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_simpleRank(
+JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_simpleRank(
     JNIEnv *env, jclass cls, jobject jquery, jobjectArray jcorpus, jint topK) {
     (void)cls;
 
@@ -1365,7 +1365,7 @@ simpleRank_cleanup:
     return jresults;
 }
 
-JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_simpleSearch(
+JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_simpleSearch(
     JNIEnv *env, jclass cls, jobject jquery, jobjectArray jcorpus,
     jint topK, jfloat minScore) {
     (void)cls;
@@ -1467,7 +1467,7 @@ simpleSearch_cleanup:
 
 /* ── Batch rank (flat arrays, zero per-item JNI overhead) ──────── */
 
-JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSimpleRankFlat(
+JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSimpleRankFlat(
     JNIEnv *env, jclass cls,
     /* corpus flat arrays */
     jfloatArray j_all_weights,
@@ -1722,7 +1722,7 @@ static jobjectArray build_search_results(JNIEnv *env, fce_sem_ranked_t *results,
     return jresults;
 }
 
-JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSearchQuery(
+JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSearchQuery(
     JNIEnv *env, jclass cls, jlong handle,
     jstring jquery, jint topK) {
     (void)cls;
@@ -1765,7 +1765,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     return jresults;
 }
 
-JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSearchQueryTfidf(
+JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSearchQueryTfidf(
     JNIEnv *env, jclass cls, jlong handle,
     jstring jquery, jint topK) {
     (void)cls;
@@ -1806,7 +1806,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     return jresults;
 }
 
-JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSearchQueryBruteforce(
+JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSearchQueryBruteforce(
     JNIEnv *env, jclass cls, jlong handle,
     jstring jquery, jint topK) {
     (void)cls;
@@ -1847,7 +1847,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeE
     return jresults;
 }
 
-JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSearchCandidateCount(
+JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSearchCandidateCount(
     JNIEnv *env, jclass cls, jlong handle, jstring jquery) {
     (void)cls;
     /* C-1 (review 0004 §C-1): use acquire_handle / release_handle. */
@@ -1878,7 +1878,7 @@ JNIEXPORT jint JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSe
 #include <stdio.h>
 #endif
 
-JNIEXPORT jlong JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_getPeakRssBytes(
+JNIEXPORT jlong JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_getPeakRssBytes(
     JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
     struct rusage ru;
@@ -1895,7 +1895,7 @@ JNIEXPORT jlong JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_ge
 #endif
 }
 
-JNIEXPORT jlong JNICALL Java_com_github_nilsonsfj_fastcodeembed_FastCodeEmbed_getCurrentRssBytes(
+JNIEXPORT jlong JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_getCurrentRssBytes(
     JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
 #if defined(__APPLE__)
