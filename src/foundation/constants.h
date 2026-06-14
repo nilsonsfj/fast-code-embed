@@ -1,45 +1,43 @@
-/*
- * constants.h — Project-wide named constants.
- */
+/* * constants.h — Project-wide named constants. */
 #ifndef FCE_CONSTANTS_H
 #define FCE_CONSTANTS_H
 
 /* ── Byte / character constants ──────────────────────────────── */
 enum {
-    FCE_BYTE_RANGE = 256, /* full byte range 0x00–0xFF */
-    FCE_QUOTE_PAIR = 2,   /* two quote characters (open + close) */
-    FCE_QUOTE_OFFSET = 1, /* skip opening quote */
+ FCE_BYTE_RANGE = 256, /* full byte range 0x00–0xFF */
+ FCE_QUOTE_PAIR = 2, /* two quote characters (open + close) */
+ FCE_QUOTE_OFFSET = 1, /* skip opening quote */
 };
 
 /* ── Size units (powers of 2) ────────────────────────────────── */
 enum {
-    FCE_SZ_2 = 2,
-    FCE_SZ_3 = 3,
-    FCE_SZ_4 = 4,
-    FCE_SZ_5 = 5,
-    FCE_SZ_6 = 6,
-    FCE_SZ_7 = 7,
-    FCE_SZ_8 = 8,
-    FCE_SZ_16 = 16,
-    FCE_SZ_32 = 32,
-    FCE_SZ_64 = 64,
-    FCE_SZ_128 = 128,
-    FCE_SZ_256 = 256,
-    FCE_SZ_512 = 512,
-    FCE_SZ_1K = 1024,
-    FCE_SZ_2K = 2048,
-    FCE_SZ_4K = 4096,
-    FCE_SZ_8K = 8192,
-    FCE_SZ_16K = 16384,
-    FCE_SZ_32K = 32768,
-    FCE_SZ_64K = 65536,
+ FCE_SZ_2 = 2,
+ FCE_SZ_3 = 3,
+ FCE_SZ_4 = 4,
+ FCE_SZ_5 = 5,
+ FCE_SZ_6 = 6,
+ FCE_SZ_7 = 7,
+ FCE_SZ_8 = 8,
+ FCE_SZ_16 = 16,
+ FCE_SZ_32 = 32,
+ FCE_SZ_64 = 64,
+ FCE_SZ_128 = 128,
+ FCE_SZ_256 = 256,
+ FCE_SZ_512 = 512,
+ FCE_SZ_1K = 1024,
+ FCE_SZ_2K = 2048,
+ FCE_SZ_4K = 4096,
+ FCE_SZ_8K = 8192,
+ FCE_SZ_16K = 16384,
+ FCE_SZ_32K = 32768,
+ FCE_SZ_64K = 65536,
 };
 
 /* ── Numeric bases and common factors ────────────────────────── */
 enum {
-    FCE_DECIMAL_BASE = 10,
-    FCE_HEX_BASE = 16,
-    FCE_PERCENT = 100,
+ FCE_DECIMAL_BASE = 10,
+ FCE_HEX_BASE = 16,
+ FCE_PERCENT = 100,
 };
 
 /* ── Tree-sitter line offset ─────────────────────────────────── */
@@ -48,8 +46,8 @@ enum { TS_LINE_OFFSET = 1 };
 
 /* ── Sentinel values ─────────────────────────────────────────── */
 enum {
-    FCE_NOT_FOUND = -1, /* search miss, invalid index */
-    FCE_INIT_DONE = 1,  /* initialization flag */
+ FCE_NOT_FOUND = -1, /* search miss, invalid index */
+ FCE_INIT_DONE = 1, /* initialization flag */
 };
 
 /* ── Default pagination limits ───────────────────────────────── */
@@ -69,10 +67,10 @@ enum { FCE_DEFAULT_SEARCH_LIMIT = 200 };
 
 /* ── Common string/buffer sizes ──────────────────────────────── */
 enum {
-    FCE_SMALL_BUF = 3,   /* small scratch buffers */
-    FCE_NAME_BUF = 4,    /* name buffer slots */
-    FCE_PATH_MAX = 1024, /* path buffer size */
-    FCE_LINE_BUF = 512,  /* line read buffer */
+ FCE_SMALL_BUF = 3, /* small scratch buffers */
+ FCE_NAME_BUF = 4, /* name buffer slots */
+ FCE_PATH_MAX = 1024, /* path buffer size */
+ FCE_LINE_BUF = 512, /* line read buffer */
 };
 
 #endif /* FCE_CONSTANTS_H */

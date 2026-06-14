@@ -1,9 +1,7 @@
-/*
- * compat_thread.h — Portable threading: pthreads on POSIX, Win32 threads on Windows.
+/* * compat_thread.h — Portable threading: pthreads on POSIX, Win32 threads on Windows.
  *
  * Provides: thread create/join, mutex, aligned allocation.
- * All have zero overhead on POSIX (thin inlines or macros).
- */
+ * All have zero overhead on POSIX (thin inlines or macros). */
 #ifndef FCE_COMPAT_THREAD_H
 #define FCE_COMPAT_THREAD_H
 
@@ -19,7 +17,7 @@
 #include <windows.h>
 
 typedef struct {
-    HANDLE handle;
+ HANDLE handle;
 } fce_thread_t;
 
 #else /* POSIX */
@@ -27,7 +25,7 @@ typedef struct {
 #include <pthread.h>
 
 typedef struct {
-    pthread_t handle;
+ pthread_t handle;
 } fce_thread_t;
 
 #endif
@@ -47,13 +45,13 @@ int fce_thread_detach(fce_thread_t *t);
 #ifdef _WIN32
 
 typedef struct {
-    CRITICAL_SECTION cs;
+ CRITICAL_SECTION cs;
 } fce_mutex_t;
 
 #else
 
 typedef struct {
-    pthread_mutex_t mtx;
+ pthread_mutex_t mtx;
 } fce_mutex_t;
 
 #endif

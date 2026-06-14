@@ -8,7 +8,7 @@
 typedef enum {
     FCE_QUERY_AUTO   = 0,  /* use fast path, fall back to brute if no inv index */
     FCE_QUERY_BRUTE  = 1,  /* always brute-force scan all docs */
-    FCE_QUERY_FAST   = 2,  /* inverted index + rerank, fall back to brute if < top_k */
+    FCE_QUERY_FAST   = 2,  /* inverted index + rerank; does NOT fall back to brute-force */
     FCE_QUERY_TFIDF  = 3,  /* TF-IDF candidate retrieval + RI rerank */
 } fce_query_mode_t;
 ```
@@ -43,12 +43,14 @@ not 1-1.8 GB). `inv_doc_ids` is 64.8 MB for 16.9M unique doc-token pairs.
 
 ### 4. Benchmark tool (`bench_mem_query.c`)
 
-New `--brute-only` flag:
+New flags:
 ```
-./bench_mem_query <dir> [chunk_size] [--brute-only]
+./bench_mem_query <dir> [chunk_size] [--brute-only] [--sparse[=N]]
 ```
 
-Sets `FCE_SEM_SKIP_INV_INDEX=1` before finalize and `query_mode=FCE_QUERY_BRUTE` for all queries.
+- `--brute-only`: sets `FCE_SEM_SKIP_INV_INDEX=1` before finalize and `query_mode=FCE_QUERY_BRUTE` for all queries.
+- `--sparse[=N]`: enables sparse vector storage with top-N non-zero entries per vector (default 32). Saves ~60-70% memory on enriched/doc vectors.
+
 Shows finalize time, memory, and query benchmarks for comparison.
 
 ### 5. Makefile

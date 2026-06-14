@@ -88,7 +88,7 @@ static void test_tokenize_dot_separated(void) {
 static void test_tokenize_pascal_case(void) {
     TEST(tokenize PascalCase);
     char *tokens[32];
-    /* L4 (review 0007 §L4): broader camel break splits acronym boundaries.
+    /* Broader camel break splits acronym boundaries.
      * "XMLHttpRequest" → "xml" + "http" + "request" (uppercase run boundary
      * at X-H transition, then camelCase at H-t transition). */
     int n = fce_sem_tokenize("XMLHttpRequest", tokens, 32);
@@ -433,7 +433,7 @@ static void test_corpus_token_at(void) {
 
 static void test_proximity_same_file(void) {
     TEST(proximity same file);
-    /* A1 (review 0010): identical files no longer reach FCE_SEM_PROX_MAX_BOOST
+    /* Identical files no longer reach FCE_SEM_PROX_MAX_BOOST
      * because only directory components are compared. src/foo.c vs src/foo.c
      * shares 1 dir out of max 1, ratio=1/(1+1)=0.5, boost=1.05. */
     float p = fce_sem_proximity("src/foo.c", "src/foo.c");
@@ -757,7 +757,7 @@ static void test_config_defaults(void) {
     PASS();
 }
 
-/* ── Regression tests for review fixes ─────────────────────── */
+/* ── Regression tests for bug fixes ─────────────────────── */
 
 static void test_search_query_null_doc_vectors(void) {
     TEST(search_query on non-finalized corpus returns 0 results);
@@ -954,7 +954,7 @@ static void test_search_query_repeated_same_corpus(void) {
     PASS();
 }
 
-/* Pre-existing Low-priority fix tests (from earlier review rounds) */
+/* Pre-existing Low-priority fix tests */
 
 static void test_abbreviation_lazy_allocation(void) {
     TEST(abbreviation hash table lazy allocation);
@@ -1144,7 +1144,7 @@ static void test_rank_flat_top_k_limit(void) {
     PASS();
 }
 
-/* ── Review 0003 fix tests ─────────────────────────────── */
+/* ── Bug fix regression tests ─────────────────────────────── */
 
 static void test_search_null_file_path(void) {
     TEST(search with NULL file_path does not crash);
@@ -1245,7 +1245,7 @@ static void test_corpus_get_or_add_oom_rollback(void) {
     PASS();
 }
 
-/* ── fix tests ──────────────────── */
+/* ── Edge case fix tests ──────────────────── */
 
 /* H-1: degenerate (all-OOV) query must return 0 results and must not
  * leak the strdup'd tokens from fce_sem_tokenize.  Before the fix the
@@ -1480,7 +1480,7 @@ static void test_m5_doc_map_out_cleared_on_cap_exceeded(void) {
     PASS();
 }
 
-/* ── PR review follow-up tests ──────────────────────────────────── */
+/* ── API integration tests ──────────────────────────────────── */
 
 /* doc_map_out happy path: a batch with one invalid doc (zero tokens) should
  * set doc_map_out[d] = -1 for that doc and sequential indices for the valid
@@ -1651,7 +1651,7 @@ int main(void) {
     test_hash_table_null_guard();
     test_corpus_search_query();
 
-    /* Low-priority fix tests (previous review rounds) */
+    /* Low-priority fix tests */
     printf("\nLow Priority Fixes:\n");
     test_abbreviation_lazy_allocation();
     test_abbreviation_concurrent_init();
@@ -1662,32 +1662,32 @@ int main(void) {
     test_rank_flat_zero_scores();
     test_rank_flat_top_k_limit();
 
-    /* fixes */
-    printf("\nReview 0003 Fixes:\n");
+    /* Edge case fixes */
+    printf("\nEdge Case Fixes:\n");
     test_search_null_file_path();
     test_doc_count_batch_parity();
     test_abbrev_ht_oom_retry();
     test_corpus_get_or_add_oom_rollback();
 
-    /* fixes */
-    printf("\nReview Fixes:\n");
+    /* Edge case fixes */
+    printf("\nConcurrency Fixes:\n");
     test_h1_oov_query_returns_empty();
     test_h3_parallel_for_static_covers_all_chunks();
 
     /* Medium-priority fixes */
-    printf("\nMedium Fixes:\n");
+    printf("\nMedium-priority Fixes:\n");
     test_m1_finalize_failed_returns_error();
     test_m2_digit_identifier_stays_whole();
     test_m3_tokenize_locale_independent();
     test_m5_doc_map_out_cleared_on_cap_exceeded();
 
     /* Low-priority fixes */
-    printf("\nLow Fixes:\n");
+    printf("\nLow-priority Fixes:\n");
     test_corpus_free_after_finalize();
     test_search_query_repeated_same_corpus();
 
-    /* PR review follow-up */
-    printf("\nPR Review Follow-up:\n");
+    /* API integration tests */
+    printf("\nAPI Integration Tests:\n");
     test_doc_map_out_valid_batch();
     test_doc_map_out_null_safe_on_rejection();
     test_corpus_mirror_layout_sanity();

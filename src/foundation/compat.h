@@ -1,10 +1,8 @@
-/*
- * compat.h — Cross-platform compatibility macros and shims.
+/* * compat.h — Cross-platform compatibility macros and shims.
  *
  * Provides portable TLS, sleep, strdup/strndup, and getline across
  * POSIX (macOS/Linux) and Windows. Include this instead of using
- * platform-specific macros directly.
- */
+ * platform-specific macros directly. */
 #ifndef FCE_COMPAT_H
 #define FCE_COMPAT_H
 
@@ -79,9 +77,9 @@ char *fce_strcasestr(const char *haystack, const char *needle);
 /* Implemented in compat.c */
 int fce_clock_gettime(int clk_id, struct timespec *tp);
 static inline int fce_nanosleep(const struct timespec *req, struct timespec *rem) {
-    (void)rem;
-    Sleep((DWORD)(req->tv_sec * 1000 + req->tv_nsec / 1000000));
-    return 0;
+ (void)rem;
+ Sleep((DWORD)(req->tv_sec * 1000 + req->tv_nsec / 1000000));
+ return 0;
 }
 #else
 #define fce_clock_gettime clock_gettime
@@ -91,7 +89,7 @@ static inline int fce_nanosleep(const struct timespec *req, struct timespec *rem
 /* ── gmtime_r (Windows lacks it) ─────────────────────────────── */
 #ifdef _WIN32
 static inline struct tm *fce_gmtime_r(const time_t *timep, struct tm *result) {
-    return gmtime_s(result, timep) == 0 ? result : NULL;
+ return gmtime_s(result, timep) == 0 ? result : NULL;
 }
 #else
 #define fce_gmtime_r gmtime_r
@@ -116,11 +114,11 @@ int fce_mkstemp(char *tmpl);
 /* ── setenv / unsetenv (Windows lacks them) ──────────────────── */
 #ifdef _WIN32
 static inline int fce_setenv(const char *name, const char *value, int overwrite) {
-    (void)overwrite;
-    return _putenv_s(name, value);
+ (void)overwrite;
+ return _putenv_s(name, value);
 }
 static inline int fce_unsetenv(const char *name) {
-    return _putenv_s(name, "");
+ return _putenv_s(name, "");
 }
 #else
 #define fce_setenv setenv
@@ -139,17 +137,17 @@ static inline int fce_unsetenv(const char *name) {
 /* ── Temp directory helper ───────────────────────────────────── */
 static inline const char *fce_tmpdir(void) {
 #ifdef _WIN32
-    /* L-08: Uses raw getenv instead of fce_safe_getenv
-     * for consistency. On Windows, getenv is thread-safe per MSVC docs, and
-     * fce_safe_getenv requires a caller-owned buffer which is awkward for a
-     * function returning a pointer. This is the only getenv usage in the
-     * codebase — documented here for audit purposes. */
-    const char *t = getenv("TEMP");
-    if (!t)
-        t = getenv("TMP");
-    return t ? t : ".";
+ /* L-08: Uses raw getenv instead of fce_safe_getenv
+ * for consistency. On Windows, getenv is thread-safe per MSVC docs, and
+ * fce_safe_getenv requires a caller-owned buffer which is awkward for a
+ * function returning a pointer. This is the only getenv usage in the
+ * codebase — documented here for audit purposes. */
+ const char *t = getenv("TEMP");
+ if (!t)
+ t = getenv("TMP");
+ return t ? t : ".";
 #else
-    return "/tmp";
+ return "/tmp";
 #endif
 }
 

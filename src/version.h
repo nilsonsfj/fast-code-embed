@@ -1,11 +1,9 @@
-/*
- * version.h — Library version for fast-code-embed.
+/* * version.h — Library version for fast-code-embed.
  *
  * Semantic versioning: https://semver.org/
  * BUMP PATCH: bug fixes only.
  * BUMP MINOR: new features, backward-compatible.
- * BUMP MAJOR: breaking changes.
- */
+ * BUMP MAJOR: breaking changes. */
 #ifndef FCE_VERSION_H
 #define FCE_VERSION_H
 

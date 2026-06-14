@@ -27,7 +27,7 @@ flowchart LR
 
 **Current state:** All doc vectors and enriched vocabulary vectors are int8.
 `doc_vectors_q_inv_mag` stores per-doc reciprocal magnitudes. Brute-force is
-static-chunked parallel (2 workers, ~3 ms). Fast/tfidf paths use inverted
+static-chunked parallel (default `total_cores / 4`, ~3 ms; configurable via `FCE_BRUTE_WORKERS`). Fast/tfidf paths use inverted
 index candidates + RI rerank. Search path is configurable via
 `fce_query_mode_t` in `fce_sem_config_t` (AUTO, BRUTE, FAST, TFIDF).
 

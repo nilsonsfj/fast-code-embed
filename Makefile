@@ -9,10 +9,9 @@
 #
 CC      ?= cc
 # -Wgnu-zero-variadic-macro-arguments is suppressed because fce_log_* macros
-# rely on the GNU `, ##__VA_ARGS__` extension (C-2 review 0002 §5.8:
-# __VA_OPT__ is C23 and rejected by -std=c11). All other pedantic warnings
+# rely on the GNU `, ##__VA_ARGS__` extension (__VA_OPT__ is C23 and rejected by -std=c11). All other pedantic warnings
 # remain on.
-# L-10: -fPIC ensures the static library objects
+# -fPIC ensures the static library objects
 # can be linked into a shared library (e.g., the JNI dylib) on all platforms,
 # including macOS ARM64 where the linker requires PIC for dylib content.
 CFLAGS       ?= -O2 -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11 -mtune=native -DNDEBUG -fPIC

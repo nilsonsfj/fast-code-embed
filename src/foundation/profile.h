@@ -1,5 +1,4 @@
-/*
- * profile.h — Activatable fine-grained performance profiling.
+/* * profile.h — Activatable fine-grained performance profiling.
  *
  * Enable via environment variable: FCE_PROFILE=1 (or any non-empty non-"0" value)
  * Init is called once at program startup (from main.c).
@@ -8,10 +7,9 @@
  * effectively zero overhead.
  *
  * Output format (structured log lines, parseable):
- *   level=info msg=prof phase=<pass> sub=<subphase> ms=<N> us=<N> items=<N> rate_per_s=<N>
+ * level=info msg=prof phase=<pass> sub=<subphase> ms=<N> us=<N> items=<N> rate_per_s=<N>
  *
- * Grep for `msg=prof` to get a full profile report.
- */
+ * Grep for `msg=prof` to get a full profile report. */
 #ifndef FCE_PROFILE_H
 #define FCE_PROFILE_H
 
@@ -33,26 +31,26 @@ void fce_profile_now(struct timespec *ts);
 /* Log elapsed time since `start` for the given phase/subphase.
  * `items` = optional count to compute rate (pass 0 to skip). */
 void fce_profile_log_elapsed(const char *phase, const char *sub, const struct timespec *start,
-                             long items);
+ long items);
 
 /* Zero-overhead macros: a single runtime check gates everything. */
 #define FCE_PROF_START(var) \
-    struct timespec var;    \
-    if (fce_profile_active) \
-    fce_profile_now(&(var))
+ struct timespec var; \
+ if (fce_profile_active) \
+ fce_profile_now(&(var))
 
-#define FCE_PROF_END(phase, sub, start_var)                           \
-    do {                                                              \
-        if (fce_profile_active) {                                     \
-            fce_profile_log_elapsed((phase), (sub), &(start_var), 0); \
-        }                                                             \
-    } while (0)
+#define FCE_PROF_END(phase, sub, start_var) \
+ do { \
+ if (fce_profile_active) { \
+ fce_profile_log_elapsed((phase), (sub), &(start_var), 0); \
+ } \
+ } while (0)
 
-#define FCE_PROF_END_N(phase, sub, start_var, items)                              \
-    do {                                                                          \
-        if (fce_profile_active) {                                                 \
-            fce_profile_log_elapsed((phase), (sub), &(start_var), (long)(items)); \
-        }                                                                         \
-    } while (0)
+#define FCE_PROF_END_N(phase, sub, start_var, items) \
+ do { \
+ if (fce_profile_active) { \
+ fce_profile_log_elapsed((phase), (sub), &(start_var), (long)(items)); \
+ } \
+ } while (0)
 
 #endif /* FCE_PROFILE_H */

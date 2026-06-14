@@ -40,14 +40,14 @@ package io.github.nilsonsfj.fastcodeembed;
  * @since 0.0.1
  */
 public class Corpus implements AutoCloseable {
-    /* H-1 (review 0007 §H-1): volatile so that a racing close() is visible to
+    /* H-1: volatile so that a racing close() is visible to
      * query threads.  close() is synchronized to guarantee atomic test-and-clear
      * — only one thread can ever observe a non-zero handle and free it. */
     private volatile long handle;
     private boolean finalized;
     private final java.util.ArrayList<String> docPaths = new java.util.ArrayList<>();
 
-    /* L-2 (review 0007 §L-2): Cleaner backstop. If the caller forgets
+    /* L-2: Cleaner backstop. If the caller forgets
      * close() / try-with-resources, the Cleaner reclaims native memory on
      * GC.  close() clears `handle` before freeing, so the action sees 0
      * and becomes a no-op — no double-free. */
@@ -75,8 +75,7 @@ public class Corpus implements AutoCloseable {
      * Create a new empty corpus.
      *
      * @throws OutOfMemoryError if the native library could not allocate
-     *         the corpus (review 0001 §2.6: previously the constructor
-     *         silently produced a 0-handle that surfaced as a confusing
+     *         the corpus: previously the constructor *         silently produced a 0-handle that surfaced as a confusing
      *         "Corpus is closed" IllegalStateException on the first call).
      * @throws UnsatisfiedLinkError if native library is not loaded
      */
@@ -87,7 +86,7 @@ public class Corpus implements AutoCloseable {
             throw new OutOfMemoryError("fce_sem_corpus_new returned NULL (calloc/ht_create OOM)");
         }
         this.finalized = false;
-        /* L-2 (review 0007 §L-2): register Cleaner backstop. CloseAction holds
+        /* L-2: register Cleaner backstop. CloseAction holds
          * a private copy of the handle; close() clears both `this.handle` and
          * `closeAction.h` before freeing, so if GC runs the action after close(),
          * it sees h==0 and skips. */
@@ -232,7 +231,7 @@ public class Corpus implements AutoCloseable {
      * All work happens in C — no intermediate Java String objects created.
      * This is the fastest way to build a corpus from source files.
      *
-     * <p>Best-effort semantics (review 0002 §2.5): if some files are
+     * <p>Best-effort semantics: if some files are
      * rejected by the C side (oversize, IO error, empty), the returned
      * {@code fileDocCounts[i]} for those indices is 0 and {@code docPaths}
      * is not extended for them. The {@code result} return value is the
@@ -240,7 +239,7 @@ public class Corpus implements AutoCloseable {
      * Callers that need strict per-file success can iterate the inputs
      * and check {@code fileDocCounts[i] > 0}.</p>
      *
-     * <p>Pre-validation (review 0002 §2.7): a {@code chunkSize <= 0} is
+     * <p>Pre-validation: a {@code chunkSize <= 0} is
      * rejected by the C side with a -1 return; no exception is thrown.
      * Callers are expected to pre-validate user input if needed.</p>
      *
@@ -350,7 +349,7 @@ public class Corpus implements AutoCloseable {
      * Build a FuncDescriptor for querying against this corpus.
      * Tokens not in the corpus get IDF = 0.0 and zero RI vectors.
      * <p>
-     * <b>WARNING — positional indices (review 0002 §2.3 / §8.6):</b>
+     * <b>WARNING — positional indices:</b>
      * the TF-IDF indices in the resulting FuncDescriptor are positional
      * (0, 1, 2, …) rather than corpus vocabulary IDs. This is safe for use
      * with {@code simpleSearch} and {@code simpleRank} (which use RI-based
@@ -474,7 +473,7 @@ public class Corpus implements AutoCloseable {
      * section).  Use try-with-resources or ensure all queries complete before
      * calling close.</p>
      *
-     * <p>H-1 (review 0007 §H-1): clears both the field handle and the
+     * <p>H-1: clears both the field handle and the
      * Cleaner action's handle, then frees via the Cleaner (idempotent).
      * The volatile write to closeAction.h ensures the Cleaner thread
      * sees 0 and skips if it races with this call.</p>

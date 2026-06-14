@@ -57,7 +57,7 @@ public final class NativeLibrary {
         sweepStaleTempDirs(tmpRoot, "fast-code-embed-jni-");
         sweepStaleTempDirs(tmpRoot, "fce-jni-");
 
-        /* M3 (review 0001-0001 §5): use Files.createTempDirectory for an
+        /* M3: use Files.createTempDirectory for an
          * unpredictable directory name with 0700 permissions. The previous
          * PID-derived name was predictable, enabling a classic native-library
          * planting / symlink-race attack on shared-host /tmp. */
@@ -82,7 +82,7 @@ public final class NativeLibrary {
             try {
                 System.load(tmpLib.toAbsolutePath().toString());
             } catch (UnsatisfiedLinkError loadErr) {
-                /* M-3 (review 0002 §7.5): System.load can fail AFTER Files.copy
+                /* M-3: System.load can fail AFTER Files.copy
                  * succeeded (e.g. corrupt dylib, wrong architecture, missing
                  * dependency). deleteOnExit() doesn't fire on JVM abort or
                  * crash, so the extracted library would otherwise leak on

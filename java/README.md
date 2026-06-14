@@ -13,6 +13,17 @@ batch corpus operations and the zero-config simple scoring API via JNI.
 
 ## Quick Start
 
+**Maven:**
+```xml
+<dependency>
+    <groupId>io.github.nilsonsfj</groupId>
+    <artifactId>fast-code-embed</artifactId>
+    <version>0.0.1</version>
+</dependency>
+```
+
+**From source:**
+
 ```bash
 # From the project root:
 make                    # build C library
