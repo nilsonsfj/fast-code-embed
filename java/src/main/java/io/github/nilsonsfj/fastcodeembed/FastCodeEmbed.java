@@ -29,12 +29,20 @@ package io.github.nilsonsfj.fastcodeembed;
  */
 public final class FastCodeEmbed {
 
-    /** Library version string, e.g. "0.0.1". */
-    public static final String VERSION = "0.0.1";
+    /** Library version string, e.g. "0.0.2". */
+    public static final String VERSION = "0.0.2";
 
     static {
         NativeLibrary.load();
     }
+
+    /**
+     * Runtime dimension of the native embedding vectors.
+     * Usually 768; 256 if the native library was compiled with
+     * {@code -DFCE_SEM_DIM_256}. All RI vectors passed to/from the library
+     * must match this dimension.
+     */
+    public static final int SEM_DIM = nGetDim();
 
     private FastCodeEmbed() {}
 
@@ -130,12 +138,12 @@ public final class FastCodeEmbed {
      * @param allWeights  flat IDF weights: [func * maxTokens + token]
      * @param allIndices  flat token indices: [func * maxTokens + token]
      * @param tfidfLens   per-function token count: [func]
-     * @param allRiVecs   flat RI vectors: [func * 768 + dim]
+     * @param allRiVecs   flat RI vectors: [func * {@link #SEM_DIM} + dim]
      * @param filePaths   per-function file paths: [func]
      * @param maxTokens  stride for flat arrays (longest TF-IDF in corpus)
      * @param qIndices   query token indices
      * @param qWeights   query IDF weights
-     * @param qRiVec     query RI vector (768 floats)
+     * @param qRiVec     query RI vector ({@link #SEM_DIM} floats)
      * @param topK       maximum results
      * @return ranked results sorted by score descending
      */
@@ -166,10 +174,12 @@ public final class FastCodeEmbed {
      * @param query  natural language query string
      * @param topK   maximum results
      * @return ranked results sorted by score descending (may be fewer than topK)
+     * @throws NullPointerException if {@code corpus} is null
+     * @throws IllegalStateException if {@code corpus} is closed
      */
     public static SearchResult[] searchQuery(Corpus corpus,
                                              String query, int topK) {
-        return nSearchQuery(corpus.getHandle(), query, topK);
+        return nSearchQuery(requireCorpusHandle(corpus), query, topK);
     }
 
     /**
@@ -180,10 +190,12 @@ public final class FastCodeEmbed {
      * @param query  natural language query string
      * @param topK   maximum results
      * @return ranked results sorted by score descending
+     * @throws NullPointerException if {@code corpus} is null
+     * @throws IllegalStateException if {@code corpus} is closed
      */
     public static SearchResult[] searchQueryTfidf(Corpus corpus,
                                                   String query, int topK) {
-        return nSearchQueryTfidf(corpus.getHandle(), query, topK);
+        return nSearchQueryTfidf(requireCorpusHandle(corpus), query, topK);
     }
 
     /**
@@ -194,10 +206,12 @@ public final class FastCodeEmbed {
      * @param query  natural language query string
      * @param topK   maximum results
      * @return ranked results sorted by score descending
+     * @throws NullPointerException if {@code corpus} is null
+     * @throws IllegalStateException if {@code corpus} is closed
      */
     public static SearchResult[] searchQueryBruteforce(Corpus corpus,
                                                        String query, int topK) {
-        return nSearchQueryBruteforce(corpus.getHandle(), query, topK);
+        return nSearchQueryBruteforce(requireCorpusHandle(corpus), query, topK);
     }
 
     /**
@@ -207,9 +221,30 @@ public final class FastCodeEmbed {
      * @param corpus finalized corpus
      * @param query  query string
      * @return candidate count
+     * @throws NullPointerException if {@code corpus} is null
+     * @throws IllegalStateException if {@code corpus} is closed
      */
     public static int searchCandidateCount(Corpus corpus, String query) {
-        return nSearchCandidateCount(corpus.getHandle(), query);
+        return nSearchCandidateCount(requireCorpusHandle(corpus), query);
+    }
+
+    /**
+     * Validate a corpus argument for the high-level search API.
+     * The native layer silently returns an empty result for a closed/null
+     * handle, which is hard to diagnose from Java.
+     *
+     * @throws NullPointerException if corpus is null
+     * @throws IllegalStateException if corpus is closed
+     */
+    private static long requireCorpusHandle(Corpus corpus) {
+        if (corpus == null) {
+            throw new NullPointerException("corpus is null");
+        }
+        long h = corpus.getHandle();
+        if (h == 0) {
+            throw new IllegalStateException("Corpus is closed");
+        }
+        return h;
     }
 
     // ── Memory measurement ────────────────────────────────────────
@@ -279,4 +314,7 @@ public final class FastCodeEmbed {
         String query, int topK);
 
     private static native int nSearchCandidateCount(long handle, String query);
+
+    /** Returns the native library's compile-time embedding dimension. */
+    private static native int nGetDim();
 }

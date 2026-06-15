@@ -24,6 +24,7 @@
  * is provided for short-circuit return on pending exception. */
 #include <jni.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "semantic/semantic.h"
@@ -434,7 +435,9 @@ static fce_sem_func_t marshal_func(JNIEnv *env, jobject obj, char **path_out,
             (*env)->ReleaseFloatArrayElements(env, jri, elems, JNI_ABORT);
             (*env)->DeleteLocalRef(env, jri);
             jclass iae = cls_illegal_arg ? cls_illegal_arg : (*env)->FindClass(env, "java/lang/IllegalArgumentException");
-            (*env)->ThrowNew(env, iae, "riVec length must be >= 768");
+            char ri_len_msg[64];
+            snprintf(ri_len_msg, sizeof(ri_len_msg), "riVec length must be >= %d", FCE_SEM_DIM);
+            (*env)->ThrowNew(env, iae, ri_len_msg);
             if (f.tfidf_indices) (*env)->ReleaseIntArrayElements(env, jindices, (jint *)f.tfidf_indices, JNI_ABORT);
             if (f.tfidf_weights) (*env)->ReleaseFloatArrayElements(env, jweights, f.tfidf_weights, JNI_ABORT);
             if (jindices) (*env)->DeleteLocalRef(env, jindices);
@@ -1116,6 +1119,16 @@ JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGet
     return count;
 }
 
+JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetDim(
+    JNIEnv *env, jclass cls) {
+    (void)env;
+    (void)cls;
+    /* Expose the compile-time dimension to Java so the bindings work for
+     * both the default 768-dim build and 256-dim builds compiled with
+     * -DFCE_SEM_DIM_256. */
+    return (jint)FCE_SEM_DIM;
+}
+
 /* ── Static Nomic Search JNI ────────────────────────────────────── */
 
 JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_init(
@@ -1268,9 +1281,13 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
             (*env)->DeleteLocalRef(env, strCls);
             goto tokenize_cleanup_tokens;
         }
+        /* Track the most recent docTokens array so an OOM/error exit from
+         * the inner loop does not leak its local reference. */
+        jobjectArray pending_doc_tokens = NULL;
         for (int i = 0; i < count; i++) {
             jobjectArray docTokens = (*env)->NewObjectArray(env, token_counts[i], strCls, NULL);
             if ((*env)->ExceptionCheck(env)) goto tokenize_cleanup_result;
+            pending_doc_tokens = docTokens;
             for (int t = 0; t < token_counts[i]; t++) {
                 jstring jtok = (*env)->NewStringUTF(env, all_tokens[(size_t)i * max_out + t]);
                 /* M1: NewStringUTF can return NULL and raise
@@ -1288,7 +1305,9 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
                 all_tokens[(size_t)i * max_out + t] = NULL;
             }
             (*env)->SetObjectArrayElement(env, result, i, docTokens);
+            if ((*env)->ExceptionCheck(env)) goto tokenize_cleanup_result;
             (*env)->DeleteLocalRef(env, docTokens);
+            pending_doc_tokens = NULL;
         }
         (*env)->DeleteLocalRef(env, strCls);
         free(all_tokens);
@@ -1296,6 +1315,7 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
         return result;
 
     tokenize_cleanup_result:
+        if (pending_doc_tokens) (*env)->DeleteLocalRef(env, pending_doc_tokens);
         (*env)->DeleteLocalRef(env, strCls);
     }
 
@@ -1703,8 +1723,10 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
     size_t needed_ri = (size_t)corpusSize * (size_t)FCE_SEM_DIM;
     if ((size_t)rv_len < needed_ri) {
         if (cls_illegal_arg) {
-            (*env)->ThrowNew(env, cls_illegal_arg,
-                             "array size mismatch: all_ri_vecs too small for corpusSize * 768");
+            char ri_size_msg[80];
+            snprintf(ri_size_msg, sizeof(ri_size_msg),
+                     "array size mismatch: all_ri_vecs too small for corpusSize * %d", FCE_SEM_DIM);
+            (*env)->ThrowNew(env, cls_illegal_arg, ri_size_msg);
         }
         goto flat_cleanup_query;
     }
@@ -1795,8 +1817,10 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
     if ((j_q_ri_vec && q_ri_len < FCE_SEM_DIM) ||
         (j_q_indices && j_q_weights && q_w_len < q_len)) {
         if (cls_illegal_arg) {
-            (*env)->ThrowNew(env, cls_illegal_arg,
-                             "query array size mismatch: q_ri_vec < 768 or q_weights < q_indices");
+            char q_size_msg[96];
+            snprintf(q_size_msg, sizeof(q_size_msg),
+                     "query array size mismatch: q_ri_vec < %d or q_weights < q_indices", FCE_SEM_DIM);
+            (*env)->ThrowNew(env, cls_illegal_arg, q_size_msg);
         }
         goto flat_cleanup_query;
     }

@@ -17,7 +17,7 @@ package io.github.nilsonsfj.fastcodeembed;
  *     corp.complete();
  *
  *     float idf = corp.getIdf("handle");      // log(N/df)
- *     float[] vec = corp.getRiVec("handle");   // enriched 768d vector
+ *     float[] vec = corp.getRiVec("handle");   // enriched {@link FastCodeEmbed#SEM_DIM}-dim vector
  *
  *     FuncDescriptor a = corp.buildFunc("src/handler.c", new String[]{"handle", "request"});
  *     FuncDescriptor b = corp.buildFunc("src/auth.c", new String[]{"validate", "user"});
@@ -308,7 +308,7 @@ public class Corpus implements AutoCloseable {
      * Get the enriched Random Indexing vector for a token (after co-occurrence).
      *
      * @param token the token to look up
-     * @return 768-dimensional float array, or null if token is unknown
+     * @return {@link FastCodeEmbed#SEM_DIM}-dimensional float array, or null if token is unknown
      * @throws IllegalStateException if {@link #complete()} has not been called
      */
     public float[] getRiVec(String token) {
@@ -374,14 +374,14 @@ public class Corpus implements AutoCloseable {
         checkFinalized();
         int[] indices = new int[tokens.length];
         float[] weights = new float[tokens.length];
-        float[] riVec = new float[768]; // FCE_SEM_DIM
+        float[] riVec = new float[FastCodeEmbed.SEM_DIM];
 
         for (int i = 0; i < tokens.length; i++) {
             indices[i] = i;
             weights[i] = getIdf(tokens[i]);
             float[] rv = getRiVec(tokens[i]);
             if (rv != null) {
-                for (int d = 0; d < 768; d++) {
+                for (int d = 0; d < FastCodeEmbed.SEM_DIM; d++) {
                     riVec[d] += rv[d];
                 }
             }
@@ -408,10 +408,24 @@ public class Corpus implements AutoCloseable {
         }
 
         int n = funcs.length;
-        float[] allWeights = new float[n * maxTokens];
-        int[] allIndices = new int[n * maxTokens];
+        /* n * maxTokens and n * SEM_DIM are computed in long
+         * arithmetic so very large query-side corpora fail loudly with an
+         * IllegalArgumentException instead of silently corrupting the flat
+         * layout via 32-bit overflow. */
+        long tfidfTotalLong = (long) n * (long) maxTokens;
+        long riTotalLong = (long) n * (long) FastCodeEmbed.SEM_DIM;
+        if (tfidfTotalLong > Integer.MAX_VALUE || riTotalLong > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(
+                "flat corpus too large: n=" + n + ", maxTokens=" + maxTokens +
+                ", dim=" + FastCodeEmbed.SEM_DIM);
+        }
+        int tfidfTotal = (int) tfidfTotalLong;
+        int riTotal = (int) riTotalLong;
+
+        float[] allWeights = new float[tfidfTotal];
+        int[] allIndices = new int[tfidfTotal];
         int[] tfidfLens = new int[n];
-        float[] allRiVecs = new float[n * 768];
+        float[] allRiVecs = new float[riTotal];
         String[] filePaths = new String[n];
 
         for (int f = 0; f < n; f++) {
@@ -428,7 +442,7 @@ public class Corpus implements AutoCloseable {
 
             float[] ri = fd.getRiVec();
             if (ri != null) {
-                System.arraycopy(ri, 0, allRiVecs, f * 768, 768);
+                System.arraycopy(ri, 0, allRiVecs, f * FastCodeEmbed.SEM_DIM, FastCodeEmbed.SEM_DIM);
             }
         }
 
@@ -502,6 +516,7 @@ public class Corpus implements AutoCloseable {
      * Pre-extracted flat arrays for batch ranking.
      * Created by {@link #extractFlat(FuncDescriptor[])}.
      * Reusable across multiple queries.
+     * RI vectors are laid out as {@code [func * FastCodeEmbed.SEM_DIM + dim]}.
      */
     public static class FlatCorpus {
         public final float[] allWeights;

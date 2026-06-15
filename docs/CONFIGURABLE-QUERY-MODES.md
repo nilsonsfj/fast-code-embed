@@ -51,6 +51,12 @@ New flags:
 - `--brute-only`: sets `FCE_SEM_SKIP_INV_INDEX=1` before finalize and `query_mode=FCE_QUERY_BRUTE` for all queries.
 - `--sparse[=N]`: enables sparse vector storage with top-N non-zero entries per vector (default 32). Saves ~60-70% memory on enriched/doc vectors.
 
+  ⚠️ **Sparse mode changes ranking, not just precision.** The query magnitude is
+  computed over all dimensions, but the document magnitude is computed only over
+  the retained top-N dimensions. This produces a non-monotone cosine that can
+  reorder top-k results compared to dense mode. Use dense mode for faithful
+  rank order; sparse mode is a memory/speed trade-off only.
+
 Shows finalize time, memory, and query benchmarks for comparison.
 
 ### 5. Makefile
