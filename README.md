@@ -1,13 +1,13 @@
 # 🚀 fast-code-embed
 
-**Version 0.0.2** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
+**Version 0.0.3** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
 
 ✨ fast-code-embed is a standalone C library that scores code function pairs by
 semantic similarity — using a 30 MB lookup table, TF-IDF, and Random Indexing.
 Zero runtime inference. Works everywhere.
 
 Born as an extraction and rewrite of the embedding logic from
-[codebase-memory-mcp](https://github.com/anomalyco/codebase-memory-mcp), then
+[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp), then
 optimized further: faster SIMD kernels, lower memory footprint, improved
 scoring defaults, and a cleaner API.
 
@@ -18,14 +18,14 @@ scoring defaults, and a cleaner API.
 - ⚡ **Sub-millisecond scoring** — Lookup-based. No transformers, no GPU, no latency spikes.
 - 📦 **30 MB total footprint** — Pretrained nomic-embed-code token vectors embedded as a binary blob.
 - 🧠 **Meaningful signals** — Combines TF-IDF, Random Indexing (enriched with co-occurrence context), and module proximity into a single [0, 1] score.
-- 🔌 **Drop-in C API** — Link `libfast_code_embed.a`, include a header, score functions.
+- 🔌 **Drop-in C API** — Link `build/libfast_code_embed.a`, include a header, score functions.
 - ☕ **Java JNI binding** — Works from JVM environments via `FastCodeEmbed`.
 - ✅ **Sanitizer-clean** — ASan, UBSan, and MSan all pass.
 
 ## ⚡ Quick Start
 
 ```bash
-make            # build lib/libfast_code_embed.a
+make            # build build/libfast_code_embed.a
 make test       # run the test suite (64/64 pass)
 make bench      # build bench_mem_query benchmark tool
 ```
@@ -57,7 +57,7 @@ A first-class Java binding is available under `java/`. Full details in
 <dependency>
     <groupId>io.github.nilsonsfj</groupId>
     <artifactId>fast-code-embed</artifactId>
-    <version>0.0.2</version>
+    <version>0.0.3</version>
 </dependency>
 ```
 
@@ -143,7 +143,7 @@ Expect ~2–3 h on GPU, ~6–10 h on Apple Silicon CPU.
 
 ```
 src/
-├── version.h/c        Semantic version (0.0.2)
+├── version.h/c        Semantic version (0.0.3)
 ├── embed/             Pretrained code vectors (nomic-embed-code, 30 MB)
 ├── semantic/          Tokenization, TF-IDF, RI, corpus, scoring
 ├── foundation/         Hash table, threading, logging, platform detection
@@ -156,5 +156,3 @@ java/                  JNI binding — see java/README.md
 ## License
 
 MIT — see [LICENSE](LICENSE). Embedding vectors are Apache 2.0.
-
-Nilson Santos Figueiredo Junior 2026. All rights reserved.

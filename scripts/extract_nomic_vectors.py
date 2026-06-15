@@ -8,7 +8,7 @@ to int8, and outputs files compatible with vendored/unixcoder/ format.
 
 Usage:
     pip3.9 install torch transformers sentence-transformers
-    python3.9 scripts/extract_nomic_vectors.py [--output-dir vendored/nomic]
+    python3.9 scripts/extract_nomic_vectors.py [--output-dir src/embed]
 
 Output:
     code_vectors.bin   — [int32 count][int32 dim] + count×dim int8
@@ -355,8 +355,8 @@ _PRETRAINED_VECTOR_BLOB_LEN:
 
 def main():
     parser = argparse.ArgumentParser(description="Extract nomic-embed-code token embeddings")
-    parser.add_argument("--output-dir", default="src/nomic",
-                        help="Output directory (default: src/nomic)")
+    parser.add_argument("--output-dir", default="src/embed",
+                        help="Output directory (default: src/embed)")
     parser.add_argument("--device", default=None,
                         help="Device: cuda, mps, cpu (auto-detected)")
     parser.add_argument("--skip-attention", action="store_true",
@@ -496,7 +496,7 @@ def main():
     write_tokens_txt(str(out_dir / "code_tokens.txt"), filtered_tokens)
     write_tokens_h(str(out_dir / "code_tokens.h"), filtered_tokens)
 
-    incbin_path = f"vendored/nomic/code_vectors.bin"
+    incbin_path = str(out_dir / "code_vectors.bin")
     write_vectors_h(str(out_dir / "code_vectors.h"), len(filtered_tokens), dim, incbin_path)
     write_blob_s(str(out_dir / "code_vectors_blob.S"), incbin_path)
     print()

@@ -187,6 +187,23 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
 
+      - name: Download JNI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: jni-artifacts
+
+      - name: Bundle native libraries into JAR resources
+        run: |
+          mkdir -p java/src/main/resources/native/linux-x86_64
+          mkdir -p java/src/main/resources/native/linux-aarch64
+          mkdir -p java/src/main/resources/native/darwin-aarch64
+          cp jni-artifacts/libfast_code_embed_jni.so-x86_64/libfast_code_embed_jni.so-x86_64 \
+             java/src/main/resources/native/linux-x86_64/libfast_code_embed_jni.so
+          cp jni-artifacts/libfast_code_embed_jni.so-aarch64/libfast_code_embed_jni.so-aarch64 \
+             java/src/main/resources/native/linux-aarch64/libfast_code_embed_jni.so
+          cp jni-artifacts/libfast_code_embed_jni.dylib-arm64/libfast_code_embed_jni.dylib-arm64 \
+             java/src/main/resources/native/darwin-aarch64/libfast_code_embed_jni.dylib
+
       - name: Import GPG key
         run: |
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import

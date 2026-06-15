@@ -35,14 +35,21 @@ public final class NativeLibrary {
 
     private static void loadFromJar() {
         String os = System.getProperty("os.name", "").toLowerCase();
+        String osKey;
         String libName;
         if (os.contains("mac") || os.contains("darwin")) {
+            osKey = "darwin";
             libName = "libfast_code_embed_jni.dylib";
         } else if (os.contains("linux")) {
+            osKey = "linux";
             libName = "libfast_code_embed_jni.so";
         } else {
+            osKey = "windows";
             libName = "fast_code_embed_jni.dll";
         }
+        /* Normalize JVM arch names: amd64 (x86-64 Linux/Windows) → x86_64 */
+        String rawArch = System.getProperty("os.arch", "").toLowerCase();
+        String archKey = rawArch.equals("amd64") ? "x86_64" : rawArch;
 
         /* C-2: sweep stale dirs BEFORE creating tmpDir.
          * The previous ordering swept AFTER createTempDirectory, which deleted
@@ -73,9 +80,10 @@ public final class NativeLibrary {
             java.nio.file.Path tmpLib = tmpDir.resolve(libName);
             tmpLib.toFile().deleteOnExit();
 
-            try (java.io.InputStream in = NativeLibrary.class.getResourceAsStream("/native/" + libName)) {
+            String resourcePath = "/native/" + osKey + "-" + archKey + "/" + libName;
+            try (java.io.InputStream in = NativeLibrary.class.getResourceAsStream(resourcePath)) {
                 if (in == null) {
-                    throw new UnsatisfiedLinkError("Native library not found in JAR: /native/" + libName);
+                    throw new UnsatisfiedLinkError("Native library not found in JAR: " + resourcePath);
                 }
                 java.nio.file.Files.copy(in, tmpLib, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             }
