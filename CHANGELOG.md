@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.2] — 2026-06-15
+
+### Added
+
+**C library:**
+- Configurable query modes: `fce_sem_config_t` with `query_mode` (AUTO, BRUTE, FAST, TFIDF)
+- TF-IDF candidate retrieval path (`fce_sem_search_query_tfidf`)
+- `doc_map_out` parameter on `add_docs_batch` for tracking source file paths
+- Inverted index skip via `FCE_BRUTE_ONLY` env or `FCE_SEM_SKIP_INV_INDEX`
+- `fce_sem_search_candidate_count` API
+- `fce_sem_get_peak_rss_bytes` / `fce_sem_get_current_rss_bytes`
+- Memory measurement on Linux via `/proc/self/status` (VmkPeMax)
+- `make bench` target (`bench_mem_query` tool)
+
+**Java JNI binding:**
+- `addDocsBatch(docs, paths)` / `addDocsTokenized(names, paths)` — batch-add with file paths
+- `addFiles(paths, chunkSize, maxTokens)` — read, chunk at `}` boundaries, tokenize in C
+- `FlatCorpus` / `Corpus.extractFlat()` for pre-extracted flat arrays
+- `getDocPath` / `getDocPaths` / `clearDocPaths`
+- `tokenizeBatch` (batch tokenization via single JNI call)
+- `searchQuery` / `searchQueryTfidf` / `searchQueryBruteforce`
+- `searchCandidateCount`
+- `getPeakRssBytes` / `getCurrentRssBytes`
+
+**Code quality:**
+- Static analysis fixes (C-1: jresult hoisting, C-2: sweep-before-create with age gate)
+- Thread safety fixes (H-2: broadcast on shared condvar, H-3: parallel brute-force nworkers)
+- Security hardening (H-1: token leak via goto, H-4: .note.GNU-stack for NX)
+
+### Changed
+- Search path now configurable via `fce_query_mode_t` in `fce_sem_config_t`
+- Inverted index ~67 MB (skippable)
+- Test suite: 64/64 C, 21/21 Java
+
 ## [0.0.1] — 2026-05-27
 
 ### Added

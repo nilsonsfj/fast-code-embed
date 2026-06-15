@@ -9,13 +9,13 @@
 
 #define FCE_VERSION_MAJOR 0
 #define FCE_VERSION_MINOR 0
-#define FCE_VERSION_PATCH 1
+#define FCE_VERSION_PATCH 2
 
 /* stringify helpers */
 #define FCE_VERSION_STR_(major, minor, patch) #major "." #minor "." #patch
 #define FCE_VERSION_STR FCE_VERSION_STR_(FCE_VERSION_MAJOR, FCE_VERSION_MINOR, FCE_VERSION_PATCH)
 
-/* Full version string, e.g. "0.0.1" */
+/* Full version string, e.g. "0.0.2" */
 const char *fce_version(void);
 
 #endif /* FCE_VERSION_H */

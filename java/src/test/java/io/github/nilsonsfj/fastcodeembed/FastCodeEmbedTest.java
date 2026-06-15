@@ -114,7 +114,7 @@ public class FastCodeEmbedTest {
 
                 float[] vec = corp.getRiVec("bar");
                 assertNotNull(vec, "RI vec not null");
-                assertEquals(768, vec.length, "vec dim");
+                assertEquals(FastCodeEmbed.SEM_DIM, vec.length, "vec dim");
 
                 boolean nonZero = false;
                 for (float v : vec) if (v != 0.0f) { nonZero = true; break; }
@@ -165,10 +165,10 @@ public class FastCodeEmbedTest {
         test("score always in [0,1]", () -> {
             FuncDescriptor a = new FuncDescriptor("a.c");
             a.setTfidf(new int[]{}, new float[]{});
-            a.setRiVec(new float[768]);
+            a.setRiVec(new float[FastCodeEmbed.SEM_DIM]);
             FuncDescriptor b = new FuncDescriptor("b.c");
             b.setTfidf(new int[]{}, new float[]{});
-            b.setRiVec(new float[768]);
+            b.setRiVec(new float[FastCodeEmbed.SEM_DIM]);
             float score = FastCodeEmbed.simpleScore(a, b);
             assertTrue(score >= 0.0f, "score >= 0, got " + score);
             assertTrue(score <= 1.0f, "score <= 1, got " + score);
@@ -312,11 +312,11 @@ public class FastCodeEmbedTest {
         test("simpleRankBatch empty corpus", () -> {
             FuncDescriptor q = new FuncDescriptor("q.c");
             q.setTfidf(new int[]{}, new float[]{});
-            q.setRiVec(new float[768]);
+            q.setRiVec(new float[FastCodeEmbed.SEM_DIM]);
             SearchResult[] results = FastCodeEmbed.simpleRankBatch(
                 new float[]{}, new int[]{}, new int[]{},
                 new float[]{}, new String[]{}, 1,
-                new int[]{}, new float[]{}, new float[768], 10);
+                new int[]{}, new float[]{}, new float[FastCodeEmbed.SEM_DIM], 10);
             assertEquals(0, results.length, "empty corpus should return 0 results");
         });
 
@@ -373,6 +373,34 @@ public class FastCodeEmbedTest {
             Corpus corp = new Corpus();
             corp.addDocsBatch(new String[][]{{"x", "y"}});
             corp.close(); /* finalize was never called */
+        });
+
+        test("searchQuery on closed corpus throws IllegalStateException", () -> {
+            Corpus corp = new Corpus();
+            corp.addDocsBatch(new String[][]{{"a", "b"}});
+            corp.complete();
+            corp.close();
+            boolean threw = false;
+            try {
+                FastCodeEmbed.searchQuery(corp, "a", 1);
+            } catch (IllegalStateException e) {
+                threw = true;
+            }
+            assertTrue(threw, "expected IllegalStateException for closed corpus");
+        });
+
+        test("searchQuery with null corpus throws NullPointerException", () -> {
+            boolean threw = false;
+            try {
+                FastCodeEmbed.searchQuery(null, "a", 1);
+            } catch (NullPointerException e) {
+                threw = true;
+            }
+            assertTrue(threw, "expected NullPointerException for null corpus");
+        });
+
+        test("SEM_DIM matches native build", () -> {
+            assertTrue(FastCodeEmbed.SEM_DIM > 0, "SEM_DIM must be positive");
         });
 
         System.out.println("\n=========================");

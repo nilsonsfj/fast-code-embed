@@ -12,7 +12,7 @@ import java.util.Objects;
  * <pre>{@code
  * FuncDescriptor fd = new FuncDescriptor("src/handler.c");
  * fd.setTfidf(new int[]{0, 1}, new float[]{0.8f, 1.2f});
- * fd.setRiVec(enrichedVec768d);
+ * fd.setRiVec(enrichedVec);
  * }</pre>
  *
  * <p>Use {@link Corpus#buildFunc} as a convenience to populate all fields
@@ -21,6 +21,10 @@ import java.util.Objects;
  * @since 0.0.1
  */
 public class FuncDescriptor {
+    static {
+        NativeLibrary.load();
+    }
+
     private final String filePath;
     private int[] tfidfIndices;
     private float[] tfidfWeights;
@@ -76,23 +80,24 @@ public class FuncDescriptor {
     }
 
     /**
-     * Set the 768-dimensional Random Indexing vector.
+     * Set the {@link FastCodeEmbed#SEM_DIM}-dimensional Random Indexing vector.
      * <p>
-     * L-9: The dimension is hardcoded to 768 to match
-     * {@code FCE_SEM_DIM} in the C library. If the library is compiled with
-     * {@code FCE_SEM_DIM_256}, the JNI layer still uses 768 (the preprocessor
-     * dimension), so the Java bindings only support the default 768-dim build.
-     * Typically built by summing enriched token vectors from a finalized corpus.
+     * The dimension is taken from the loaded native library at runtime, so
+     * Java bindings work for both the default 768-dim build and a 256-dim build
+     * compiled with {@code -DFCE_SEM_DIM_256}. The vector is typically built by
+     * summing enriched token vectors from a finalized corpus.
      *
-     * @param vec float array of length 768
+     * @param vec float array of length {@link FastCodeEmbed#SEM_DIM}
      * @throws NullPointerException with named arg if vec is null
-     * @throws IllegalArgumentException if vec.length != 768
+     * @throws IllegalArgumentException if vec.length does not match
+     *         {@link FastCodeEmbed#SEM_DIM}
      */
     public void setRiVec(float[] vec) {
         /* J-2: same as setTfidf. */
         Objects.requireNonNull(vec, "vec");
-        if (vec.length != 768) {
-            throw new IllegalArgumentException("RI vector must be 768 dimensions, got " + vec.length);
+        if (vec.length != FastCodeEmbed.SEM_DIM) {
+            throw new IllegalArgumentException(
+                "RI vector must be " + FastCodeEmbed.SEM_DIM + " dimensions, got " + vec.length);
         }
         this.riVec = vec;
     }
@@ -106,7 +111,7 @@ public class FuncDescriptor {
     /** @return TF-IDF weights, or null if not set */
     public float[] getTfidfWeights() { return tfidfWeights; }
 
-    /** @return 768-dimensional RI vector, or null if not set */
+    /** @return {@link FastCodeEmbed#SEM_DIM}-dimensional RI vector, or null if not set */
     public float[] getRiVec() { return riVec; }
 
     /** @return number of TF-IDF entries, or 0 if not set */

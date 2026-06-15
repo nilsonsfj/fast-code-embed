@@ -1,6 +1,6 @@
 # fast-code-embed — Java JNI Binding
 
-**Version: 0.0.1**
+**Version: 0.0.2**
 
 Java binding for the [fast-code-embed](../) C library. Provides
 batch corpus operations and the zero-config simple scoring API via JNI.
@@ -18,7 +18,7 @@ batch corpus operations and the zero-config simple scoring API via JNI.
 <dependency>
     <groupId>io.github.nilsonsfj</groupId>
     <artifactId>fast-code-embed</artifactId>
-    <version>0.0.1</version>
+    <version>0.0.2</version>
 </dependency>
 ```
 
@@ -106,7 +106,7 @@ public class Example {
 | `addFiles(paths, chunkSize, maxTokens)` | `int` | Read source files, chunk at `}` boundaries, tokenize in C |
 | `complete()` | `void` | Compute IDF + enriched vectors (required before querying) |
 | `getIdf(token)` | `float` | IDF weight for a token |
-| `getRiVec(token)` | `float[768]` | Enriched RI vector (null if unknown) |
+| `getRiVec(token)` | `float[SEM_DIM]` | Enriched RI vector (null if unknown) |
 | `getDocCount()` | `int` | Number of documents |
 | `getTokenCount()` | `int` | Vocabulary size |
 | `getDocPath(index)` | `String` | File path for a document by corpus index |
@@ -122,7 +122,7 @@ public class Example {
 |--------|---------|-------------|
 | `new FuncDescriptor(filePath)` | | Create with file path |
 | `setTfidf(indices, weights)` | `void` | Set sparse TF-IDF vector |
-| `setRiVec(vec)` | `void` | Set 768-dimensional RI vector |
+| `setRiVec(vec)` | `void` | Set `FastCodeEmbed.SEM_DIM`-dimensional RI vector |
 | `getFilePath()` | `String` | Source file path |
 | `getTfidfIndices()` | `int[]` | Token indices |
 | `getTfidfWeights()` | `float[]` | IDF weights |
@@ -144,7 +144,7 @@ Returned by `Corpus.extractFlat()`. Reusable across multiple queries.
 | `allWeights` | `float[]` | Flat IDF weights: [func × maxTokens + token] |
 | `allIndices` | `int[]` | Flat token indices: [func × maxTokens + token] |
 | `tfidfLens` | `int[]` | Per-function token count |
-| `allRiVecs` | `float[]` | Flat RI vectors: [func × 768 + dim] |
+| `allRiVecs` | `float[]` | Flat RI vectors: [func × SEM_DIM + dim] |
 | `filePaths` | `String[]` | Per-function file paths |
 | `maxTokens` | `int` | Stride for flat arrays |
 | `size()` | `int` | Number of functions |
@@ -169,6 +169,25 @@ java/
     ├── BenchMemQuery.java                Memory + query benchmark
     └── IndexDir.java                     Directory indexer
 ```
+
+## Notes
+
+- `FastCodeEmbed.SEM_DIM` is the runtime embedding dimension (usually 768, or
+  256 if the native library was built with `-DFCE_SEM_DIM_256`). All RI vectors
+  passed to the JNI API must match this dimension.
+
+- `FastCodeEmbed.init()` eagerly loads the pretrained token lookup map. If the
+  JVM is under memory pressure, the map may be only partially populated; any
+  token that fails to insert falls back to a deterministic sparse random vector.
+  The library logs a warning in that case, but embedding quality may degrade
+  slightly.
+
+- Sparse vector storage (configured from the C side with
+  `fce_sem_corpus_set_sparse`) saves memory but changes ranking: the query
+  magnitude is computed over all dimensions while the document magnitude is
+  computed only over the retained top-N dimensions per vector, producing a
+  non-monotone cosine that can reorder results relative to dense mode. Use
+  dense mode for faithful rank order; sparse mode is a memory/speed trade-off.
 
 ## How It Works
 

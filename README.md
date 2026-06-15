@@ -1,6 +1,6 @@
 # 🚀 fast-code-embed
 
-**Version 0.0.1** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
+**Version 0.0.2** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
 
 ✨ fast-code-embed is a standalone C library that scores code function pairs by
 semantic similarity — using a 30 MB lookup table, TF-IDF, and Random Indexing.
@@ -57,7 +57,7 @@ A first-class Java binding is available under `java/`. Full details in
 <dependency>
     <groupId>io.github.nilsonsfj</groupId>
     <artifactId>fast-code-embed</artifactId>
-    <version>0.0.1</version>
+    <version>0.0.2</version>
 </dependency>
 ```
 
@@ -108,6 +108,15 @@ via the `api_vec`, `type_vec`, `decorator_vec`, and `struct_profile[25]` fields
 in `fce_sem_func_t`. Search path is configurable via `fce_query_mode_t`
 (AUTO, BRUTE, FAST, TFIDF) — see [CONFIGURABLE-QUERY-MODES.md](docs/CONFIGURABLE-QUERY-MODES.md).
 
+Sparse vector storage is available via `fce_sem_corpus_set_sparse()`; it saves
+memory but is a rank-changing trade-off, not a lossless optimization. See the
+docs for details.
+
+`fce_sem_ensure_ready()` eagerly builds the pretrained token lookup map. Under
+extreme memory pressure the map may be only partially populated; any token that
+fails to insert falls back to a deterministic sparse random vector, with a log
+warning, and embedding quality may degrade slightly.
+
 ## Platform Support
 
 | Platform | Architecture | Status |
@@ -134,7 +143,7 @@ Expect ~2–3 h on GPU, ~6–10 h on Apple Silicon CPU.
 
 ```
 src/
-├── version.h/c        Semantic version (0.0.1)
+├── version.h/c        Semantic version (0.0.2)
 ├── embed/             Pretrained code vectors (nomic-embed-code, 30 MB)
 ├── semantic/          Tokenization, TF-IDF, RI, corpus, scoring
 ├── foundation/         Hash table, threading, logging, platform detection
