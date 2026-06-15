@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.3] — 2026-06-15
+
+### Fixed
+- Maven JAR now bundles native libraries for Linux x86\_64, Linux aarch64, and macOS arm64
+  (0.0.2 JAR on Maven Central was published without natives and would fail at runtime)
+- `NativeLibrary` loads from `/native/{os}-{arch}/{lib}` in the JAR, with `amd64→x86_64` normalization
+- `scripts/extract_nomic_vectors.py`: corrected `--output-dir` default (`src/nomic` → `src/embed`)
+  and hardcoded `incbin_path` (`vendored/nomic/...` → derived from `--output-dir`), so
+  `make extract` now produces output that actually builds
+- README: corrected upstream link (`anomalyco` → `DeusData`), removed contradictory
+  "All rights reserved" footer, fixed artifact path (`lib/` → `build/`)
+- CHANGELOG: corrected `/proc/self/status` field name (`VmkPeMax` → `VmHWM`)
+
 ## [0.0.2] — 2026-06-15
 
 ### Added
@@ -16,7 +29,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Inverted index skip via `FCE_BRUTE_ONLY` env or `FCE_SEM_SKIP_INV_INDEX`
 - `fce_sem_search_candidate_count` API
 - `fce_sem_get_peak_rss_bytes` / `fce_sem_get_current_rss_bytes`
-- Memory measurement on Linux via `/proc/self/status` (VmkPeMax)
+- Memory measurement on Linux via `/proc/self/status` (VmHWM)
 - `make bench` target (`bench_mem_query` tool)
 
 **Java JNI binding:**
