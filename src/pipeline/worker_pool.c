@@ -18,7 +18,7 @@ enum { WP_TRUE = 1, WP_MIN = 1, WP_STEP = 1 };
  * Default 1 MB; override via FCE_STACK_SIZE env var (in bytes). */
 #define FCE_DEFAULT_WORKER_STACK ((size_t)1 * FCE_SZ_1K * FCE_SZ_1K)
 
-/* M1: cache FCE_STACK_SIZE at init.
+/* cache FCE_STACK_SIZE at init.
  * fce_safe_getenv iterates environ directly and is NOT safe against
  * concurrent setenv/putenv. Read once, store the result. */
 static size_t g_cached_stack_size = 0; /* 0 = not yet cached */
@@ -78,7 +78,7 @@ static void run_pthreads_static(int count, fce_parallel_fn fn, void *ctx, int nw
  return;
  }
 
- /* M1: use cached stack size. */
+ /* use cached stack size. */
  fce_once(&g_stack_size_once, init_stack_size);
  size_t stack_size = g_cached_stack_size;
 
@@ -152,7 +152,7 @@ static void run_pthreads(int count, fce_parallel_fn fn, void *ctx, int nworkers)
  .count = count,
  };
 
- /* M1: use cached stack size. */
+ /* use cached stack size. */
  fce_once(&g_stack_size_once, init_stack_size);
  size_t stack_size = g_cached_stack_size;
 
@@ -208,7 +208,7 @@ void fce_parallel_for(int count, fce_parallel_fn fn, void *ctx, fce_parallel_for
  return;
  }
 
- /* P5: main thread participates, so spawn one fewer to avoid one idle runner. */
+ /* main thread participates, so spawn one fewer to avoid one idle runner. */
  run_pthreads(count, fn, ctx, nworkers - 1);
 }
 

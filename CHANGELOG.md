@@ -5,7 +5,44 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.10] — 2026-06-17
+
+## [0.0.9] — 2026-06-17
+
 ## [0.0.8] — 2026-06-16
+
+### Changed
+- Removed the remaining development-time review/task ID prefixes (e.g. `C-1:`,
+  `H-2:`, `Review NNNN §X`) from all C, JNI, and test source comments,
+  completing the cleanup begun in 0.0.4
+- Rewrote `docs/OVERVIEW-AND-ARCHITECTURE.md` and
+  `docs/CONFIGURABLE-QUERY-MODES.md` from internal-review/worklog style into
+  user-facing reference documentation
+
+### Fixed
+- Default build no longer fails under Clang on Linux: `hash_table.c` and
+  `compat_thread.c` now request the feature-test macros (`_DEFAULT_SOURCE` /
+  `_POSIX_C_SOURCE`) needed to declare `arc4random`, `getentropy`, and
+  `posix_memalign` under strict `-std=c11`. Previously these produced
+  implicit-declaration warnings under GCC and a hard error under Clang
+- Sanitizer build now compiles with `-fsanitize=address,undefined` and treats
+  UBSan errors as fatal, so the CI sanitizer job exercises both ASan and UBSan.
+  The README no longer claims MSan coverage, which was never wired into the
+  build or CI
+- The tree now builds warning-clean under `-Wall -Wextra -Wpedantic` on both
+  GCC and Clang: log macros no longer rely on the GNU zero-variadic extension,
+  the `STDC FENV_ACCESS` pragmas are guarded to the compilers that honor them,
+  and stray warnings in the test and benchmark drivers were removed
+- `java/build.sh` now selects the uninitialized-variable warning flag by
+  compiler family (GCC vs Clang) and honors `$CC`, instead of assuming GCC on
+  Linux
+- The Tests workflow now actually builds with each matrix compiler
+  (`CC=${{ matrix.compiler }}`), so the Clang job exercises Clang
+- The Release workflow now gates artifact builds and Maven publishing on a
+  version-validation job, so a tag whose version strings do not match cannot
+  publish (the standalone validate-release workflow was folded in)
+- `scripts/bump_version.sh` is now portable to GNU sed (Linux): in-place edits
+  use a GNU/BSD shim and the changelog insertion uses awk instead of BSD `sed`
 
 ## [0.0.6] — 2026-06-16
 
@@ -69,9 +106,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `getPeakRssBytes` / `getCurrentRssBytes`
 
 **Code quality:**
-- Static analysis fixes (C-1: jresult hoisting, C-2: sweep-before-create with age gate)
-- Thread safety fixes (H-2: broadcast on shared condvar, H-3: parallel brute-force nworkers)
-- Security hardening (H-1: token leak via goto, H-4: .note.GNU-stack for NX)
+- Static analysis fixes (jresult hoisting, sweep-before-create with age gate)
+- Thread safety fixes (broadcast on shared condvar, parallel brute-force worker count)
+- Security hardening (fixed token leak on the error path, `.note.GNU-stack` for NX)
 
 ### Changed
 - Search path now configurable via `fce_query_mode_t` in `fce_sem_config_t`

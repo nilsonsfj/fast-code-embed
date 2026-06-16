@@ -138,7 +138,7 @@ static void walk_dir(const char *root, file_list_t *list) {
  stack_cap = new_cap;
  }
  dir_stack[stack_len] = strdup(fullpath);
- if (!dir_stack[stack_len]) continue; /* L4: don't bump stack_len on strdup failure */
+ if (!dir_stack[stack_len]) continue; /* don't bump stack_len on strdup failure */
  stack_len++;
  } else if (S_ISREG(st.st_mode) && should_include(fullpath)) {
  file_list_add(list, fullpath);
@@ -167,10 +167,10 @@ int main(int argc, char **argv) {
  return 1;
  }
  const char *root_dir = argv[1];
- /* L-1: use strtol instead of atoi for error
+ /* use strtol instead of atoi for error
  * detection and overflow safety. atoi has undefined behavior on overflow
  * and no error indication for garbage input. */
- /* L-8: validate endp to reject trailing garbage
+ /* validate endp to reject trailing garbage
  * (e.g., "2048xyz" silently parsed as 2048). */
  char *endp;
  long chunk_long = argc > 2 ? strtol(argv[2], &endp, 10) : DEFAULT_CHUNK_SIZE;
@@ -254,7 +254,7 @@ int main(int argc, char **argv) {
 
  /* Null-terminate the chunk for tokenization */
  char *chunk = (char *)malloc(chunk_len + 1);
- if (!chunk) { offset = end; continue; } /* M1: advance to prevent infinite loop */
+ if (!chunk) { offset = end; continue; } /* advance to prevent infinite loop */
  memcpy(chunk, content + offset, chunk_len);
  chunk[chunk_len] = '\0';
 
@@ -263,7 +263,7 @@ int main(int argc, char **argv) {
  int ntok = fce_sem_tokenize(chunk, tok_buf, MAX_TOKENS_PER_CHUNK);
  free(chunk);
 
- /* C5: skip zero-token chunks — they are rejected
+ /* skip zero-token chunks — they are rejected
  * by fce_sem_corpus_add_docs_batch (doc_map[d] = -1) so counting
  * them in total_chunks makes the reported count diverge from
  * doc_count. */

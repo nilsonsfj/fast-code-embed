@@ -24,7 +24,7 @@ enum {
 bool fce_profile_active = false;
 
 void fce_profile_init(void) {
- /* C-8: use fce_safe_getenv instead of raw
+ /* use fce_safe_getenv instead of raw
  * getenv() to be consistent with the rest of the codebase and avoid
  * a data race if another thread calls setenv/putenv concurrently. */
  char env_buf[4];

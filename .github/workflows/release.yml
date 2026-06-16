@@ -9,7 +9,16 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    name: Validate version strings match tag
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate version strings
+        run: ./scripts/check_version.sh "${GITHUB_REF_NAME}"
+
   release:
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +65,7 @@ jobs:
           path: build/libfast_code_embed.a-${{ matrix.arch }}
 
   java-artifacts:
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -230,6 +240,9 @@ jobs:
           mvn versions:set -f java/pom.xml -DnewVersion="$VERSION" -DgenerateBackupPoms=false
 
       - name: Publish to Maven Central
+        # Tests already ran in the java-artifacts job (build.sh runs the full
+        # JNI test suite), and this job needs: [java-artifacts]; -DskipTests here
+        # only avoids re-running them without the staged native library.
         run: |
           mvn deploy -f java/pom.xml -DskipTests \
             -Dgpg.passphrase="${{ secrets.GPG_PASSPHRASE }}" \

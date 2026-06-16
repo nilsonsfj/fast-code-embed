@@ -31,13 +31,13 @@ static-chunked parallel (default `total_cores / 4`, ~3 ms; configurable via `FCE
 index candidates + RI rerank. Search path is configurable via
 `fce_query_mode_t` in `fce_sem_config_t` (AUTO, BRUTE, FAST, TFIDF).
 
-| Layer | Role | Quality |
-|-------|------|---------|
-| `semantic.c` | TF-IDF, RRI, scoring, ranking, corpus | Strong; large but coherent |
-| `foundation/` | Hash table, threads, platform | Clean abstractions |
-| `pipeline/worker_pool.c` | `parallel_for` | Simple; thread churn (see M6) |
-| `java/…/fast_code_embed_jni.c` | JNI | Above average hygiene |
-| `tests/test_semantic.c` | 64 unit tests | Good coverage; gaps below |
+| Layer | Role | Notes |
+|-------|------|-------|
+| `semantic.c` | TF-IDF, RRI, scoring, ranking, corpus | Largest module; the core of the library |
+| `foundation/` | Hash table, threads, platform | Reusable low-level primitives |
+| `pipeline/worker_pool.c` | `parallel_for` | Spawns workers per parallel region |
+| `java/…/fast_code_embed_jni.c` | JNI bridge | Handle table + exception-safe marshalling |
+| `tests/test_semantic.c` | 64 unit tests | Unit and regression coverage |
 
 ---
 
@@ -79,8 +79,7 @@ Run with `make bench` to build the `bench_mem_query` benchmark tool.
 - Array size validation in flat rank.
 - TF-IDF index validation in `sparse_tfidf_cosine`.
 - Critical native arrays used where GC pressure is a concern.
-- `fce_log` used on pass2 OOM; should extend to finalize failures and
-  ht insert failures.
+- `fce_log` is emitted on allocation failures (e.g. pass2 OOM).
 - `addFiles` for reading source files, chunking by `}` boundaries, and tokenizing entirely in C.
 - High-level search API: `searchQuery`, `searchQueryTfidf`, `searchQueryBruteforce`,
   `searchCandidateCount` — each delegates to the corresponding C function with
@@ -104,10 +103,9 @@ Run with `make bench` to build the `bench_mem_query` benchmark tool.
 
 - **C standard**: C11 (`-std=c11` in the Makefile).
 - **Log macros** (`fce_log_debug/info/warn/error` in `src/foundation/log.h`):
-  use the GNU `, ##__VA_ARGS__` extension. The Makefile suppresses the
-  resulting `-Wgnu-zero-variadic-macro-arguments` pedantic warning. Clang
-  and GCC both accept the extension; MSVC supports it from 16.10 (Visual
-  Studio 2019 16.10+).
+  fold the message tag into `__VA_ARGS__` so they stay valid ISO C11 with no
+  GNU extension and no `-Wpedantic` zero-variadic warning. The tree builds
+  warning-clean under `-Wall -Wextra -Wpedantic` on both GCC and Clang.
 - **`_Thread_local`** (used in `src/semantic/semantic.c` for scratch
   buffers, RI dequant, and candidate scratch): supported by GCC, Clang, and
   MSVC in C11 mode (`/std:c11` or `/std:c++17`). For MSVC builds, ensure

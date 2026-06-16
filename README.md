@@ -1,6 +1,6 @@
 # 🚀 fast-code-embed
 
-**Version 0.0.8** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
+**Version 0.0.10** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
 
 ✨ fast-code-embed is a standalone C library that scores code function pairs by
 semantic similarity — using a 30 MB lookup table, TF-IDF, and Random Indexing.
@@ -22,7 +22,7 @@ scoring defaults, and a cleaner API.
 - 🧠 **Meaningful signals** — Combines TF-IDF, Random Indexing (enriched with co-occurrence context), and module proximity into a single [0, 1] score.
 - 🔌 **Drop-in C API** — Link `build/libfast_code_embed.a`, include a header, score functions.
 - ☕ **Java JNI binding** — Works from JVM environments via `FastCodeEmbed`.
-- ✅ **Sanitizer-clean** — ASan, UBSan, and MSan all pass.
+- ✅ **Sanitizer-clean** — ASan and UBSan pass (run in CI on every push).
 
 ## ⚡ Quick Start
 
@@ -86,7 +86,7 @@ A first-class Java binding is available under `java/`. Full details in
 <dependency>
     <groupId>io.github.nilsonsfj</groupId>
     <artifactId>fast-code-embed</artifactId>
-    <version>0.0.8</version>
+    <version>0.0.10</version>
 </dependency>
 ```
 
@@ -170,6 +170,11 @@ warning, and embedding quality may degrade slightly.
 | macOS | arm64 (Apple Silicon) | Fully supported | ARMv8.2+ with DotProd |
 | macOS | x86_64 | Supported | AVX2 runtime dispatch |
 | Windows | x86_64 | Partial | Single-threaded recommended |
+
+Pre-built binaries (GitHub release assets and the Maven Central JAR) are
+provided for **Linux x86_64**, **Linux aarch64**, and **macOS arm64**. The
+other supported platforms build cleanly from source (`make` / `cd java &&
+./build.sh`) but are not shipped as prebuilt artifacts.
 
 ### ARM builds
 

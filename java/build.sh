@@ -11,15 +11,24 @@ if [ -z "${JAVA_HOME:-}" ]; then
 fi
 JNI_INCLUDE="$JAVA_HOME/include"
 
-# Detect platform: macOS vs Linux
+# Compiler (honor $CC; default to cc).
+CC="${CC:-cc}"
+
+# Detect platform: macOS vs Linux (controls JNI headers + library suffix).
 OS="$(uname -s)"
 if [ "$OS" = "Darwin" ]; then
     JNI_PLATFORM_INCLUDE="$JNI_INCLUDE/darwin"
     LIB_SUFFIX=".dylib"
-    UNINIT_FLAG="-Werror=sometimes-uninitialized"
 else
     JNI_PLATFORM_INCLUDE="$JNI_INCLUDE/linux"
     LIB_SUFFIX=".so"
+fi
+
+# The uninitialized-variable warning has a different name on GCC vs Clang;
+# pick it by compiler family rather than by OS (Linux can use either).
+if "$CC" --version 2>/dev/null | grep -qiE 'clang|llvm'; then
+    UNINIT_FLAG="-Werror=sometimes-uninitialized"
+else
     UNINIT_FLAG="-Werror=maybe-uninitialized"
 fi
 
@@ -30,11 +39,11 @@ mkdir -p "$CLASSES_DIR" "$NATIVE_DIR"
 
 echo "=== Compiling C library ==="
 cd "$PROJECT_ROOT"
-make -j4 lib
+make -j4 lib CC="$CC"
 
 echo ""
 echo "=== Compiling JNI native code ==="
-cc -shared -fPIC -O2 -Wall -Wextra -Werror \
+"$CC" -shared -fPIC -O2 -Wall -Wextra -Werror \
    -Werror=uninitialized "$UNINIT_FLAG" \
    -DNDEBUG \
    -I"$PROJECT_ROOT/src" \

@@ -1,3 +1,10 @@
+/* posix_memalign() requires _POSIX_C_SOURCE >= 200112L (or _DEFAULT_SOURCE);
+ * request it before any header so the prototype is visible under -std=c11 and
+ * Clang does not fail with an undeclared-function error. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200112L
+#endif
+
 /* * compat_thread.c — Portable thread, mutex, and aligned allocation.
  *
  * POSIX: thin wrappers around pthreads and posix_memalign.

@@ -168,7 +168,7 @@ fce_system_info_t fce_system_info(void) {
 }
 
 int fce_default_worker_count(bool initial) {
- /* L-2: fce_system_info() is thread-safe by way of
+ /* fce_system_info() is thread-safe by way of
  * the underlying fce_once(&info_once, init_system_info). After the
  * one-time init, the returned `cached_info` is a plain struct copy
  * (by value), so concurrent reads on this path cannot tear. Calls

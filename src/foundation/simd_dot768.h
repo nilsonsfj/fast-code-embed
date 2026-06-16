@@ -30,7 +30,7 @@ enum {
 #endif
 };
 
-/* L-6: the AVX2 quantizer
+/* the AVX2 quantizer
  * (fce_quantize_f32_768_avx2) strides 32 floats per iteration. Both
  * supported dims (768, 256) satisfy this; a future dim that satisfies the
  * documented "divisible by 8" but not 32 would walk off the buffer. */
@@ -202,7 +202,7 @@ static inline void fce_init_f32_from_i8_768_avx2(float *dst, const int8_t *src, 
  }
 }
 
-/* ── P0: int8 dot product + quantization ───────────────────────── */
+/* ── int8 dot product + quantization ───────────────────────── */
 
 __attribute__((target("avx2,fma")))
 static inline int32_t fce_dot768_i8_avx2(const int8_t * restrict a,
@@ -235,12 +235,14 @@ static inline int32_t fce_dot768_i8_avx2(const int8_t * restrict a,
 __attribute__((target("avx2,fma")))
 static inline void fce_quantize_f32_768_avx2(int8_t * restrict out,
  const float * restrict src) {
- /* H-2: pin FP rounding mode to FE_TONEAREST so the AVX2
+ /* pin FP rounding mode to FE_TONEAREST so the AVX2
  * path (via _mm256_cvtps_epi32) agrees with the scalar path regardless of
  * the ambient MXCSR. fesetround sets both x87 and SSE rounding on x86.
  * FENV_ACCESS pragma ensures the compiler does not reorder FP ops across
  * the rounding-mode change. */
+#if defined(__clang__) /* GCC warns -Wunknown-pragmas; it ignores FENV_ACCESS anyway */
 #pragma STDC FENV_ACCESS ON
+#endif
  int saved_round = fegetround();
  if (saved_round != FE_TONEAREST) fesetround(FE_TONEAREST);
  __m256 scale = _mm256_set1_ps(127.0f);
@@ -252,7 +254,7 @@ static inline void fce_quantize_f32_768_avx2(int8_t * restrict out,
  __m256 v1 = _mm256_mul_ps(_mm256_loadu_ps(src + i + 8), scale);
  __m256 v2 = _mm256_mul_ps(_mm256_loadu_ps(src + i + 16), scale);
  __m256 v3 = _mm256_mul_ps(_mm256_loadu_ps(src + i + 24), scale);
- /* M1: sanitize NaN and ±Inf → 0 before clamp to match
+ /* sanitize NaN and ±Inf → 0 before clamp to match
  * the scalar path. NaN comparisons are always false, and Inf is ordered,
  * so neither the NaN-only mask nor clamp alone catches both. Use a
  * combined mask: NaN (v!=v) or Inf (|v| == Inf). */
@@ -302,7 +304,9 @@ static inline void fce_quantize_f32_768_avx2(int8_t * restrict out,
  }
  if (saved_round != FE_TONEAREST) fesetround(saved_round);
 }
+#if defined(__clang__)
 #pragma STDC FENV_ACCESS OFF
+#endif
 
 #endif /* FCE_HAS_AVX2 */
 #endif /* x86_64 */
@@ -417,7 +421,7 @@ static inline void fce_axpy_i8_768_neon(float *dst, const int8_t *src, float sca
  }
 }
 
-/* ── P0: int8 dot product + quantization ───────────────────────── */
+/* ── int8 dot product + quantization ───────────────────────── */
 
 static inline int32_t fce_dot768_i8_neon(const int8_t * restrict a,
  const int8_t * restrict b) {
@@ -451,7 +455,7 @@ static inline void fce_quantize_f32_768_neon(int8_t * restrict out,
  float32x4_t v1 = vmulq_f32(vld1q_f32(src + i + 4), scale);
  float32x4_t v2 = vmulq_f32(vld1q_f32(src + i + 8), scale);
  float32x4_t v3 = vmulq_f32(vld1q_f32(src + i + 12), scale);
- /* M1: sanitize NaN and ±Inf → 0 before clamp to match
+ /* sanitize NaN and ±Inf → 0 before clamp to match
  * the scalar path. vceqq_f32(v,v) yields 0 for NaN (NaN != NaN) and
  * all-ones for finite/Inf. Then mask out ±Inf via comparison against
  * INFINITY / -INFINITY constants. */
@@ -491,7 +495,7 @@ static inline void fce_quantize_f32_768_neon(int8_t * restrict out,
  v1 = vmaxq_f32(vminq_f32(v1, hi), lo);
  v2 = vmaxq_f32(vminq_f32(v2, hi), lo);
  v3 = vmaxq_f32(vminq_f32(v3, hi), lo);
- /* M2: use vcvtnq_s32_f32 (FCVTNS, round-to-nearest)
+ /* use vcvtnq_s32_f32 (FCVTNS, round-to-nearest)
  * to match the scalar nearbyintf and AVX2 _mm256_cvtps_epi32 behavior.
  * The original vcvtq_s32_f32 (FCVTZS) truncates toward zero, producing
  * different int8 values on ARM vs x86 for the same float input. */
@@ -582,32 +586,36 @@ static inline int32_t fce_dot768_i8_scalar(const int8_t * restrict a,
 
 static inline void fce_quantize_f32_768_scalar(int8_t * restrict out,
  const float * restrict src) {
- /* H-2: pin rounding mode to FE_TONEAREST for the
+ /* pin rounding mode to FE_TONEAREST for the
  * duration of quantization so scalar and SIMD paths agree regardless
  * of the ambient fenv. FENV_ACCESS pragma ensures the compiler does not
  * reorder FP ops across the rounding-mode change. */
+#if defined(__clang__) /* GCC warns -Wunknown-pragmas; it ignores FENV_ACCESS anyway */
 #pragma STDC FENV_ACCESS ON
+#endif
  int saved_round = fegetround();
  if (saved_round != FE_TONEAREST) fesetround(FE_TONEAREST);
  for (int i = 0; i < FCE_SIMD_DIM; i++) {
  float v = src[i] * 127.0f;
- /* C2: sanitize NaN/Inf before clamp.
+ /* sanitize NaN/Inf before clamp.
  * NaN comparisons are always false, so the clamp does not catch NaN,
  * and (int8_t)nearbyintf(NaN) is undefined behavior in C. This
  * guard matches the isfinite sweep in the float32 fallback worker. */
  if (!isfinite(v)) v = 0.0f;
  if (v > 127.0f) v = 127.0f;
  if (v < -127.0f) v = -127.0f;
- /* Review 0001 §5.5: use nearbyintf (round-to-nearest-even per
+ /* use nearbyintf (round-to-nearest-even per
  * IEEE 754 default rounding), matching NEON vcvtnq_s32_f32 (FCVTNS)
  * and AVX2 _mm256_cvtps_epi32 (round-to-nearest-even via MXCSR).
- * L4: with the mode pinned above, this matches SIMD even if the
+ * with the mode pinned above, this matches SIMD even if the
  * host process changed the rounding mode. */
  out[i] = (int8_t)nearbyintf(v);
  }
  if (saved_round != FE_TONEAREST) fesetround(saved_round);
 }
+#if defined(__clang__)
 #pragma STDC FENV_ACCESS OFF
+#endif
 
 /* ── Dispatch ──────────────────────────────────────────────────── */
 

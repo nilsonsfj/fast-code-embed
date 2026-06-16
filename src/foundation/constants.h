@@ -51,11 +51,9 @@ enum {
 };
 
 /* ── Default pagination limits ───────────────────────────────── */
-/* Default page size for search_graph and the underlying store-layer search.
- * Chosen so a typical broad query (e.g. file_pattern="**" on a 12k-node
- * project) stays well within MCP tool-result size budgets. Callers that
- * want more results paginate via offset+limit; the response always carries
- * 'total' and 'has_more' so agents can detect truncation. */
+/* Default number of results returned by a search when the caller does not
+ * specify a limit. Chosen as a reasonable cap for broad queries; callers that
+ * want more results paginate via offset+limit. */
 enum { FCE_DEFAULT_SEARCH_LIMIT = 200 };
 
 /* ── Time conversion factors ─────────────────────────────────── */

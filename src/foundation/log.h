@@ -1,7 +1,7 @@
 /* * log.h — Structured key-value logging to stderr.
  *
  * Design:
- * - All output goes to stderr (stdout is reserved for MCP JSON-RPC)
+ * - All output goes to stderr (stdout is left free for the host program)
  * - Structured format: "level=info msg=pass.timing pass=defs elapsed_ms=42"
  * - Levels: DEBUG, INFO, WARN, ERROR
  * - Level filtering at compile time (FCE_LOG_MIN_LEVEL) and runtime
@@ -37,22 +37,15 @@ FCELogLevel fce_log_get_level(void);
  * level=info msg=pass.timing pass=defs elapsed_ms=42 */
 void fce_log(FCELogLevel level, const char *msg, ...);
 
-/* Convenience macros. C-2:
- * __VA_OPT__ is a C23 feature, but the Makefile uses -std=c11. The GNU
- * `, ##__VA_ARGS__` extension is supported by GCC, Clang, and most other
- * compilers we target, and lets the macros work in C11 mode. With the
- * extension, passing only `msg` (no varargs) suppresses the comma entirely;
- * passing `msg, k, v` produces the variadic expansion.
- *
- * The `-Wgnu-zero-variadic-macro-arguments` warning is suppressed globally
- * in the Makefile (CFLAGS) because Clang does not honour `_Pragma` push/pop
- * around macro-expansion sites the way GCC does — the warning is attributed
- * to the call site, not the macro definition. The suppression is narrow
- * (this single warning) and intentional. */
-#define fce_log_debug(msg, ...) fce_log(FCE_LOG_DEBUG, msg, ##__VA_ARGS__, NULL)
-#define fce_log_info(msg, ...) fce_log(FCE_LOG_INFO, msg, ##__VA_ARGS__, NULL)
-#define fce_log_warn(msg, ...) fce_log(FCE_LOG_WARN, msg, ##__VA_ARGS__, NULL)
-#define fce_log_error(msg, ...) fce_log(FCE_LOG_ERROR, msg, ##__VA_ARGS__, NULL)
+/* Convenience macros. The msg tag is folded into __VA_ARGS__ so these stay
+ * valid ISO C11: there is no trailing `, ##__VA_ARGS__` (a GNU extension that
+ * trips -Wpedantic) and no need for __VA_OPT__ (which is C23). Every call site
+ * passes at least the msg tag; the trailing NULL terminates the key/value
+ * list. Example: fce_log_warn("pass.oom", "pass", "defs"). */
+#define fce_log_debug(...) fce_log(FCE_LOG_DEBUG, __VA_ARGS__, NULL)
+#define fce_log_info(...)  fce_log(FCE_LOG_INFO,  __VA_ARGS__, NULL)
+#define fce_log_warn(...)  fce_log(FCE_LOG_WARN,  __VA_ARGS__, NULL)
+#define fce_log_error(...) fce_log(FCE_LOG_ERROR, __VA_ARGS__, NULL)
 
 /* Log with integer value (avoids sprintf for common case). */
 void fce_log_int(FCELogLevel level, const char *msg, const char *key, int64_t value);

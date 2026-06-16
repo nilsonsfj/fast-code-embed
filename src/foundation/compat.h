@@ -137,7 +137,7 @@ static inline int fce_unsetenv(const char *name) {
 /* ── Temp directory helper ───────────────────────────────────── */
 static inline const char *fce_tmpdir(void) {
 #ifdef _WIN32
- /* L-08: Uses raw getenv instead of fce_safe_getenv
+ /* Uses raw getenv instead of fce_safe_getenv
  * for consistency. On Windows, getenv is thread-safe per MSVC docs, and
  * fce_safe_getenv requires a caller-owned buffer which is awkward for a
  * function returning a pointer. This is the only getenv usage in the

@@ -30,7 +30,7 @@ package io.github.nilsonsfj.fastcodeembed;
 public final class FastCodeEmbed {
 
     /** Library version string. */
-    public static final String VERSION = "0.0.8";
+    public static final String VERSION = "0.0.10";
 
     static {
         NativeLibrary.load();
@@ -267,7 +267,7 @@ public final class FastCodeEmbed {
 
     // ── JNI internals (called from C, not user-facing) ────────────
 
-    /** Review 0001 §2.6: -1 is the OOM sentinel from nCreateCorpus. The
+    /** -1 is the OOM sentinel from nCreateCorpus. The
      *  Corpus constructor converts it to an OutOfMemoryError; callers
      *  that reach this method directly see the raw -1. */
     static final long CORPUS_OOM = -1L;

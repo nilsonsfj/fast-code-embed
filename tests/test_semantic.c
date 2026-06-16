@@ -218,7 +218,7 @@ static void test_simple_rank_flat_larger(void) {
         memcpy(all_ri_vecs + f * FCE_SEM_DIM, rv.v, sizeof(float) * FCE_SEM_DIM);
     }
 
-    /* H1: flat path uses RI-only scoring (TF-IDF indices are positional and
+    /* flat path uses RI-only scoring (TF-IDF indices are positional and
      * meaningless). The query uses func_0's RI vector, so func_0 should be
      * the top result (cosine ≈ 1.0 with itself). */
     int q_indices[] = {0, 30};
@@ -890,7 +890,7 @@ static void test_corpus_search_query(void) {
 
 static void test_corpus_free_after_finalize(void) {
     TEST(corpus free after finalize releases doc_vectors);
-    /* Regression anchor for L-3: fce_sem_corpus_free previously omitted
+    /* Regression anchor: fce_sem_corpus_free previously omitted
      * free(corpus->doc_vectors). Under ASan this catches the leak; here it
      * just confirms the finalize+free cycle doesn't crash. */
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
@@ -913,7 +913,7 @@ static void test_corpus_free_after_finalize(void) {
 
 static void test_search_query_repeated_same_corpus(void) {
     TEST(repeated search queries reuse scratch buffer correctly);
-    /* Regression anchor for L-5: raw_need was set to the computed estimate
+    /* Regression anchor: raw_need was set to the computed estimate
      * rather than sc->raw_cap, causing unnecessary shrinking reallocs when a
      * large scratch buffer was reused for a smaller query. Verify that results
      * are correct and stable across three queries of varying breadth. */
@@ -1023,7 +1023,7 @@ static void test_reverse_index_memory_cap(void) {
     PASS();
 }
 
-/* ── fix tests ──────────────────────────────── */
+/* ── Regression tests ──────────────────────────────────────────── */
 
 static void test_shutdown_reinit_abbreviations(void) {
     TEST(shutdown + reinit preserves abbreviations);
@@ -1168,7 +1168,7 @@ static void test_search_null_file_path(void) {
     fce_sem_ranked_t results[4];
     uint32_t count = 0;
     fce_sem_simple_search(&a, corpus, 2, 4, 0.0f, results, &count);
-    ASSERT(count >= 0);
+    ASSERT(count <= 2);  /* must return a valid count within the 2-doc corpus */
     PASS();
 }
 
@@ -1247,14 +1247,14 @@ static void test_corpus_get_or_add_oom_rollback(void) {
 
 /* ── Edge case fix tests ──────────────────── */
 
-/* H-1: degenerate (all-OOV) query must return 0 results and must not
+/* degenerate (all-OOV) query must return 0 results and must not
  * leak the strdup'd tokens from fce_sem_tokenize.  Before the fix the
  * function did `free(candidates); return;` which skipped the cleanup
  * loop that frees q_toks[0..q_ntok-1].  Running under ASAN / valgrind
  * catches the leak; the correctness assertion below verifies the fix
  * at runtime in normal builds. */
 static void test_h1_oov_query_returns_empty(void) {
-    TEST(H-1: OOV-only query returns 0 results without leak);
+    TEST(OOV-only query returns 0 results without leak);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
     const char *t1[] = {"handle", "request"};
@@ -1276,7 +1276,7 @@ static void test_h1_oov_query_returns_empty(void) {
     PASS();
 }
 
-/* H-3: fce_parallel_for_static must invoke the callback exactly once
+/* fce_parallel_for_static must invoke the callback exactly once
  * per index regardless of worker count.  Before the fix, bruteforce_
  * precomputed passed max_workers = nworkers-1, giving nworkers-1 total
  * executors for nworkers chunks — the last chunk was merged onto an
@@ -1295,7 +1295,7 @@ static void h3_count_worker(int idx, void *ctx) {
 }
 
 static void test_h3_parallel_for_static_covers_all_chunks(void) {
-    TEST(H-3: parallel_for_static visits each index exactly once);
+    TEST(parallel_for_static visits each index exactly once);
     for (int i = 0; i < H3_CHUNKS; i++) {
         atomic_store(&h3_visit_count[i], 0);
     }
@@ -1315,7 +1315,7 @@ static void test_h3_parallel_for_static_covers_all_chunks(void) {
 
 /* ── Medium-priority fix tests ─────────────────────────── */
 
-/* M-1: fce_sem_corpus_finalize returns -1 (not 0) when finalize_failed.
+/* fce_sem_corpus_finalize returns -1 (not 0) when finalize_failed.
  *
  * fce_sem_corpus is an opaque type in the public header, so we cannot set
  * finalize_failed directly.  Instead we use a cast against a local mirror
@@ -1356,7 +1356,7 @@ typedef struct {
 } corpus_mirror_t;
 
 static void test_m1_finalize_failed_returns_error(void) {
-    TEST(M-1: finalize returns -1 when finalize_failed is set);
+    TEST(finalize returns -1 when finalize_failed is set);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
 
@@ -1374,11 +1374,11 @@ static void test_m1_finalize_failed_returns_error(void) {
     PASS();
 }
 
-/* M-2: letter→digit runs stay together in identifiers.
+/* letter→digit runs stay together in identifiers.
  * After removing the `c_dg && !p_dg` split from is_camel_break, tokens like
  * utf8, sha256, base64, int32 are no longer shredded into a stem + bare digit. */
 static void test_m2_digit_identifier_stays_whole(void) {
-    TEST(M-2: digit identifier tokens stay whole);
+    TEST(digit identifier tokens stay whole);
     char *tokens[16];
     int n;
 
@@ -1412,11 +1412,11 @@ static void test_m2_digit_identifier_stays_whole(void) {
     PASS();
 }
 
-/* M-3: explicit ASCII-range tokenization drops non-ASCII bytes.
+/* explicit ASCII-range tokenization drops non-ASCII bytes.
  * "caf\xc3\xa9" (UTF-8 for "café") → only the ASCII prefix "caf" survives.
  * Normal ASCII input is unaffected. */
 static void test_m3_tokenize_locale_independent(void) {
-    TEST(M-3: non-ASCII bytes are dropped from tokens);
+    TEST(non-ASCII bytes are dropped from tokens);
     char *tokens[16];
     int n;
 
@@ -1440,7 +1440,7 @@ static void test_m3_tokenize_locale_independent(void) {
     PASS();
 }
 
-/* M-5: doc_map_out entries are set to -1 when the doc-cap is exceeded.
+/* doc_map_out entries are set to -1 when the doc-cap is exceeded.
  *
  * FCE_SEM_MAX_DOC_COUNT is 1 000 000.  We set corpus->doc_count to
  * FCE_SEM_MAX_DOC_COUNT - 1 via the mirror (safe because no allocation is
@@ -1448,7 +1448,7 @@ static void test_m3_tokenize_locale_independent(void) {
  * valid_doc_count will be 2, which exceeds the remaining capacity (1 slot),
  * triggering the cap-exceeded path. */
 static void test_m5_doc_map_out_cleared_on_cap_exceeded(void) {
-    TEST(M-5: doc_map_out cleared to -1 when doc cap exceeded);
+    TEST(doc_map_out cleared to -1 when doc cap exceeded);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
 

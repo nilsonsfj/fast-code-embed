@@ -98,36 +98,46 @@ TODAY="$(date +%Y-%m-%d)"
 echo ""
 echo "Updating files ..."
 
+# Portable in-place sed: GNU sed uses `-i`, BSD/macOS sed requires `-i ''`.
+if sed --version >/dev/null 2>&1; then
+    SED_INPLACE=(sed -i)
+else
+    SED_INPLACE=(sed -i '')
+fi
+
 # 1. src/version.h — #define FCE_VERSION_{MAJOR,MINOR,PATCH}
-sed -i '' "s/FCE_VERSION_MAJOR $OLD_MAJOR/FCE_VERSION_MAJOR $NEW_MAJOR/" "$REPO_ROOT/src/version.h"
-sed -i '' "s/FCE_VERSION_MINOR $OLD_MINOR/FCE_VERSION_MINOR $NEW_MINOR/" "$REPO_ROOT/src/version.h"
-sed -i '' "s/FCE_VERSION_PATCH $OLD_PATCH/FCE_VERSION_PATCH $NEW_PATCH/" "$REPO_ROOT/src/version.h"
+"${SED_INPLACE[@]}" "s/FCE_VERSION_MAJOR $OLD_MAJOR/FCE_VERSION_MAJOR $NEW_MAJOR/" "$REPO_ROOT/src/version.h"
+"${SED_INPLACE[@]}" "s/FCE_VERSION_MINOR $OLD_MINOR/FCE_VERSION_MINOR $NEW_MINOR/" "$REPO_ROOT/src/version.h"
+"${SED_INPLACE[@]}" "s/FCE_VERSION_PATCH $OLD_PATCH/FCE_VERSION_PATCH $NEW_PATCH/" "$REPO_ROOT/src/version.h"
 echo "  src/version.h"
 
 # 2. README.md — header "**Version X.Y.Z**" and Maven <version> snippet
-sed -i '' "s/Version $CURRENT_VERSION/Version $TARGET_VERSION/" "$REPO_ROOT/README.md"
-sed -i '' "/<artifactId>fast-code-embed<\/artifactId>/{n;s|<version>$CURRENT_VERSION</version>|<version>$TARGET_VERSION</version>|;}" "$REPO_ROOT/README.md"
+"${SED_INPLACE[@]}" "s/Version $CURRENT_VERSION/Version $TARGET_VERSION/" "$REPO_ROOT/README.md"
+"${SED_INPLACE[@]}" "/<artifactId>fast-code-embed<\/artifactId>/{n;s|<version>$CURRENT_VERSION</version>|<version>$TARGET_VERSION</version>|;}" "$REPO_ROOT/README.md"
 echo "  README.md"
 
 # 3. java/pom.xml — <revision>X.Y.Z</revision>
-sed -i '' "s|<revision>$CURRENT_VERSION</revision>|<revision>$TARGET_VERSION</revision>|" "$REPO_ROOT/java/pom.xml"
+"${SED_INPLACE[@]}" "s|<revision>$CURRENT_VERSION</revision>|<revision>$TARGET_VERSION</revision>|" "$REPO_ROOT/java/pom.xml"
 echo "  java/pom.xml"
 
 # 4. java/README.md — header "**Version: X.Y.Z**" and Maven <version> snippet
-sed -i '' "s/Version: $CURRENT_VERSION/Version: $TARGET_VERSION/" "$REPO_ROOT/java/README.md"
-sed -i '' "/<artifactId>fast-code-embed<\/artifactId>/{n;s|<version>$CURRENT_VERSION</version>|<version>$TARGET_VERSION</version>|;}" "$REPO_ROOT/java/README.md"
+"${SED_INPLACE[@]}" "s/Version: $CURRENT_VERSION/Version: $TARGET_VERSION/" "$REPO_ROOT/java/README.md"
+"${SED_INPLACE[@]}" "/<artifactId>fast-code-embed<\/artifactId>/{n;s|<version>$CURRENT_VERSION</version>|<version>$TARGET_VERSION</version>|;}" "$REPO_ROOT/java/README.md"
 echo "  java/README.md"
 
 # 5. FastCodeEmbed.java — public static final String VERSION = "X.Y.Z"
-sed -i '' "s/\"$CURRENT_VERSION\"/\"$TARGET_VERSION\"/" "$REPO_ROOT/java/src/main/java/io/github/nilsonsfj/fastcodeembed/FastCodeEmbed.java"
+"${SED_INPLACE[@]}" "s/\"$CURRENT_VERSION\"/\"$TARGET_VERSION\"/" "$REPO_ROOT/java/src/main/java/io/github/nilsonsfj/fastcodeembed/FastCodeEmbed.java"
 echo "  FastCodeEmbed.java"
 
-# 6. CHANGELOG.md — insert new section after the header preamble
+# 6. CHANGELOG.md — insert new section before the current-version section.
+# Done with awk (portable) rather than sed's non-portable `i\` insert command.
 if ! grep -qF "[$TARGET_VERSION]" "$REPO_ROOT/CHANGELOG.md"; then
-    sed -i '' "/^## \[$CURRENT_VERSION\]/i\\
-## [$TARGET_VERSION] — $TODAY\\
-\\
-" "$REPO_ROOT/CHANGELOG.md"
+    CHANGELOG_TMP="$(mktemp)"
+    awk -v cur="## [$CURRENT_VERSION]" -v new="## [$TARGET_VERSION] — $TODAY" '
+        !done && index($0, cur) == 1 { print new; print ""; done = 1 }
+        { print }
+    ' "$REPO_ROOT/CHANGELOG.md" > "$CHANGELOG_TMP"
+    mv "$CHANGELOG_TMP" "$REPO_ROOT/CHANGELOG.md"
     echo "  CHANGELOG.md (added [$TARGET_VERSION] section)"
 else
     echo "  CHANGELOG.md (section already exists, skipping)"
