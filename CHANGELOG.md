@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.5] — 2026-06-16
+
+### Added
+- Version validation: CI checks that all version strings in the codebase match the git tag before releasing
+
 ## [0.0.4] — 2026-06-16
 
 ### Changed
