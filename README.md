@@ -1,6 +1,6 @@
 # 🚀 fast-code-embed
 
-**Version 0.0.3** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
+**Version 0.0.4** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
 
 ✨ fast-code-embed is a standalone C library that scores code function pairs by
 semantic similarity — using a 30 MB lookup table, TF-IDF, and Random Indexing.
@@ -11,6 +11,8 @@ Born as an extraction and rewrite of the embedding logic from
 optimized further: faster SIMD kernels, lower memory footprint, improved
 scoring defaults, and a cleaner API.
 
+[![Tests](https://github.com/nilsonsfj/fast-code-embed/actions/workflows/test.yml/badge.svg)](https://github.com/nilsonsfj/fast-code-embed/actions/workflows/test.yml)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.nilsonsfj/fast-code-embed.svg)](https://central.sonatype.com/artifact/io.github.nilsonsfj/fast-code-embed)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## ✨ What you get
@@ -27,7 +29,7 @@ scoring defaults, and a cleaner API.
 ```bash
 make            # build build/libfast_code_embed.a
 make test       # run the test suite (64/64 pass)
-make bench      # build bench_mem_query benchmark tool
+make bench      # build bench_mem_query
 ```
 
 ```c
@@ -35,13 +37,40 @@ make bench      # build bench_mem_query benchmark tool
 
 fce_sem_ensure_ready();
 
+/* 1. Build corpus from all function token lists */
 fce_sem_corpus_t *corp = fce_sem_corpus_new();
-char *tokens[] = {"handle", "request", "parse"};
-fce_sem_corpus_add_doc(corp, tokens, 3);
+const char *tok_a[] = {"handle", "request", "parse"};
+const char *tok_b[] = {"validate", "user", "auth"};
+fce_sem_corpus_add_doc(corp, tok_a, 3);
+fce_sem_corpus_add_doc(corp, tok_b, 3);
 fce_sem_corpus_finalize(corp);
 
-/* build func descriptors... */
+/* 2. Build func descriptors — TF-IDF weights + RI vector */
+int idx_a[] = {0, 1, 2};
+float w_a[] = { fce_sem_corpus_idf(corp, "handle"),
+                fce_sem_corpus_idf(corp, "request"),
+                fce_sem_corpus_idf(corp, "parse") };
+int idx_b[] = {0, 1, 2};
+float w_b[] = { fce_sem_corpus_idf(corp, "validate"),
+                fce_sem_corpus_idf(corp, "user"),
+                fce_sem_corpus_idf(corp, "auth") };
 
+fce_sem_func_t func_a = {0}, func_b = {0};
+func_a.file_path     = "src/handler.c";
+func_a.tfidf_indices = idx_a;
+func_a.tfidf_weights = w_a;
+func_a.tfidf_len     = 3;
+const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corp, "handle");
+if (rv) func_a.ri_vec = *rv;
+
+func_b.file_path     = "src/auth.c";
+func_b.tfidf_indices = idx_b;
+func_b.tfidf_weights = w_b;
+func_b.tfidf_len     = 3;
+rv = fce_sem_corpus_ri_vec(corp, "validate");
+if (rv) func_b.ri_vec = *rv;
+
+/* 3. Score */
 float score = fce_sem_simple_score(&func_a, &func_b);
 
 fce_sem_corpus_free(corp);
@@ -75,17 +104,32 @@ import io.github.nilsonsfj.fastcodeembed.*;
 FastCodeEmbed.init();
 
 try (Corpus corp = new Corpus()) {
+    // Add all function token lists to compute IDF + RI vectors
     corp.addDocsBatch(new String[][]{
         {"handle", "request", "parse"},
-        {"validate", "user", "check"}
+        {"validate", "user", "auth"}
     });
     corp.complete();
 
-    FuncDescriptor a = corp.buildFunc("src/handler.c", new String[]{"handle", "request"});
-    FuncDescriptor b = corp.buildFunc("src/auth.c", new String[]{"validate", "user"});
+    // Build func descriptors
+    FuncDescriptor a = new FuncDescriptor("src/handler.c");
+    a.setTfidf(new int[]{0, 1, 2}, new float[]{
+        corp.getIdf("handle"), corp.getIdf("request"), corp.getIdf("parse")
+    });
+    a.setRiVec(corp.getRiVec("handle"));
 
+    FuncDescriptor b = new FuncDescriptor("src/auth.c");
+    b.setTfidf(new int[]{0, 1, 2}, new float[]{
+        corp.getIdf("validate"), corp.getIdf("user"), corp.getIdf("auth")
+    });
+    b.setRiVec(corp.getRiVec("validate"));
+
+    // Pairwise score
     float score = FastCodeEmbed.simpleScore(a, b);
-    SearchResult[] results = FastCodeEmbed.simpleRank(a, new FuncDescriptor[]{a, b}, 10);
+
+    // Rank a corpus (use simpleRankBatch + extractFlat for large corpora)
+    FuncDescriptor[] all = {a, b};
+    SearchResult[] results = FastCodeEmbed.simpleRank(a, all, 10);
 }
 ```
 
@@ -139,6 +183,13 @@ python3 scripts/extract_nomic_vectors.py
 
 Expect ~2–3 h on GPU, ~6–10 h on Apple Silicon CPU.
 
+To build the 256-dim reduced-dimension mode (`-DFCE_SEM_DIM_256`), also generate
+the PCA projection matrix:
+
+```bash
+python3 scripts/compute_pca_matrix.py src/embed/code_vectors.bin > src/embed/pca_projection.h
+```
+
 ## Architecture
 
 ```
@@ -146,7 +197,7 @@ src/
 ├── version.h/c        Semantic version (0.0.3)
 ├── embed/             Pretrained code vectors (nomic-embed-code, 30 MB)
 ├── semantic/          Tokenization, TF-IDF, RI, corpus, scoring
-├── foundation/         Hash table, threading, logging, platform detection
+├── foundation/        Hash table, threading, logging, platform detection
 ├── pipeline/          Parallel-for dispatcher (pthreads)
 └── xxhash/            Vendored xxHash (header-only)
 

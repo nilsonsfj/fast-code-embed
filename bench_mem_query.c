@@ -1,6 +1,6 @@
 /* * bench_mem_query.c — Index directory, measure memory, benchmark queries.
  *
- * Build: cc -O2 -std=c11 -Isrc bench_mem_query.c -Lbuild -lstatic_nomic -lpthread -lm -o bench_mem_query
+ * Build: cc -O2 -std=c11 -Isrc bench_mem_query.c -Lbuild -lfast_code_embed -lpthread -lm -o bench_mem_query
  * Run: ./bench_mem_query <directory> [chunk_size] */
 #include "semantic/semantic.h"
 #include "foundation/platform.h"

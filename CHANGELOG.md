@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.4] — 2026-06-16
+
+### Changed
+- Strip all internal review/task ID prefixes from C and Java source comments
+- Rewrite `semantic.h` header to remove project-specific language from original codebase
+- Move `bench_c.c` and `index_dir.c` to `tools/` directory
+- Fix linker flag references in tool build comments (`-lstatic_nomic` → `-lfast_code_embed`)
+- Fix `java/README.md` Java version claim to reflect CI reality
+- Document PCA projection script for 256-dim builds
+
+### Added
+- `CONTRIBUTING.md` with build, test, and PR guidelines
+
 ## [0.0.3] — 2026-06-15
 
 ### Fixed

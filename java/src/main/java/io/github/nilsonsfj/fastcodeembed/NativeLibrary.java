@@ -51,12 +51,12 @@ public final class NativeLibrary {
         String rawArch = System.getProperty("os.arch", "").toLowerCase();
         String archKey = rawArch.equals("amd64") ? "x86_64" : rawArch;
 
-        /* C-2: sweep stale dirs BEFORE creating tmpDir.
+        /* Sweep stale dirs BEFORE creating tmpDir.
          * The previous ordering swept AFTER createTempDirectory, which deleted
          * the freshly-created "fce-jni-*" dir (it matched the prefix) and then
          * caused Files.copy to throw NoSuchFileException — making the JAR
          * fallback path unconditionally fail on every deployment.
-         * S-4: sweep both legacy prefix and new prefix
+         * Sweep both legacy prefix and new prefix
          * to clean up dirs left by prior JVM crashes (deleteOnExit doesn't fire
          * on abort). Age-gate to dirs older than 1 hour to avoid racing against
          * other JVM instances on the same host that are mid-extraction. */
@@ -64,7 +64,7 @@ public final class NativeLibrary {
         sweepStaleTempDirs(tmpRoot, "fast-code-embed-jni-");
         sweepStaleTempDirs(tmpRoot, "fce-jni-");
 
-        /* M3: use Files.createTempDirectory for an
+        /* Use Files.createTempDirectory for an
          * unpredictable directory name with 0700 permissions. The previous
          * PID-derived name was predictable, enabling a classic native-library
          * planting / symlink-race attack on shared-host /tmp. */
@@ -90,7 +90,7 @@ public final class NativeLibrary {
             try {
                 System.load(tmpLib.toAbsolutePath().toString());
             } catch (UnsatisfiedLinkError loadErr) {
-                /* M-3: System.load can fail AFTER Files.copy
+                /* System.load can fail AFTER Files.copy
                  * succeeded (e.g. corrupt dylib, wrong architecture, missing
                  * dependency). deleteOnExit() doesn't fire on JVM abort or
                  * crash, so the extracted library would otherwise leak on
@@ -120,7 +120,7 @@ public final class NativeLibrary {
                         return fn != null && fn.toString().startsWith(prefix);
                     })
                   .filter(p -> java.nio.file.Files.isDirectory(p))
-                  /* C-2: only delete dirs older than
+                  /* Only delete dirs older than
                    * SWEEP_AGE_MS to avoid racing a concurrent JVM that just
                    * created its extraction dir but hasn't called System.load
                    * yet. Dirs that young are almost certainly live. */

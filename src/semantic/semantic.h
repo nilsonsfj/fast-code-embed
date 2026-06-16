@@ -1,8 +1,9 @@
-/* * semantic.h — Algorithmic code embeddings for SEMANTICALLY_RELATED edges.
+/* * semantic.h — Algorithmic code embeddings: TF-IDF, Random Indexing,
+ * API/Type/Decorator signatures, combined scoring, graph diffusion.
  *
- * Combines multiple signals into a unified similarity score without external
- * models or dependencies. All signals derived from graph buffer metadata
- * and the existing AST walk.
+ * Combines multiple signals into a unified [0, 1] similarity score without
+ * external models or dependencies. Zero runtime inference. All signals are
+ * computed from tokenized metadata (function names, paths, signatures).
  *
  * Signals:
  * 1. TF-IDF on metadata tokens (vocabulary overlap)
@@ -14,9 +15,8 @@
  * 7. AST Structural Profile (control flow shape, expression types)
  * 8. Graph Diffusion (transitive closure via neighbor blending)
  *
- * Note: signals 7 includes data flow and Halstead complexity features,
- * computed at extraction time (ast_profile.h) and stored in properties_json.
- * The rest are computed in the post-pass. */
+ * Note: signal 7 includes data flow and Halstead complexity features.
+ * The rest are computed from the tokenized metadata. */
 #ifndef FCE_SEMANTIC_H
 #define FCE_SEMANTIC_H
 
@@ -24,7 +24,7 @@
 #include <stdint.h>
 #include "version.h"
 
-/* C8: 64-bit-only guard. On 32-bit builds with the
+/* 64-bit-only guard. On 32-bit builds with the
  * full 5 M-vocab / 1 M-doc caps, size_t products (e.g. entry_count * 768)
  * overflow and under-allocate → heap overflow. Enforce 64-bit at compile time. */
 _Static_assert(sizeof(void *) >= 8,
@@ -76,7 +76,7 @@ typedef enum {
  * Top-32 gives 12x compression (768→64 bytes/vector) with minimal quality loss. */
 enum { FCE_SPARSE_NNZ_DEFAULT = 32 };
 
-/* M-1: sentinel value for sparse index padding.
+/* sentinel value for sparse index padding.
  * 0xFFFF marks empty slots; must be > any valid dimension index. */
 _Static_assert(FCE_SEM_DIM < 0xFFFF,
                "FCE_SEM_DIM must be < 0xFFFF so the sparse-index sentinel is unambiguous");

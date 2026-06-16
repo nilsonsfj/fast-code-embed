@@ -55,7 +55,7 @@ public class FuncDescriptor {
      * @throws IllegalArgumentException if arrays have different lengths
      */
     public void setTfidf(int[] indices, float[] weights) {
-        /* J-2: the previous code would NPE on null input
+        /* The previous code would NPE on null input
          * with no argument name in the stack. Objects.requireNonNull gives
          * a useful diagnostic ("indices" or "weights") for the common
          * "I passed getIdf() == null" mistake. */
@@ -64,7 +64,7 @@ public class FuncDescriptor {
         if (indices.length != weights.length) {
             throw new IllegalArgumentException("indices and weights must have same length");
         }
-        /* C23: validate sorted ascending order.
+        /* Validate sorted ascending order.
          * The C-side merge-loop in fce_sparse_tfidf_cosine assumes this
          * invariant. Unsorted indices silently produce too-low scores.
          * O(n) scan is cheap and catches the bug early. */
@@ -93,7 +93,7 @@ public class FuncDescriptor {
      *         {@link FastCodeEmbed#SEM_DIM}
      */
     public void setRiVec(float[] vec) {
-        /* J-2: same as setTfidf. */
+        /* Same as setTfidf. */
         Objects.requireNonNull(vec, "vec");
         if (vec.length != FastCodeEmbed.SEM_DIM) {
             throw new IllegalArgumentException(

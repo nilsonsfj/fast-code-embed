@@ -1,13 +1,13 @@
 # fast-code-embed — Java JNI Binding
 
-**Version: 0.0.3**
+**Version: 0.0.4**
 
 Java binding for the [fast-code-embed](../) C library. Provides
 batch corpus operations and the zero-config simple scoring API via JNI.
 
 ## Requirements
 
-- Java 11+ (tested with OpenJDK 25)
+- Java 11+ (tested in CI with Temurin 11; also verified manually with OpenJDK 25)
 - GCC/Clang (to compile the JNI native code)
 - The C library must be built first (`make` from the project root)
 

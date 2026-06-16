@@ -3,7 +3,7 @@
  * Measures: init, tokenization, corpus build (single + batch),
  * IDF lookup, RI vector access, simple scoring, ranking.
  *
- * Build: cc -O2 -std=c11 -Isrc bench_c.c -Lbuild -lstatic_nomic -lpthread -lm -o bench_c
+ * Build: cc -O2 -std=c11 -Isrc bench_c.c -Lbuild -lfast_code_embed -lpthread -lm -o bench_c
  * Run: ./bench_c */
 #include "semantic/semantic.h"
 #include "foundation/platform.h"
