@@ -71,6 +71,14 @@ check "java/src/main/java/io/github/nilsonsfj/fastcodeembed/FastCodeEmbed.java" 
     "\"$VERSION\"" \
     "FastCodeEmbed.java VERSION"
 
+check "README.md" \
+    "<version>$VERSION</version>" \
+    "README.md (Maven snippet)"
+
+check "java/README.md" \
+    "<version>$VERSION</version>" \
+    "java/README.md (Maven snippet)"
+
 check "CHANGELOG.md" \
     "\[$VERSION\]" \
     "CHANGELOG.md"
