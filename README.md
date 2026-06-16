@@ -1,6 +1,6 @@
 # 🚀 fast-code-embed
 
-**Version 0.0.4** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
+**Version 0.0.5** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
 
 ✨ fast-code-embed is a standalone C library that scores code function pairs by
 semantic similarity — using a 30 MB lookup table, TF-IDF, and Random Indexing.
@@ -86,7 +86,7 @@ A first-class Java binding is available under `java/`. Full details in
 <dependency>
     <groupId>io.github.nilsonsfj</groupId>
     <artifactId>fast-code-embed</artifactId>
-    <version>0.0.3</version>
+    <version>0.0.5</version>
 </dependency>
 ```
 
@@ -194,7 +194,7 @@ python3 scripts/compute_pca_matrix.py src/embed/code_vectors.bin > src/embed/pca
 
 ```
 src/
-├── version.h/c        Semantic version (0.0.3)
+├── version.h/c        Semantic version
 ├── embed/             Pretrained code vectors (nomic-embed-code, 30 MB)
 ├── semantic/          Tokenization, TF-IDF, RI, corpus, scoring
 ├── foundation/        Hash table, threading, logging, platform detection
