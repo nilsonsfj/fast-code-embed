@@ -1261,7 +1261,7 @@ static void test_corpus_get_or_add_oom_rollback(void) {
  * loop that frees q_toks[0..q_ntok-1].  Running under ASAN / valgrind
  * catches the leak; the correctness assertion below verifies the fix
  * at runtime in normal builds. */
-static void test_h1_oov_query_returns_empty(void) {
+static void test_oov_query_returns_empty(void) {
     TEST(OOV - only query returns 0 results without leak);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
@@ -1302,7 +1302,7 @@ static void h3_count_worker(int idx, void *ctx) {
     }
 }
 
-static void test_h3_parallel_for_static_covers_all_chunks(void) {
+static void test_parallel_for_static_covers_all_chunks(void) {
     TEST(parallel_for_static visits each index exactly once);
     for (int i = 0; i < H3_CHUNKS; i++) {
         atomic_store(&h3_visit_count[i], 0);
@@ -1363,7 +1363,7 @@ typedef struct {
     bool finalize_failed;
 } corpus_mirror_t;
 
-static void test_m1_finalize_failed_returns_error(void) {
+static void test_finalize_failed_returns_error(void) {
     TEST(finalize returns - 1 when finalize_failed is set);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
@@ -1385,7 +1385,7 @@ static void test_m1_finalize_failed_returns_error(void) {
 /* letter→digit runs stay together in identifiers.
  * After removing the `c_dg && !p_dg` split from is_camel_break, tokens like
  * utf8, sha256, base64, int32 are no longer shredded into a stem + bare digit. */
-static void test_m2_digit_identifier_stays_whole(void) {
+static void test_digit_identifier_stays_whole(void) {
     TEST(digit identifier tokens stay whole);
     char *tokens[16];
     int n;
@@ -1423,7 +1423,7 @@ static void test_m2_digit_identifier_stays_whole(void) {
 /* explicit ASCII-range tokenization drops non-ASCII bytes.
  * "caf\xc3\xa9" (UTF-8 for "café") → only the ASCII prefix "caf" survives.
  * Normal ASCII input is unaffected. */
-static void test_m3_tokenize_locale_independent(void) {
+static void test_tokenize_locale_independent(void) {
     TEST(non - ASCII bytes are dropped from tokens);
     char *tokens[16];
     int n;
@@ -1455,7 +1455,7 @@ static void test_m3_tokenize_locale_independent(void) {
  * involved — we just lie about the current count) and then add a 2-doc batch;
  * valid_doc_count will be 2, which exceeds the remaining capacity (1 slot),
  * triggering the cap-exceeded path. */
-static void test_m5_doc_map_out_cleared_on_cap_exceeded(void) {
+static void test_doc_map_out_cleared_on_cap_exceeded(void) {
     TEST(doc_map_out cleared to - 1 when doc cap exceeded);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
@@ -1659,8 +1659,8 @@ int main(void) {
     test_hash_table_null_guard();
     test_corpus_search_query();
 
-    /* Low-priority fix tests */
-    printf("\nLow Priority Fixes:\n");
+    /* Robustness & memory limits */
+    printf("\nRobustness & Memory Limits:\n");
     test_abbreviation_lazy_allocation();
     test_abbreviation_concurrent_init();
     test_reverse_index_memory_cap();
@@ -1670,27 +1670,27 @@ int main(void) {
     test_rank_flat_zero_scores();
     test_rank_flat_top_k_limit();
 
-    /* Edge case fixes */
-    printf("\nEdge Case Fixes:\n");
+    /* Edge cases */
+    printf("\nEdge Cases:\n");
     test_search_null_file_path();
     test_doc_count_batch_parity();
     test_abbrev_ht_oom_retry();
     test_corpus_get_or_add_oom_rollback();
 
-    /* Edge case fixes */
-    printf("\nConcurrency Fixes:\n");
-    test_h1_oov_query_returns_empty();
-    test_h3_parallel_for_static_covers_all_chunks();
+    /* Concurrency */
+    printf("\nConcurrency:\n");
+    test_oov_query_returns_empty();
+    test_parallel_for_static_covers_all_chunks();
 
-    /* Medium-priority fixes */
-    printf("\nMedium-priority Fixes:\n");
-    test_m1_finalize_failed_returns_error();
-    test_m2_digit_identifier_stays_whole();
-    test_m3_tokenize_locale_independent();
-    test_m5_doc_map_out_cleared_on_cap_exceeded();
+    /* Validation */
+    printf("\nValidation:\n");
+    test_finalize_failed_returns_error();
+    test_digit_identifier_stays_whole();
+    test_tokenize_locale_independent();
+    test_doc_map_out_cleared_on_cap_exceeded();
 
-    /* Low-priority fixes */
-    printf("\nLow-priority Fixes:\n");
+    /* Corpus lifecycle */
+    printf("\nCorpus Lifecycle:\n");
     test_corpus_free_after_finalize();
     test_search_query_repeated_same_corpus();
 

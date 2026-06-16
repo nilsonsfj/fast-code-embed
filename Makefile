@@ -4,6 +4,8 @@
 #   make            — Build static library (libfast_code_embed.a)
 #   make test       — Build and run tests
 #   make test-asan  — Build and run tests with ASan/UBSan
+#   make install    — Install lib + headers + pkg-config (PREFIX=/usr/local)
+#   make uninstall  — Remove installed files
 #   make clean      — Remove build artifacts
 #   make extract    — Regenerate nomic vectors (requires Python + torch)
 #
@@ -46,7 +48,7 @@ LIB = $(BUILDDIR)/libfast_code_embed.a
 TEST_SRC  = tests/test_semantic.c
 TEST_BIN  = $(BUILDDIR)/test_semantic
 
-.PHONY: all lib test test-asan clean extract
+.PHONY: all lib test test-asan install uninstall clean extract
 
 all: lib
 
@@ -141,6 +143,34 @@ bench-256: $(BENCH256)
 # ── Extract nomic vectors ───────────────────────────────────────
 extract:
 	python3 scripts/extract_nomic_vectors.py --output-dir $(SRCDIR)/embed
+
+# ── Install ─────────────────────────────────────────────────────
+# Installs the static library, the public headers (semantic/semantic.h and
+# version.h — all that's needed to compile against the documented C API), and a
+# pkg-config file. Honors PREFIX and DESTDIR (staged installs). Uses cp/mkdir
+# only, so it works the same on Linux and macOS.
+PREFIX     ?= /usr/local
+DESTDIR    ?=
+LIBDIR     ?= $(PREFIX)/lib
+INCLUDEDIR ?= $(PREFIX)/include/fast-code-embed
+PCDIR      ?= $(LIBDIR)/pkgconfig
+VERSION    := $(shell awk '/define FCE_VERSION_MAJOR/{a=$$3}/define FCE_VERSION_MINOR/{b=$$3}/define FCE_VERSION_PATCH/{c=$$3}END{print a"."b"."c}' $(SRCDIR)/version.h)
+
+install: $(LIB)
+	@mkdir -p "$(DESTDIR)$(LIBDIR)" "$(DESTDIR)$(INCLUDEDIR)/semantic" "$(DESTDIR)$(PCDIR)"
+	cp -f $(LIB) "$(DESTDIR)$(LIBDIR)/"
+	cp -f $(SRCDIR)/version.h "$(DESTDIR)$(INCLUDEDIR)/version.h"
+	cp -f $(SRCDIR)/semantic/semantic.h "$(DESTDIR)$(INCLUDEDIR)/semantic/semantic.h"
+	@printf 'prefix=%s\nlibdir=%s\nincludedir=%s\n\nName: fast-code-embed\nDescription: Algorithmic code embeddings (TF-IDF + Random Indexing, no GPU)\nURL: https://github.com/nilsonsfj/fast-code-embed\nVersion: %s\nLibs: -L$${libdir} -lfast_code_embed -lpthread -lm\nCflags: -I$${includedir}\n' \
+		"$(PREFIX)" "$(LIBDIR)" "$(INCLUDEDIR)" "$(VERSION)" \
+		> "$(DESTDIR)$(PCDIR)/fast-code-embed.pc"
+	@echo "Installed fast-code-embed $(VERSION) to $(DESTDIR)$(PREFIX)"
+
+uninstall:
+	rm -f "$(DESTDIR)$(LIBDIR)/$(notdir $(LIB))"
+	rm -f "$(DESTDIR)$(PCDIR)/fast-code-embed.pc"
+	rm -rf "$(DESTDIR)$(INCLUDEDIR)"
+	@echo "Uninstalled fast-code-embed from $(DESTDIR)$(PREFIX)"
 
 # ── Clean ────────────────────────────────────────────────────────
 clean:

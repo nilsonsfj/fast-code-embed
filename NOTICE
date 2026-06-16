@@ -1,0 +1,39 @@
+fast-code-embed
+Copyright (c) 2025 DeusData
+Copyright (c) 2026 Nilson Santos Figueiredo Junior
+
+This product is licensed under the MIT License (see the LICENSE file).
+
+It includes and/or redistributes the following third-party components. Their
+licenses apply to those components and are reproduced or referenced below.
+
+--------------------------------------------------------------------------------
+1. nomic-embed-code token embeddings
+--------------------------------------------------------------------------------
+Files:   src/embed/code_vectors.bin, src/embed/code_vectors.h,
+         src/embed/code_vectors_blob.S
+Source:  https://huggingface.co/nomic-ai/nomic-embed-code
+License:  Apache License, Version 2.0
+
+The embedded ~30 MB vector blob contains int8-quantized token embeddings
+derived from the nomic-ai/nomic-embed-code model via offline inference over a
+filtered vocabulary. The model and its weights are distributed by Nomic AI
+under the Apache License, Version 2.0. A copy of the Apache 2.0 license is
+available at:
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Derivative artifacts (the quantized vectors redistributed here) remain subject
+to the Apache 2.0 terms, including the attribution and NOTICE requirements of
+Section 4.
+
+--------------------------------------------------------------------------------
+2. xxHash
+--------------------------------------------------------------------------------
+Files:   src/xxhash/xxhash.h, src/xxhash/xxhash.c
+Source:  https://github.com/Cyan4973/xxHash
+Copyright (C) 2012-2023 Yann Collet
+License:  BSD 2-Clause License (https://opensource.org/licenses/BSD-2-Clause)
+
+xxHash is vendored unmodified (aside from inclusion in this tree) and is used
+for deterministic token hashing.
