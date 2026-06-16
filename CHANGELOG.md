@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.8] — 2026-06-16
+
 ## [0.0.6] — 2026-06-16
 
 ### Changed
