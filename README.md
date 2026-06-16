@@ -1,6 +1,6 @@
 # 🚀 fast-code-embed
 
-**Version 0.0.5** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
+**Version 0.0.6** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
 
 ✨ fast-code-embed is a standalone C library that scores code function pairs by
 semantic similarity — using a 30 MB lookup table, TF-IDF, and Random Indexing.
@@ -163,13 +163,32 @@ warning, and embedding quality may degrade slightly.
 
 ## Platform Support
 
-| Platform | Architecture | Status |
-|----------|-------------|--------|
-| Linux | x86_64 | Fully supported |
-| Linux | aarch64 | Supported (cross-compiled) |
-| macOS | arm64 (Apple Silicon) | Fully supported |
-| macOS | x86_64 | Supported |
-| Windows | x86_64 | Partial (single-threaded recommended) |
+| Platform | Architecture | Status | Notes |
+|----------|-------------|--------|-------|
+| Linux | x86_64 | Fully supported | AVX2 runtime dispatch |
+| Linux | aarch64 | Supported | ARMv8.2+ recommended (DotProd) |
+| macOS | arm64 (Apple Silicon) | Fully supported | ARMv8.2+ with DotProd |
+| macOS | x86_64 | Supported | AVX2 runtime dispatch |
+| Windows | x86_64 | Partial | Single-threaded recommended |
+
+### ARM builds
+
+Pre-built binaries target **ARMv8.2-a** (DotProd extension). This covers all
+Apple Silicon Macs, AWS Graviton 2+, Raspberry Pi 4+, and most modern aarch64
+Linux systems.
+
+If your target is ARMv8.0 without DotProd (e.g. older Raspberry Pi 3, some
+embedded SoCs), build from source instead:
+
+```bash
+make clean && make -j4 lib CC=aarch64-linux-gnu-gcc AR=aarch64-linux-gnu-ar \
+  CFLAGS="-O2 -std=c11 -DNDEBUG -fPIC"
+```
+
+This produces a library that uses the portable integer multiply-accumulate
+fallback instead of the DotProd instruction. Functionality is identical; the
+int8 dot product hot path (used in brute-force search) is 2–4x slower on
+ARMv8.0 vs ARMv8.2+.
 
 ## Regenerating the Embedding Table
 

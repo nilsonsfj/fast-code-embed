@@ -43,7 +43,7 @@ jobs:
             make clean && make -j4 lib \
               CC=aarch64-linux-gnu-gcc \
               AR=aarch64-linux-gnu-ar \
-              CFLAGS="-O2 -Wall -Wextra -Wpedantic -std=c11 -DNDEBUG -fPIC"
+              CFLAGS="-O2 -Wall -Wextra -Wpedantic -std=c11 -DNDEBUG -fPIC -march=armv8.2-a"
           else
             make clean && make -j4 lib
           fi
@@ -99,7 +99,7 @@ jobs:
             make clean && make -j4 lib \
               CC=aarch64-linux-gnu-gcc \
               AR=aarch64-linux-gnu-ar \
-              CFLAGS="-O2 -Wall -Wextra -Wpedantic -std=c11 -DNDEBUG -fPIC"
+              CFLAGS="-O2 -Wall -Wextra -Wpedantic -std=c11 -DNDEBUG -fPIC -march=armv8.2-a"
           else
             make clean && make -j4 lib
           fi
@@ -120,7 +120,7 @@ jobs:
           mkdir -p lib/native
           aarch64-linux-gnu-gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
             -Werror=uninitialized -Werror=maybe-uninitialized \
-            -DNDEBUG \
+            -DNDEBUG -march=armv8.2-a \
             -I"$PROJECT_ROOT/src" \
             -I"$JNI_INCLUDE" -I"$JNI_PLATFORM_INCLUDE" \
             src/main/native/fast_code_embed_jni.c \
