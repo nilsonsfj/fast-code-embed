@@ -5,9 +5,43 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `make install` / `make uninstall` targets that install the static library,
+  public headers, and a generated `fast-code-embed.pc` pkg-config file (honors
+  `PREFIX` and `DESTDIR`; portable across Linux and macOS), so C consumers can
+  build with `pkg-config --cflags --libs fast-code-embed` instead of hand-wiring
+  include and link paths
+- `NOTICE` file documenting third-party redistribution: the Apache 2.0
+  nomic-embed-code vectors and the BSD-2-Clause vendored xxHash
+- `SECURITY.md` describing the private vulnerability-reporting policy
+
+### Changed
+- Renamed the internal "Priority / Edge Case / Concurrency Fixes" test-output
+  banners to neutral functional groupings (Robustness & Memory Limits, Edge
+  Cases, Concurrency, Tokenization, Corpus Lifecycle), and dropped the internal
+  `h*/m*` priority prefixes from test function names
+
+### Fixed
+- Removed the last leftover internal review reference from the
+  `.note.GNU-stack` comment in `code_vectors_blob.S`, completing the review-ID
+  cleanup
+- Filled in the previously empty `[0.0.9]` and `[0.0.10]` changelog sections;
+  the release workflow uses these as GitHub release notes, so tagged releases no
+  longer ship with a blank description
+
 ## [0.0.10] — 2026-06-17
 
+### Changed
+- Maintenance release: version and packaging metadata only; no functional source
+  changes since 0.0.9
+
 ## [0.0.9] — 2026-06-17
+
+### Changed
+- Maintenance release: version and packaging metadata only; no functional source
+  changes since 0.0.8
 
 ## [0.0.8] — 2026-06-16
 

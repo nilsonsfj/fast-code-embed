@@ -76,6 +76,27 @@ float score = fce_sem_simple_score(&func_a, &func_b);
 fce_sem_corpus_free(corp);
 ```
 
+## 📦 Installing (C)
+
+To install the static library, public headers, and a pkg-config file:
+
+```bash
+make
+sudo make install            # PREFIX defaults to /usr/local
+# or stage into a package root:
+make install DESTDIR=/tmp/pkg PREFIX=/usr
+```
+
+Then build against it with pkg-config:
+
+```bash
+cc app.c $(pkg-config --cflags --libs fast-code-embed) -o app
+```
+
+`make uninstall` removes the installed files. Headers land under
+`$PREFIX/include/fast-code-embed`, so include the API as
+`#include "semantic/semantic.h"`.
+
 ## ☕ Java JNI Binding
 
 A first-class Java binding is available under `java/`. Full details in
@@ -230,4 +251,6 @@ java/                  JNI binding — see java/README.md
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Embedding vectors are Apache 2.0.
+MIT — see [LICENSE](LICENSE). The redistributed nomic-embed-code vectors are
+Apache 2.0 and vendored xxHash is BSD-2-Clause; see [NOTICE](NOTICE) for
+third-party attributions. To report a security issue, see [SECURITY.md](SECURITY.md).

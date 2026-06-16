@@ -43,9 +43,8 @@ FCE_PRETRAINED_VECTOR_BLOB_END:
 FCE_PRETRAINED_VECTOR_BLOB_LEN:
     .long FCE_PRETRAINED_VECTOR_BLOB_END - FCE_PRETRAINED_VECTOR_BLOB
 
-    /* H-4 (review FABLE-5 §H-4): mark the stack non-executable.
-     * Without this marker the linker stamps PT_GNU_STACK RWE on the
-     * shared object, silently disabling NX for the whole JVM process
-     * and causing dlopen failures on glibc >= 2.41. */
+    /* Mark the stack non-executable. Without this marker the linker stamps
+     * PT_GNU_STACK RWE on the shared object, silently disabling NX for the
+     * whole JVM process and causing dlopen failures on glibc >= 2.41. */
     .section .note.GNU-stack,"",@progbits
 #endif
