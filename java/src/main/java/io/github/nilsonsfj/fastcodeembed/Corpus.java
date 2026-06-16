@@ -40,14 +40,14 @@ package io.github.nilsonsfj.fastcodeembed;
  * @since 0.0.1
  */
 public class Corpus implements AutoCloseable {
-    /* H-1: volatile so that a racing close() is visible to
+    /* Volatile so that a racing close() is visible to
      * query threads.  close() is synchronized to guarantee atomic test-and-clear
      * — only one thread can ever observe a non-zero handle and free it. */
     private volatile long handle;
     private boolean finalized;
     private final java.util.ArrayList<String> docPaths = new java.util.ArrayList<>();
 
-    /* L-2: Cleaner backstop. If the caller forgets
+    /* Cleaner backstop. If the caller forgets
      * close() / try-with-resources, the Cleaner reclaims native memory on
      * GC.  close() clears `handle` before freeing, so the action sees 0
      * and becomes a no-op — no double-free. */
@@ -60,7 +60,7 @@ public class Corpus implements AutoCloseable {
         private final java.util.concurrent.atomic.AtomicLong h;
         CloseAction(long handle) { this.h = new java.util.concurrent.atomic.AtomicLong(handle); }
         @Override public void run() {
-            /* JA-05: Use getAndSet(0) for atomic
+            /* Use getAndSet(0) for atomic
              * check-and-clear. The old volatile check-then-act had a TOCTOU
              * race: the Cleaner thread could read h as non-zero, then the
              * explicit close() thread sets h to 0 and frees the corpus, then
@@ -86,7 +86,7 @@ public class Corpus implements AutoCloseable {
             throw new OutOfMemoryError("fce_sem_corpus_new returned NULL (calloc/ht_create OOM)");
         }
         this.finalized = false;
-        /* L-2: register Cleaner backstop. CloseAction holds
+        /* Register Cleaner backstop. CloseAction holds
          * a private copy of the handle; close() clears both `this.handle` and
          * `closeAction.h` before freeing, so if GC runs the action after close(),
          * it sees h==0 and skips. */
@@ -140,7 +140,7 @@ public class Corpus implements AutoCloseable {
         for (String[] doc : docs) {
             if (doc.length > maxLen) maxLen = doc.length;
         }
-        /* C21: reject all-empty input early —
+        /* Reject all-empty input early —
          * the C side silently succeeds with doc_count unchanged, which can
          * confuse callers who expect an error for empty input. */
         if (maxLen == 0) throw new IllegalArgumentException("All documents are empty");
@@ -172,7 +172,7 @@ public class Corpus implements AutoCloseable {
         int before = FastCodeEmbed.getDocCount(handle);
         int[] docMap = FastCodeEmbed.addDocsBatch(handle, docs, maxLen);
         int added = FastCodeEmbed.getDocCount(handle) - before;
-        /* M-07: use docMap to map paths correctly.
+        /* Use docMap to map paths correctly.
          * docMap[d] is the index of doc d in the valid docs list, or -1 if
          * rejected. We iterate all docs and only add paths for accepted ones. */
         if (docMap != null) {
@@ -487,7 +487,7 @@ public class Corpus implements AutoCloseable {
      * section).  Use try-with-resources or ensure all queries complete before
      * calling close.</p>
      *
-     * <p>H-1: clears both the field handle and the
+     * <p>Clears both the field handle and the
      * Cleaner action's handle, then frees via the Cleaner (idempotent).
      * The volatile write to closeAction.h ensures the Cleaner thread
      * sees 0 and skips if it races with this call.</p>

@@ -3,7 +3,7 @@
  * Chunks files at 2048 bytes, tokenizes each chunk, builds a corpus.
  * Processes files in batches to avoid holding all token strings in memory.
  *
- * Build: cc -O2 -std=c11 -Isrc index_dir.c -Lbuild -lstatic_nomic -lpthread -lm -o index_dir
+ * Build: cc -O2 -std=c11 -Isrc index_dir.c -Lbuild -lfast_code_embed -lpthread -lm -o index_dir
  * Run: ./index_dir /path/to/source [chunk_size] [batch_size] */
 #include "semantic/semantic.h"
 #include "foundation/platform.h"
