@@ -7,7 +7,7 @@ Thanks for your interest in contributing!
 ```bash
 make            # build build/libfast_code_embed.a
 make test       # run the test suite
-make test-asan  # run tests with AddressSanitizer
+make test-asan  # run tests with AddressSanitizer + UBSan
 ```
 
 For the Java binding:
@@ -20,7 +20,7 @@ cd java && ./build.sh
 ## Testing
 
 C tests: `make test` (64 tests)
-Java tests: `cd java && ./build.sh` (21 tests)
+Java tests: `cd java && ./build.sh` (24 tests)
 Sanitizers: `make test-asan`
 
 All tests must pass before submitting a pull request.
@@ -28,7 +28,7 @@ All tests must pass before submitting a pull request.
 ## Code style
 
 - C11 (`-std=c11`), no C23 features
-- Compiler warnings are errors (`-Wall -Wextra -Wpedantic`)
+- The tree builds warning-clean under `-Wall -Wextra -Wpedantic` on both GCC and Clang — please keep it that way
 - No internal review/task ID prefixes in comments (those were used during development)
 - Keep comments explaining *why*, not *what*
 

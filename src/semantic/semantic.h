@@ -93,7 +93,7 @@ typedef struct {
     int max_edges;
     fce_query_mode_t query_mode;
     bool sparse_vectors; /* use sparse storage for enriched/doc vectors.
-                          * L-4, M-2:
+                          *
                           * WARNING — sparse mode changes RANKING, not just
                           * precision. The query magnitude is computed over
                           * all 768 dims but the document magnitude over only
@@ -159,7 +159,7 @@ void fce_sem_ensure_ready(void);
 /* Free global resources (pretrained token map).
  * Safe to call even if ensure_ready was never called.
  * After shutdown, ensure_ready can be called again to re-initialize.
- * L-3: env-var caches (FCE_BRUTE_WORKERS, FCE_STACK_SIZE)
+ * env-var caches (FCE_BRUTE_WORKERS, FCE_STACK_SIZE)
  * are never reset by shutdown — changes to these env vars after a
  * shutdown/re-init cycle are silently ignored. This is consistent with
  * the env-var-read-once semantics but inconsistent with the re-init
@@ -237,7 +237,7 @@ void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
  * marked finalized and internal buffers allocated before the failure are
  * left attached — the caller MUST free the corpus (fce_sem_corpus_free) and
  * must NOT call finalize again on the same handle (retry leaks memory).
- * Review 0007 §M2: the previous wording "caller may free and retry" was
+ * the previous wording "caller may free and retry" was
  * ambiguous; clarified that retry is only safe after a full free+new. */
 int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus);
 
@@ -319,7 +319,7 @@ float fce_sem_combined_score(const fce_sem_func_t *a, const fce_sem_func_t *b,
                              const fce_sem_config_t *cfg);
 
 /* Module proximity multiplier based on file paths.
- * L-5: path comparison is byte-wise over '/' only.
+ * path comparison is byte-wise over '/' only.
  * Multi-byte UTF-8 path segments and Windows '\' separators are not handled;
  * cross-platform indexers feeding backslash paths get a flat proximity of 1.0.
  * For the stated corpora (Unix-style repo paths) this is fine. */

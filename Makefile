@@ -8,14 +8,12 @@
 #   make extract    — Regenerate nomic vectors (requires Python + torch)
 #
 CC      ?= cc
-# -Wgnu-zero-variadic-macro-arguments is suppressed because fce_log_* macros
-# rely on the GNU `, ##__VA_ARGS__` extension (__VA_OPT__ is C23 and rejected by -std=c11). All other pedantic warnings
-# remain on.
-# -fPIC ensures the static library objects
-# can be linked into a shared library (e.g., the JNI dylib) on all platforms,
-# including macOS ARM64 where the linker requires PIC for dylib content.
-CFLAGS       ?= -O2 -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11 -mtune=native -DNDEBUG -fPIC
-CFLAGS_DEBUG ?= -O0 -Wall -Wextra -Wpedantic -Wno-gnu-zero-variadic-macro-arguments -std=c11 -g -fsanitize=address -fno-omit-frame-pointer
+# -fPIC ensures the static library objects can be linked into a shared library
+# (e.g., the JNI dylib) on all platforms, including macOS ARM64 where the linker
+# requires PIC for dylib content. The tree builds warning-clean under
+# -Wall -Wextra -Wpedantic on both GCC and Clang (-std=c11, no C23 features).
+CFLAGS       ?= -O2 -Wall -Wextra -Wpedantic -std=c11 -mtune=native -DNDEBUG -fPIC
+CFLAGS_DEBUG ?= -O0 -Wall -Wextra -Wpedantic -std=c11 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 AR      ?= ar
 ARFLAGS ?= rcs
 

@@ -179,7 +179,7 @@ static void init_timebase(void) { mach_timebase_info(&timebase_info); }
 uint64_t fce_now_ns(void) {
     fce_once(&timebase_once, init_timebase);
     uint64_t ticks = mach_absolute_time();
-    /* L-02: ticks * numer can overflow uint64_t on
+    /* ticks * numer can overflow uint64_t on
      * long-running macOS servers (~4.7 years on Apple Silicon where numer=125).
      * Use __uint128_t to avoid overflow; supported by GCC/Clang on 64-bit. */
 #if defined(__SIZEOF_INT128__)
@@ -272,7 +272,7 @@ extern char **environ;
 #endif
 
 /* Safe getenv: iterates environ directly (NOT safe with concurrent setenv/putenv).
- * M-1: the environ array can be reallocated by concurrent
+ * the environ array can be reallocated by concurrent
  * setenv/putenv — a concurrent reader would dereference freed memory. This
  * function is safe against concurrent getenv() calls (each copies to its own
  * buffer) but NOT against concurrent setenv/putenv.
@@ -280,7 +280,7 @@ extern char **environ;
  * the risk. NOT safe for hot concurrent paths — cache the result at init
  * instead (see FCE_BRUTE_WORKERS / FCE_STACK_SIZE in semantic.c / worker_pool.c). */
 const char *fce_safe_getenv(const char *name, char *buf, size_t buf_sz, const char *fallback) {
-    if (buf_sz == 0) return NULL; /* L4: prevent underflow */
+    if (buf_sz == 0) return NULL; /* prevent underflow */
     char **env = FCE_ENVIRON;
     if (env) {
         size_t nlen = strlen(name);
@@ -288,7 +288,7 @@ const char *fce_safe_getenv(const char *name, char *buf, size_t buf_sz, const ch
             if (strncmp(*env, name, nlen) == 0 && (*env)[nlen] == '=') {
                 const char *val = *env + nlen + 1;
                 snprintf(buf, buf_sz, "%s", val);
-                /* M-1: detect truncation — if the source
+                /* detect truncation — if the source
                  * value is longer than the buffer can hold, reject it to
                  * prevent strtol/strtod from parsing a truncated number.
                  * A value of exactly buf_sz-1 bytes fits (with NUL), so the

@@ -7,7 +7,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-/* C-2: g_log_level and g_log_sink are _Atomic so concurrent
+/* g_log_level and g_log_sink are _Atomic so concurrent
  * fce_log / fce_log_set_level / fce_log_set_sink from different threads do
  * not constitute a data race (UB on weakly-ordered architectures). */
 static _Atomic FCELogLevel g_log_level = FCE_LOG_INFO;
@@ -53,7 +53,7 @@ void fce_log(FCELogLevel level, const char *msg, ...) {
     char line_buf[FCE_SZ_512];
     int pos =
         snprintf(line_buf, sizeof(line_buf), "level=%s msg=%s", level_str(level), msg ? msg : "");
-    /* L-5: handle negative snprintf return (encoding error). */
+    /* handle negative snprintf return (encoding error). */
     if (pos < 0) pos = 0;
 
     va_list args;
@@ -70,11 +70,11 @@ void fce_log(FCELogLevel level, const char *msg, ...) {
         if ((size_t)pos < sizeof(line_buf) - 1) {
             pos += snprintf(line_buf + pos, sizeof(line_buf) - (size_t)pos, " %s=%s", key, val);
         }
-        /* L-5: snprintf can return negative on encoding
+        /* snprintf can return negative on encoding
          * error. Clamp to 0 so the next snprintf doesn't compute an underflowed
          * pointer. Also clamp to buffer size so the next write is in-bounds. */
         if (pos < 0) pos = 0;
-        /* L-2: snprintf returns the number of chars that
+        /* snprintf returns the number of chars that
          * WOULD have been written, so pos can exceed sizeof(line_buf). Normalize
          * after each write so the next snprintf call computes a valid size. */
         if (pos > (int)sizeof(line_buf) - 1) pos = (int)sizeof(line_buf) - 1;

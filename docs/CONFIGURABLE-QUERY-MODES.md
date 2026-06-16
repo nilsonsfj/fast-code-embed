@@ -1,8 +1,10 @@
-# Configurable Query Modes — Implementation
+# Configurable Query Modes
 
-## What was implemented
+The search path is selectable per query, trading recall for latency. This page
+documents the available modes, how to select one, and the memory/speed
+trade-offs.
 
-### 1. Query mode enum (`src/semantic/semantic.h`)
+## Query mode enum (`src/semantic/semantic.h`)
 
 ```c
 typedef enum {
@@ -15,7 +17,7 @@ typedef enum {
 
 Added `fce_query_mode_t query_mode` field to `fce_sem_config_t`. Default: `FCE_QUERY_AUTO`.
 
-### 2. Library API (no env var reading)
+## Selecting the mode (no env var reading)
 
 The library does NOT read env vars for query mode. The caller sets `cfg.query_mode` on
 the config struct before calling search functions. This keeps the library generic.
@@ -24,7 +26,7 @@ the config struct before calling search functions. This keeps the library generi
 - Pass `NULL` for backward-compatible AUTO behavior
 - Redirect logic: BRUTE → direct brute-force; TFIDF → calls tfidf function; FAST → forces inverted index
 
-### 3. Finalize-time skip (`FCE_BRUTE_ONLY`)
+## Finalize-time skip (`FCE_BRUTE_ONLY`)
 
 Two mechanisms to skip inverted index build during finalize:
 
@@ -41,7 +43,7 @@ Savings (193K docs, 657K tokens):
 Note: The inverted index is smaller than originally estimated (~67 MB persistent,
 not 1-1.8 GB). `inv_doc_ids` is 64.8 MB for 16.9M unique doc-token pairs.
 
-### 4. Benchmark tool (`bench_mem_query.c`)
+## Benchmark tool (`bench_mem_query.c`)
 
 New flags:
 ```
@@ -59,13 +61,13 @@ New flags:
 
 Shows finalize time, memory, and query benchmarks for comparison.
 
-### 5. Makefile
+## Building the benchmark
 
-New `make bench` target builds `bench_mem_query`.
+The `make bench` target builds `bench_mem_query`.
 
-## Testing
+## Behavior notes
 
-- 64/64 tests pass (normal build)
-- 64/64 tests pass (ASAN build, zero warnings)
-- 64/64 tests pass with `FCE_SEM_SKIP_INV_INDEX=1` env var (inverted index skipped)
-- Brute-only mode: all three search paths produce identical 10/10 overlap (all brute-force)
+- The test suite passes in the normal build, the ASan/UBSan build, and with
+  `FCE_SEM_SKIP_INV_INDEX=1` (inverted index skipped).
+- In brute-only mode all three search paths reduce to a brute-force scan and
+  therefore return identical results.

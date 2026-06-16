@@ -1,3 +1,11 @@
+/* arc4random()/getentropy()/getpid() are exposed by glibc only when
+ * _DEFAULT_SOURCE is requested; under strict -std=c11 the default feature set
+ * hides them, which makes Clang fail with an undeclared-function error. Request
+ * the feature macro before any header is included. */
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
+#endif
+
 /* * hash_table.c — Robin Hood open-addressing hash table.
  *
  * Key design choices:
@@ -13,7 +21,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
-/* C7: getentropy() is declared in <unistd.h> on Linux/BSD. */
+/* getentropy() is declared in <unistd.h> on Linux/BSD. */
 #if defined(__linux__) || defined(__OpenBSD__) || defined(__FreeBSD__)
 #include <unistd.h>
 #endif
@@ -41,7 +49,7 @@ static uint32_t ht_random_seed(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint32_t s = (uint32_t)ts.tv_sec;
     uint32_t ns = (uint32_t)ts.tv_nsec;
-    /* L-4: mix in getpid() — on a freshly-booted container
+    /* mix in getpid() — on a freshly-booted container
      * CLOCK_MONOTONIC starts near zero, so the seed is weakly guessable.
      * getpid() is cheap and adds PID-space entropy. */
     return s ^ (ns * 2654435761U) ^ 0x9E3779B9U ^ (uint32_t)getpid();
@@ -53,7 +61,7 @@ static uint32_t ht_random_seed(void) {
 #include <time.h>
 static uint32_t ht_random_seed_fallback(void) {
     uint32_t seed;
-    /* C7: getentropy provides OS-level entropy
+    /* getentropy provides OS-level entropy
      * (read from /dev/urandom or getrandom syscall) on modern POSIX.
      * Available on glibc 2.25+, musl, BSDs. Much harder to guess than
      * clock-based seeding for hash-flood mitigation. */
@@ -66,7 +74,7 @@ static uint32_t ht_random_seed_fallback(void) {
     static uint32_t counter = 0;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    /* L-4: mix in getpid() for PID-space entropy on
+    /* mix in getpid() for PID-space entropy on
      * fresh containers where CLOCK_MONOTONIC starts near zero. */
     return (uint32_t)ts.tv_nsec ^ (uint32_t)ts.tv_sec ^ (++counter) ^ (uint32_t)getpid();
 }
@@ -191,7 +199,7 @@ void *fce_ht_set(FCEHashTable *ht, const char *key, void *value, bool *inserted)
      * the contract rather than silently losing the entry. */
     if (!value) return NULL;
 
-    /* H-1: Check load factor BEFORE any probing.
+    /* Check load factor BEFORE any probing.
      * Robin Hood steals during probing mutate the table in-place; if a
      * subsequent ht_resize OOMs, stolen entries are lost and the caller's
      * key may be double-freed. Checking + resizing here ensures the table
@@ -199,7 +207,7 @@ void *fce_ht_set(FCEHashTable *ht, const char *key, void *value, bool *inserted)
      * and no live entry is ever dropped. The cost is a potentially
      * unnecessary resize on update-heavy workloads, which is acceptable
      * for memory-safety.
-     * L5: on an UPDATE of an existing key, count does not
+     * on an UPDATE of an existing key, count does not
      * grow, so the resize here is wasted work. A future optimization could
      * probe first to check for an existing key, but that reintroduces the
      * Robin Hood mutation before the OOM check. The current design trades

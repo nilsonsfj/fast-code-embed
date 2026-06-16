@@ -116,7 +116,7 @@ enum {
 /* Epsilon for denominator guards in cosine math. */
 #define FCE_SEM_DENOM_EPS 1e-10F
 
-/* Count '/' characters in a path (for P3 proximity precomputation). */
+/* Count '/' characters in a path (for proximity precomputation). */
 static int fce_count_slashes(const char *path) {
     if (!path) return 0;
     int count = 0;
@@ -289,7 +289,7 @@ typedef struct {
 static void ensure_abbrev_ht(const abbrev_pair_t *abbrevs);
 
 /* Shutdown state and reader count — shared by pretrained map and abbrev HT.
- * Must be declared before fce_sem_tokenize which uses them for C-2 bracketing. */
+ * Must be declared before fce_sem_tokenize which uses them for bracketing. */
 static _Atomic bool g_shutting_down = false;
 static _Atomic int g_reader_count = 0;
 
@@ -510,11 +510,11 @@ int fce_sem_tokenize(const char *name, char **out, int max_out) {
      * without the Dekker reader-count bracket. We bracket the read here
      * (same pattern as fce_sem_random_index vs g_pretrained_map) to
      * prevent UAF if a caller violates the no-concurrent-shutdown contract.
-     * C2: the bracket now uses seq_cst + fence (matching
+     * the bracket now uses seq_cst + fence (matching
      * random_index) instead of the weaker acquire-only ordering.
      * increment → fence → check state → read → decrement; shutdown spins
      * on count==0.
-     * M-5: ensure_abbrev_ht itself runs BEFORE the reader
+     * ensure_abbrev_ht itself runs BEFORE the reader
      * bracket. Safety here rests on g_init_mutex serialization (both
      * ensure_abbrev_ht and fce_sem_shutdown hold g_init_mutex during their
      * critical sections), NOT on the reader bracket. A future refactor that
@@ -688,10 +688,10 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
             continue;
         }
         size_t nread = fread(file_buf, 1, file_len, f);
-        /* C-MED-5 / C-HIGH-4: ferror must be checked BEFORE fclose, since
+        /* ferror must be checked BEFORE fclose, since
          * fclose invalidates the FILE handle. A short read with ferror set
          * means an I/O error (not EOF); skip this file rather than indexing
-         * truncated data. L-3: a short read WITHOUT
+         * truncated data. a short read WITHOUT
          * ferror (file truncated between fstat and fread) yields nread <
          * file_len but read_err == 0 — the partial buffer is indexed as
          * if complete. This is benign for offline indexing of trusted input
@@ -768,7 +768,7 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
                  * file_doc_counts[] from going negative when a multi-file batch
                  * is rolled back (OOM or cap).
                  *
-                 * M2: Known limitation — the deficit is
+                 * Known limitation — the deficit is
                  * attributed by recency of contribution within the batch, not by
                  * which file's docs were actually rejected (the cap/OOM path
                  * drops docs by valid-index order, not file order). So
@@ -922,7 +922,7 @@ static void init_pretrained_map(void) {
              * A failed insert means this token falls through to sparse RI,
              * degrading embedding quality. One-shot to avoid log flood. */
             if (!inserted && atomic_exchange_explicit(&g_pretrained_map_warned, 1, memory_order_acq_rel) == 0) {
-                fce_log_warn("pretrained_map.insert_failed", "token", tok, "index", "see M3");
+                fce_log_warn("pretrained_map.insert_failed", "token", tok, "note", "using sparse fallback");
             }
         }
     }
@@ -943,7 +943,7 @@ static fce_once_t g_pretrained_once = FCE_ONCE_INIT;
  * fce_safe_getenv iterates environ directly and is NOT safe against
  * concurrent setenv/putenv. Read once at startup, store the result,
  * and never touch environ on the hot path again.
- * L-4: the fce_once latch is never reset by
+ * the fce_once latch is never reset by
  * fce_sem_shutdown, so a changed FCE_BRUTE_WORKERS env var after
  * shutdown/re-init is silently ignored. This is consistent with the
  * env-var-read-once semantics but inconsistent with the re-init contract
@@ -1194,11 +1194,11 @@ void fce_sem_random_index(const char *token, fce_sem_vec_t *out) {
     atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
 
     /* Fallback: sparse random vector for tokens not in pretrained vocab.
-     * H-02: Use collision-merging like build_src_entry
+     * Use collision-merging like build_src_entry
      * so both code paths produce the same vector for the same token. Without
      * merging, colliding hash positions accumulate (e.g. +1 + +1 = +2),
      * producing magnitude > 1.0 inconsistent with pretrained vectors.
-     * L4: hash includes NUL terminator for consistency with abbreviation and
+     * hash includes NUL terminator for consistency with abbreviation and
      * token-dedup hashing. Position mod 768 gives slight bias (acceptable for RI). */
 sparse_fallback:;
     uint64_t seed = XXH3_64bits(token, strlen(token) + 1);
@@ -1547,7 +1547,7 @@ static void batch_resolve_worker(int worker_id, void *ctx_ptr) {
     if (!seen) {
         /* must signal batch-wide error so the caller
          * rolls back doc_count; without this the caller sees error==0 and
-         * proceeds with unresolved docs (silent data loss / UAF with C2). */
+         * proceeds with unresolved docs (silent data loss / UAF). */
         atomic_store_explicit(&bc->error, 1, memory_order_relaxed);
         return;
     }
@@ -1852,7 +1852,7 @@ typedef struct {
 } fce_sem_src_entry_t;
 
 /* Inline helper: initialize a target vector from a sparse/dense source.
- * C1: In 256-dim mode, the dense path must use the same PCA
+ * In 256-dim mode, the dense path must use the same PCA
  * projection as fce_sem_random_index so that corpus vectors and RI queries
  * live in the same basis. Truncation would produce incompatible vectors. */
 static inline void sem_target_init_from_src(fce_sem_vec_t *dst, const fce_sem_src_entry_t *src) {
@@ -1885,7 +1885,7 @@ static inline void sem_target_init_from_src(fce_sem_vec_t *dst, const fce_sem_sr
 }
 
 /* Inline helper: add weighted source into target.
- * C1: In 256-dim mode, the dense path must apply PCA projection
+ * In 256-dim mode, the dense path must apply PCA projection
  * so that corpus vectors and RI queries live in the same basis.
  * Sparse path: ~8 operations, ~48 bytes source memory traffic.
  * Dense path: 768 mul-adds with int8→float conversion, ~768 bytes traffic. */
@@ -2185,7 +2185,7 @@ static void build_src_entry(const char *token, fce_sem_src_entry_t *out) {
         return;
     }
     /* Dense path: direct int8 pointer into pretrained blob (zero-copy).
-     * L2: participate in the reader-count bracket
+     * participate in the reader-count bracket
      * for consistency with the Dekker handshake in fce_sem_random_index.
      * This function is called from parallel workers during finalize, so
      * shutdown cannot occur (finalize owns the corpus), but the bracket
@@ -2528,7 +2528,7 @@ static void docvec_build_worker(int wid, void *ctx_ptr) {
         fce_sem_vec_t dv = {0};
         int *ids = dc->doc_token_ids[d];
         int ntok = dc->doc_token_counts[d];
-        if (!ids) goto skip_doc; /* M2 */
+        if (!ids) goto skip_doc;
         for (int t = 0; t < ntok; t++) {
             int tid = ids[t];
             if (tid >= 0 && tid < dc->entry_count) {
@@ -2688,7 +2688,7 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
 
     /* Fallback path: quantize float32 enriched_vecs to int8, then free float32.
      * R4 path: enriched_vecs_q is already populated by pass1+pass2.
-     * Review 0007 §1.2: only re-quantize when enriched_vecs_q is NULL (pure
+     * only re-quantize when enriched_vecs_q is NULL (pure
      * float32 fallback). When enriched_vecs_q is already populated (R4 partial
      * OOM), enriched_vecs has stale pass1-only data and must NOT overwrite the
      * correct pass1⊕pass2 blend. */
@@ -2786,7 +2786,7 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
 
     /* Sparse vector storage: sparsify enriched and doc vectors to top-K NNZ.
      * Must happen after docvec quantization and before freeing dense buffers.
-     * M-4: if sparsification OOMs, fail finalize hard
+     * if sparsification OOMs, fail finalize hard
      * rather than silently producing a corpus where every vector is the zero/
      * sentinel value and all scores collapse to 0.5. */
     if (corpus->sparse_nnz > 0 && corpus->enriched_vecs_q && corpus->doc_vectors_q) {
@@ -3402,8 +3402,8 @@ static float fce_sparse_tfidf_cosine(const fce_sem_func_t *a, const fce_sem_func
  * global vocab IDs, making the flat TF-IDF cosine meaningless. The flat scoring
  * path (fce_score_flat) now uses RI-only. */
 
-/* Internal combined scoring with precomputed proximity (P3) and precomputed
- * query-side magnitudes (P2). Avoids redundant per-element FLOPs.
+/* Internal combined scoring with precomputed proximity and precomputed
+ * query-side magnitudes. Avoids redundant per-element FLOPs.
  * Pass FCE_MAG_COMPUTE_INLINE for any magnitude to compute it inline
  * (for single-call paths).
  * when any magnitude is FCE_MAG_COMPUTE_INLINE, the
@@ -3426,7 +3426,7 @@ static float score_combined_internal(const fce_sem_func_t *a, const fce_sem_func
     if (!a || !b || !cfg) {
         return 0.0F;
     }
-    /* /C3: validate tfidf_weights invariant at the internal
+    /* validate tfidf_weights invariant at the internal
      * scoring entry point so all public scorers (fce_sem_combined_score,
      * fce_sem_search, fce_sem_rank) are protected. A direct C caller that
      * builds a descriptor with indices but no weights would otherwise crash
@@ -3461,7 +3461,7 @@ static float score_combined_internal(const fce_sem_func_t *a, const fce_sem_func
     }
     score += cfg->w_ri * fce_sem_cosine_aliased_with_mag(a->ri_vec.v, b->ri_vec.v, q_ri_mag_sq);
 
-    /* API cosine — skip when query signal is zero (P1: avoids 768 MACs). */
+    /* API cosine — skip when query signal is zero (avoids 768 MACs). */
     if (q_api_mag_sq < 0.0F) {
         q_api_mag_sq = 0.0F;
         for (int i = 0; i < FCE_SEM_DIM; i++) {
@@ -3471,7 +3471,7 @@ static float score_combined_internal(const fce_sem_func_t *a, const fce_sem_func
     if (q_api_mag_sq > FCE_SEM_DENOM_EPS)
         score += cfg->w_api * fce_sem_cosine_aliased_with_mag(a->api_vec.v, b->api_vec.v, q_api_mag_sq);
 
-    /* Type cosine — skip when query signal is zero (P1). */
+    /* Type cosine — skip when query signal is zero. */
     if (q_type_mag_sq < 0.0F) {
         q_type_mag_sq = 0.0F;
         for (int i = 0; i < FCE_SEM_DIM; i++) {
@@ -3481,7 +3481,7 @@ static float score_combined_internal(const fce_sem_func_t *a, const fce_sem_func
     if (q_type_mag_sq > FCE_SEM_DENOM_EPS)
         score += cfg->w_type * fce_sem_cosine_aliased_with_mag(a->type_vec.v, b->type_vec.v, q_type_mag_sq);
 
-    /* Decorator cosine — skip when query signal is zero (P1). */
+    /* Decorator cosine — skip when query signal is zero. */
     if (q_deco_mag_sq < 0.0F) {
         q_deco_mag_sq = 0.0F;
         for (int i = 0; i < FCE_SEM_DIM; i++) {
@@ -3599,7 +3599,7 @@ static int fce_ranked_cmp_desc(const void *a, const void *b) {
     return (ia > ib) - (ia < ib);
 }
 
-/* ── Quickselect for top-k candidate selection (P2) ────────────── */
+/* ── Quickselect for top-k candidate selection ────────────── */
 
 /* Descending comparator for cand_t. */
 typedef struct {
@@ -3640,15 +3640,15 @@ static _Thread_local uint32_t tls_qselect_counter = 0;
  * O(n) average vs O(n·k) selection sort.
  * Depth guard: falls back to qsort when recursion depth exceeds 2*log2(n)
  * to prevent O(n²) worst case on adversarial inputs.
- * C4: pivot is randomized (median-of-three + random swap) to eliminate
+ * pivot is randomized (median-of-three + random swap) to eliminate
  * adversarial-input O(n²) paths even before the depth guard triggers.
- * C6: seed incorporates a per-thread counter to vary pivot sequences
+ * seed incorporates a per-thread counter to vary pivot sequences
  * across calls, defeating adversarial input crafting. */
 static void quickselect_topk(cand_t *scored, int n, int k, int depth) {
     int lo = 0, hi = n - 1;
     /* seed xorshift with lo/hi/k AND a per-thread monotonic counter
      * so different queries produce different pivot sequences.
-     * L4: the `| 1u` is load-bearing — xorshift32 has a
+     * the `| 1u` is load-bearing — xorshift32 has a
      * fixed point at 0 (all-zero state never leaves 0). Setting bit 0
      * guarantees a non-zero seed regardless of the arithmetic above. */
     uint32_t rng_state = (uint32_t)(lo + 31 * k + 7 * hi + tls_qselect_counter++) | 1u;
@@ -4064,8 +4064,8 @@ typedef struct {
     fce_sem_func_t *corpus;
     int corpus_size;
     float min_score;
-    int q_prox; /* precomputed proximity for query (P3) — fce_count_slashes returns int */
-    /* Precomputed query-side RI magnitude (P1) — avoids ~768 FLOPs per corpus item. */
+    int q_prox; /* precomputed proximity for query — fce_count_slashes returns int */
+    /* Precomputed query-side RI magnitude — avoids ~768 FLOPs per corpus item. */
     float q_ri_mag_sq;
     const int *corpus_prox; /* precomputed corpus slash counts (L3) */
     int top_k;
@@ -4113,8 +4113,8 @@ typedef struct {
     fce_sem_func_t *corpus;
     int corpus_size;
     float min_score;
-    int q_prox; /* precomputed proximity for query (P3) — fce_count_slashes returns int */
-    /* Precomputed query-side magnitudes (P1) — avoids ~3072 FLOPs per corpus item. */
+    int q_prox; /* precomputed proximity for query — fce_count_slashes returns int */
+    /* Precomputed query-side magnitudes — avoids ~3072 FLOPs per corpus item. */
     float q_tfidf_mag_sq;
     float q_ri_mag_sq;
     float q_api_mag_sq;
@@ -4190,7 +4190,7 @@ _Static_assert(FCE_CANDIDATE_CAP <= FCE_CANDIDATE_HEAP_SZ,
 typedef float (*cand_score_fn)(const fce_sem_corpus_t *corpus, int doc_id, void *ctx);
 
 /* IDF-sum scorer context: sum of IDF weights for matching query tokens.
- * C-1: defensive `tid` bounds check at the top of the
+ * defensive `tid` bounds check at the top of the
  * inner loop. Today every public entry point filters NULL/negative
  * (q_tok_ids are built from ptr_to_token_idx, which is non-negative), but
  * this guard costs nothing and protects against future extensions that
@@ -4273,7 +4273,7 @@ static float tfidf_mass_score_fn(const fce_sem_corpus_t *corpus, int doc_id, voi
 /* Thread-local scratch arena for collect_candidates — avoids per-query
  * calloc/malloc/free of bitmap (~3 KB), raw candidates, and scored array.
  * Buffers grow monotonically and are never freed (thread-local cleanup at exit).
- * C3: known limitation — in JVM thread pools,
+ * known limitation — in JVM thread pools,
  * threads are long-lived and reused across queries, so buffers grow to the
  * high-water mark and stay there. The cost is bounded by peak_corpus_size/8 ×
  * thread_pool_size (e.g., ~500 KB for a 4-thread pool with 1M docs). */
@@ -4287,7 +4287,7 @@ typedef struct {
 } cand_scratch_t;
 
 /* Destructor for thread-local scratch buffers. Registered via pthread_once.
- * L-2: On Windows, this entire block is compiled out
+ * On Windows, this entire block is compiled out
  * (#ifndef _WIN32). Worker threads leak their seen/raw/scored buffers at
  * thread exit. Acceptable for a long-lived JVM process where threads are
  * pooled; documented for completeness. A Windows fix would use
@@ -4390,7 +4390,7 @@ static int collect_candidates(const fce_sem_corpus_t *corpus,
     if (approx < 256) approx = 256;
 
     /* Ensure raw buffer is large enough.
-     * C13: use a more conservative initial
+     * use a more conservative initial
      * estimate (max of approx and 2× max_candidates) to reduce realloc
      * calls on corpora with high token overlap. The 2× factor provides
      * headroom for the common case where initial doc_freq sums underestimate
@@ -4684,7 +4684,7 @@ static void rerank_serial(const fce_sem_corpus_t *corpus,
     free(heap);
 }
 
-/* ── Brute-force search (P4: internal with pre-tokenized query) ── */
+/* ── Brute-force search (internal with pre-tokenized query) ── */
 
 /* Static-chunked parallel brute-force context. */
 typedef struct {
@@ -4870,8 +4870,8 @@ static void bruteforce_precomputed(const fce_sem_corpus_t *corpus,
 
     /* pre-quantize query vector for int8 brute-force path.
      * F2: store reciprocal query magnitude for multiply-only hot loop.
-     * L3: reuse pre-quantized query if caller already computed it.
-     * M-2: use a stack buffer owned by the call frame
+     * reuse pre-quantized query if caller already computed it.
+     * use a stack buffer owned by the call frame
      * instead of _Thread_local storage. The previous _Thread_local buffer
      * was shared with worker threads via pointer — correct only because
      * the main thread joined before the buffer was reused, but fragile.
@@ -5086,7 +5086,7 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
      * or all-zero embeddings) produces qvec_q_inv_mag == 0, causing every document
      * to score exactly 0.5 — a silent quality cliff. Return an empty result set
      * instead so callers don't mistake degenerate scores for real results.
-     * H-1: goto cleanup so q_toks[0..q_ntok-1] are freed;
+     * goto cleanup so q_toks[0..q_ntok-1] are freed;
      * the earlier bare return leaked those strdup'd tokens. */
     if (qvec_q_inv_mag == 0.0f) {
         if (count_out) *count_out = 0;
@@ -5105,7 +5105,7 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
 
         /* Fall back to brute-force if too few candidates, unless FAST mode
          * explicitly suppresses the fallback.
-         * M-3: log once when FAST mode returns fewer
+         * log once when FAST mode returns fewer
          * results than requested, so callers can detect an oversized request. */
         if (ncand < (int)top_k && mode != FCE_QUERY_FAST) {
             goto brute_force;
@@ -5177,7 +5177,7 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
 
 brute_force:
     /* reuse pre-tokenized query instead of re-tokenizing.
-     * L3: pass pre-quantized query to avoid redundant quantization. */
+     * pass pre-quantized query to avoid redundant quantization. */
     bruteforce_precomputed(corpus, &qvec, qvec_q, qvec_q_inv_mag,
                            top_k, results_out, count_out);
 
@@ -5317,7 +5317,7 @@ void fce_sem_search_query_tfidf(const fce_sem_corpus_t *corpus,
 
 brute_tf:
     /* reuse pre-tokenized query instead of re-tokenizing.
-     * L3: pass pre-quantized query to avoid redundant quantization. */
+     * pass pre-quantized query to avoid redundant quantization. */
     bruteforce_precomputed(corpus, &qvec, qvec_q_tf, qvec_q_inv_mag_tf,
                            top_k, results_out, count_out);
 
@@ -5391,7 +5391,7 @@ void fce_sem_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
         return;
     }
     /* Validate query-side TF-IDF sort invariant once at entry.
-     * M3: use <= to reject duplicates (not just <).
+     * use <= to reject duplicates (not just <).
      * fce_sparse_tfidf_cosine's two-pointer merge desynchronizes on equal
      * indices, producing an incorrect dot product. The simple-search path
      * and JNI marshal already use <=; the combined path must match. */
@@ -5491,7 +5491,7 @@ void fce_sem_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
 
     int q_prox = fce_count_slashes(query->file_path);
 
-    /* Precompute query-side magnitudes once (P1) — avoids ~3072 FLOPs per corpus item. */
+    /* Precompute query-side magnitudes once — avoids ~3072 FLOPs per corpus item. */
     float q_tfidf_mag_sq = FCE_MAG_COMPUTE_INLINE;
     if (query->tfidf_len > 0) {
         float m = 0.0F;
@@ -5552,14 +5552,14 @@ void fce_sem_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
 
 /* ── Simple API ──────────────────────────────────────────────────── */
 
-/* Internal simple scoring with precomputed proximity (P3) and precomputed
- * query-side magnitudes (P1). Pass FCE_MAG_COMPUTE_INLINE to compute inline. */
+/* Internal simple scoring with precomputed proximity and precomputed
+ * query-side magnitudes. Pass FCE_MAG_COMPUTE_INLINE to compute inline. */
 static float fce_score_simple_internal(fce_sem_func_t *a, fce_sem_func_t *b, float prox,
                                        float q_ri_mag_sq) {
     if (!a || !b) return 0.0f;
 
     /* RI cosine — use precomputed query magnitude if provided.
-     * H1: TF-IDF dropped from the simple API because buildFunc uses positional
+     * TF-IDF dropped from the simple API because buildFunc uses positional
      * indices (0,1,2,...) not global vocab IDs, making the sparse cosine merge
      * meaningless. The RI half is correct. */
     float ri_mag = q_ri_mag_sq;
@@ -5693,7 +5693,7 @@ void fce_sem_simple_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
 
     int q_prox = fce_count_slashes(query->file_path);
 
-    /* Precompute query-side RI magnitude once (P1). */
+    /* Precompute query-side RI magnitude once. */
     float q_ri_mag_sq = 0.0F;
     for (int i = 0; i < FCE_SEM_DIM; i++) {
         q_ri_mag_sq += query->ri_vec.v[i] * query->ri_vec.v[i];
@@ -5725,7 +5725,7 @@ void fce_sem_simple_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
 /* Flat-data scorer: avoids 3KB memcpy per iteration by aliasing into the
  * flat arrays directly. Reads only the fields used by fce_sem_simple_score.
  * q_ri_mag is a precomputed query-side RI magnitude passed in to avoid
- * recomputing it on every corpus item (see M4).
+ * recomputing it on every corpus item.
  *
  * NOTE: the flat API has no query file path, so proximity is always 1.0.
  * This scorer applies RI only — TF-IDF is dropped because positional

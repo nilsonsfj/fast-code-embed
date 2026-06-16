@@ -2,6 +2,13 @@
  *
  * Build: cc -O2 -std=c11 -Isrc bench_mem_query.c -Lbuild -lfast_code_embed -lpthread -lm -o bench_mem_query
  * Run: ./bench_mem_query <directory> [chunk_size] */
+
+/* Expose POSIX/GNU symbols (clock_gettime, strdup, fileno, lstat, setenv)
+ * which are hidden under strict -std=c11 on glibc. Must precede all includes. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "semantic/semantic.h"
 #include "foundation/platform.h"
 
@@ -76,11 +83,11 @@ static void file_list_add(file_list_t *list, const char *path) {
         list->capacity = new_cap;
     }
     list->paths[list->count] = strdup(path);
-    if (!list->paths[list->count]) return; /* C5: skip on OOM */
+    if (!list->paths[list->count]) return; /* skip on OOM */
     list->count++;
 }
 
-/* C5: iterative directory walk — prevents stack overflow
+/* iterative directory walk — prevents stack overflow
  * on deep directory trees. Mirrors the hardened walk_dir in index_dir.c. */
 static void walk_dir(const char *root, file_list_t *list) {
     int stack_cap = 256;
@@ -121,7 +128,7 @@ static void walk_dir(const char *root, file_list_t *list) {
                     stack_cap = new_cap;
                 }
                 dir_stack[stack_len] = strdup(fullpath);
-                if (!dir_stack[stack_len]) continue; /* C5: don't bump on OOM */
+                if (!dir_stack[stack_len]) continue; /* don't bump on OOM */
                 stack_len++;
             } else if (S_ISREG(st.st_mode) && should_include(fullpath)) {
                 file_list_add(list, fullpath);
@@ -166,7 +173,7 @@ static long get_current_rss_bytes(void) {
         if (sscanf(line, "VmRSS: %ld kB", &rss_kb) == 1) break;
     }
     fclose(f);
-    /* L-3: return -1 on parse failure, not -1024.
+    /* return -1 on parse failure, not -1024.
      * rss_kb stays -1 if no VmRSS line was found. */
     return rss_kb > 0 ? rss_kb * 1024 : -1;
 #else
@@ -289,7 +296,7 @@ int main(int argc, char **argv) {
             int ntok = fce_sem_tokenize(chunk, tok_buf, MAX_TOKENS_PER_CHUNK);
             free(chunk);
 
-            /* C6: skip zero-token chunks — they are rejected by
+            /* skip zero-token chunks — they are rejected by
              * add_docs_batch (doc_map[d] = -1) so recording a doc_paths entry
              * would misalign the index mapping. */
             if (ntok == 0) {
@@ -309,7 +316,7 @@ int main(int argc, char **argv) {
             total_chunks++;
             offset = end;
             if (batch_used >= BATCH_SIZE) {
-                /* L-4: track how many docs the batch actually
+                /* track how many docs the batch actually
                  * accepted so doc_paths stays aligned with the corpus doc index.
                  * Rejected docs (vocab cap, doc cap, OOM rollback) don't appear in
                  * the corpus, so their path entries must be removed. */
@@ -377,8 +384,6 @@ int main(int argc, char **argv) {
 
     fce_sem_config_t fast_cfg = fce_sem_get_config();
     fce_sem_config_t tfidf_cfg = fce_sem_get_config();
-    fce_sem_config_t brute_cfg = fce_sem_get_config();
-    brute_cfg.query_mode = FCE_QUERY_BRUTE;
     if (brute_only) {
         fast_cfg.query_mode = FCE_QUERY_BRUTE;
         tfidf_cfg.query_mode = FCE_QUERY_BRUTE;
@@ -409,7 +414,7 @@ int main(int argc, char **argv) {
             fce_sem_ranked_t *fast_results = (fce_sem_ranked_t *)malloc(top_k * sizeof(fce_sem_ranked_t));
             fce_sem_ranked_t *tfidf_results = (fce_sem_ranked_t *)malloc(top_k * sizeof(fce_sem_ranked_t));
             fce_sem_ranked_t *brute_results = (fce_sem_ranked_t *)malloc(top_k * sizeof(fce_sem_ranked_t));
-            /* L-1: check all three malloc results before
+            /* check all three malloc results before
              * passing them to search functions which write directly into them. */
             if (!fast_results || !tfidf_results || !brute_results) {
                 fprintf(stderr, "OOM allocating result buffers, skipping query %d\n", qi);
