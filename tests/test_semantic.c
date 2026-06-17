@@ -432,6 +432,50 @@ static void test_corpus_token_at(void) {
     PASS();
 }
 
+/* Regression: out_idf is optional. On a non-empty corpus the second IDF write
+ * was previously unguarded and crashed when out_idf == NULL. */
+static void test_corpus_token_at_null_out_idf(void) {
+    TEST(corpus token_at with NULL out_idf on non - empty corpus);
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    const char *doc1[] = {"alpha", "beta"};
+    const char *doc2[] = {"alpha", "gamma"};
+    fce_sem_corpus_add_doc(corp, doc1, 2);
+    fce_sem_corpus_add_doc(corp, doc2, 2);
+    fce_sem_corpus_finalize(corp);
+
+    /* out_idf NULL must not crash, with or without out_vec. */
+    const char *tok = fce_sem_corpus_token_at(corp, 0, NULL, NULL);
+    ASSERT(tok != NULL);
+    const fce_sem_vec_t *vec;
+    tok = fce_sem_corpus_token_at(corp, 0, &vec, NULL);
+    ASSERT(tok != NULL);
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
+/* Regression: a NULL element inside paths[] must be skipped (not fopen(NULL)),
+ * and a NULL token inside a doc must be skipped (not strdup(NULL)). */
+static void test_corpus_add_null_elements(void) {
+    TEST(corpus add_files / add_doc tolerate NULL elements);
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+
+    /* add_files with a NULL path element: count zeroed, no crash. */
+    const char *paths[] = {NULL};
+    int counts[1] = {-1};
+    fce_sem_corpus_add_files(corp, paths, 1, 4096, counts, FCE_SEM_MAX_TOKENS);
+    ASSERT(counts[0] == 0);
+
+    /* add_doc with a NULL token among valid ones: doc still added, no crash. */
+    const char *doc[] = {"alpha", NULL, "gamma"};
+    fce_sem_corpus_add_doc(corp, doc, 3);
+    fce_sem_corpus_finalize(corp);
+    ASSERT(fce_sem_corpus_doc_count(corp) == 1);
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
 /* ── Proximity tests ──────────────────────────────────────────── */
 
 static void test_proximity_same_file(void) {
@@ -2072,6 +2116,8 @@ int main(void) {
     test_corpus_add_and_finalize();
     test_corpus_batch_add();
     test_corpus_token_at();
+    test_corpus_token_at_null_out_idf();
+    test_corpus_add_null_elements();
     test_corpus_save_load_roundtrip();
     test_corpus_load_rejects_bad_files();
     test_corpus_load_rejects_bad_content();

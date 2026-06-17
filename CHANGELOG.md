@@ -41,6 +41,48 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `h*/m*` priority prefixes from test function names
 
 ### Fixed
+- `fce_sem_corpus_token_at` no longer dereferences `out_idf` when it is NULL on a
+  non-empty corpus: the IDF write is now fully guarded (the first write was
+  guarded, the second was not), fixing a crash for direct C callers who pass NULL
+  for the optional IDF output
+- Public corpus-add entry points tolerate NULL elements: `fce_sem_corpus_add_files`
+  skips NULL `paths[]` entries instead of calling `fopen(NULL, ...)` (UB), and
+  `fce_corpus_get_or_add` rejects NULL tokens instead of reaching `strdup(NULL)`,
+  so a NULL token inside an otherwise valid document no longer crashes `add_doc`
+- `fce_safe_getenv` guards a NULL `name` argument instead of calling `strlen(NULL)`
+- `fce_sem_corpus_finalize` now frees the enrichment arrays (`enriched_vecs_q` /
+  `enriched_vecs`, up to ~3.8 GB at the 5M-vocab cap) on the `doc_vectors_q` OOM
+  path rather than leaving them attached to the failed corpus until the caller frees it
+- `fce_sem_corpus_add_files` NULLs the trailing slots of the batch token buffer so
+  stale freed pointers from a previous batch can never be read by a future change
+- Chunk-boundary scanning in `fce_sem_corpus_add_files` uses `memchr` instead of a
+  byte-by-byte loop, avoiding O(n²) behavior on files with no `}` characters
+- Candidate-buffer growth in `collect_candidates` computes the new capacity in
+  `size_t` and clamps to `INT_MAX`, removing a theoretical signed-int overflow
+- `fce_log` stops appending key/value pairs on a negative `snprintf` return instead
+  of resetting the write offset to 0, which previously corrupted the line header
+- JNI: `nTokenizeBatch` and `nAddDocsBatch` now raise `OutOfMemoryError` on `strdup`
+  / `NewIntArray` failure instead of silently returning NULL (which Java
+  misinterpreted as empty input / sequential doc mapping)
+- JNI: `nGetDocLabels` defensively handles `NewStringUTF` on mmap'd cache labels —
+  invalid modified-UTF-8 from a crafted cache file is swallowed and substituted with
+  an empty string instead of aborting label retrieval with a pending exception
+- `Makefile`: the `.S` assembly rule now passes `-fPIC` (matching the C rule), so
+  `code_vectors_blob.o` links cleanly into the JNI shared library
+- Parallel brute-force search (`bruteforce_precomputed`) now honors the documented
+  `count_out == NULL` contract instead of unconditionally dereferencing it; the
+  serial fallback already guarded this. Currently unreachable (all callers pass
+  non-NULL), but a crash waiting on the first NULL caller
+- `merge_local_heaps` double-OOM fallback now clamps its per-chunk `rem[]` index to
+  the 64-element stack buffer rather than relying on an `assert` that is compiled
+  out under `NDEBUG`; the worker count is already capped at 64, so this is
+  defense-in-depth against a future cap change
+- `tools/bench_c.c`: sized the batch-tokenize stack arrays from `CORPUS_SIZE`
+  instead of a hardcoded `69` (a corpus-size change would have overflowed them),
+  added the missing `malloc`/`calloc` NULL checks, and corrected the reported
+  unique-pair count (`N*(N-1)/2`, was `N*N/2`)
+- `tools/index_dir.c`: freed the duplicated file-path list on the finalize-failure
+  error path (previously leaked)
 - JNI handle table: a slot could be reused (`alloc_handle`) after `take_handle`
   cleared its pointer but before in-flight users had drained, letting a
   concurrent `close` free a corpus another thread was still querying
@@ -60,6 +102,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Filled in the previously empty `[0.0.9]` and `[0.0.10]` changelog sections;
   the release workflow uses these as GitHub release notes, so tagged releases no
   longer ship with a blank description
+
+## [0.0.11] — 2026-06-17
 
 ## [0.0.10] — 2026-06-17
 

@@ -341,6 +341,8 @@ int main(int argc, char **argv) {
     if (fce_sem_corpus_finalize(corp) != 0) {
         fprintf(stderr, "Error: corpus finalization failed (out of memory)\n");
         fce_sem_corpus_free(corp);
+        for (int i = 0; i < files.count; i++) free(files.paths[i]);
+        free(files.paths);
         return 1;
     }
     double build_ms = ms_since(t0);

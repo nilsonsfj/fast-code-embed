@@ -297,7 +297,7 @@ extern char **environ;
  * the risk. NOT safe for hot concurrent paths — cache the result at init
  * instead (see FCE_BRUTE_WORKERS / FCE_STACK_SIZE in semantic.c / worker_pool.c). */
 const char *fce_safe_getenv(const char *name, char *buf, size_t buf_sz, const char *fallback) {
-    if (buf_sz == 0) return NULL; /* prevent underflow */
+    if (!name || buf_sz == 0) return NULL; /* NULL name -> strlen UB; buf_sz 0 -> underflow */
     char **env = FCE_ENVIRON;
     if (env) {
         size_t nlen = strlen(name);

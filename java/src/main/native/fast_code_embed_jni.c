@@ -761,10 +761,22 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
     }
     for (int i = 0; i < n; i++) {
         const char *lbl = fce_sem_corpus_doc_label(corp, i);
+        /* Labels are bytes from a (possibly untrusted) mmap'd cache file. The
+         * loader guarantees NUL-termination but not valid modified UTF-8;
+         * NewStringUTF has undefined behavior / can throw on malformed input.
+         * Clear any thrown exception and substitute an empty string so a crafted
+         * cache cannot abort label retrieval. */
         jstring js = (*env)->NewStringUTF(env, lbl ? lbl : "");
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            js = NULL;
+        }
         if (!js) {
-            release_handle(handle);
-            return NULL; /* pending OOM */
+            js = (*env)->NewStringUTF(env, "");
+            if (!js) {
+                release_handle(handle);
+                return NULL; /* pending OOM */
+            }
         }
         (*env)->SetObjectArrayElement(env, arr, i, js);
         (*env)->DeleteLocalRef(env, js);
@@ -977,7 +989,14 @@ JNIEXPORT jintArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed
 
     /* Convert doc_map to jintArray for Java. */
     jresult = (*env)->NewIntArray(env, docCount);
-    if (jresult) {
+    if (!jresult) {
+        /* On some JVMs NewIntArray returns NULL without a pending exception.
+         * Java reads a NULL result as "use sequential mapping", which would
+         * misassign file-path labels; throw OOM so the caller fails loudly. */
+        if (!(*env)->ExceptionCheck(env)) {
+            throw_oom(env, "nAddDocsBatch: NewIntArray failed");
+        }
+    } else {
         (*env)->SetIntArrayRegion(env, jresult, 0, docCount, doc_map);
     }
 
@@ -1415,7 +1434,12 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
         names[i] = strdup(s);
         (*env)->ReleaseStringUTFChars(env, jname, s);
         (*env)->DeleteLocalRef(env, jname);
-        if (!names[i]) goto tokenize_cleanup_input; /* strdup OOM */
+        if (!names[i]) {
+            /* Surface OOM as an exception. Returning a bare NULL result is
+             * indistinguishable from "empty input" to the Java caller. */
+            throw_oom(env, "nTokenizeBatch: name copy failed");
+            goto tokenize_cleanup_input;
+        }
         pinned = i + 1;
     }
 
