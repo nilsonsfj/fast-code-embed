@@ -50,7 +50,7 @@ static size_t sysctl_size(const char *name, size_t fallback) {
  if (sysctlbyname(name, &val, &len, NULL, 0) == 0 && val > 0) {
  return val;
  }
- /* Try FCE_SZ_64-bit variant */
+ /* Try 64-bit variant */
  uint64_t val64 = 0;
  len = sizeof(val64);
  if (sysctlbyname(name, &val64, &len, NULL, 0) == 0 && val64 > 0) {

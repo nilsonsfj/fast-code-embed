@@ -66,7 +66,7 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.S
 	@mkdir -p $(dir $@)
-	$(CC) -c $< -o $@
+	$(CC) -fPIC -c $< -o $@
 
 # ── Tests ────────────────────────────────────────────────────────
 test: $(TEST_BIN)

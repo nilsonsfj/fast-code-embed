@@ -114,7 +114,11 @@ int fce_mkstemp(char *tmpl);
 /* ── setenv / unsetenv (Windows lacks them) ──────────────────── */
 #ifdef _WIN32
 static inline int fce_setenv(const char *name, const char *value, int overwrite) {
- (void)overwrite;
+ /* Match POSIX setenv(): when overwrite == 0, leave an existing var unchanged. */
+ if (!overwrite) {
+ size_t needed = 0;
+ if (getenv_s(&needed, NULL, 0, name) == 0 && needed > 0) return 0;
+ }
  return _putenv_s(name, value);
 }
 static inline int fce_unsetenv(const char *name) {

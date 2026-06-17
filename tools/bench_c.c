@@ -149,12 +149,12 @@ int main(void) {
  tokenize_ms * 1000.0 / (CORPUS_SIZE * iterations));
 
  /* ── 2b. Tokenize batch API ──────────────────────────────── */
- const char *batch_names[69];
+ const char *batch_names[CORPUS_SIZE];
  for (size_t c = 0; c < CORPUS_SIZE; c++) batch_names[c] = corpus[c].full_name;
- char *tok_buf_batch[69 * 64];
+ char *tok_buf_batch[CORPUS_SIZE * 64];
  clock_gettime(CLOCK_MONOTONIC, &t0);
  for (int i = 0; i < iterations; i++) {
- int batch_counts[69];
+ int batch_counts[CORPUS_SIZE];
  fce_sem_tokenize_batch(batch_names, (int)CORPUS_SIZE, tok_buf_batch, batch_counts, 64);
  for (size_t c = 0; c < CORPUS_SIZE; c++) {
  for (int t = 0; t < batch_counts[c]; t++) free(tok_buf_batch[c * 64 + t]);
@@ -186,6 +186,12 @@ int main(void) {
 
  char **all_tokens = (char **)malloc(CORPUS_SIZE * max_tok * sizeof(char *));
  int *token_counts = (int *)malloc(CORPUS_SIZE * sizeof(int));
+ if (!all_tokens || !token_counts) {
+ fprintf(stderr, "Error: out of memory allocating batch buffers\n");
+ free(all_tokens);
+ free(token_counts);
+ return 1;
+ }
  for (size_t c = 0; c < CORPUS_SIZE; c++) {
  token_counts[c] = corpus[c].ntokens;
  for (int t = 0; t < corpus[c].ntokens; t++) {
@@ -226,13 +232,22 @@ int main(void) {
  ri_ms * 1000.0 / (CORPUS_SIZE * iterations));
 
  /* ── 7. Simple scoring (all pairs) ───────────────────────── */
- int npairs = (int)CORPUS_SIZE * (int)CORPUS_SIZE;
  fce_sem_func_t *funcs = (fce_sem_func_t *)calloc(CORPUS_SIZE, sizeof(fce_sem_func_t));
+ if (!funcs) {
+ fprintf(stderr, "Error: out of memory allocating funcs\n");
+ return 1;
+ }
  for (size_t c = 0; c < CORPUS_SIZE; c++) {
  funcs[c].file_path = corpus[c].path;
  funcs[c].tfidf_len = corpus[c].ntokens;
  int *idx = (int *)malloc(corpus[c].ntokens * sizeof(int));
  float *w = (float *)malloc(corpus[c].ntokens * sizeof(float));
+ if (!idx || !w) {
+ fprintf(stderr, "Error: out of memory allocating tfidf buffers\n");
+ free(idx);
+ free(w);
+ return 1;
+ }
  for (int t = 0; t < corpus[c].ntokens; t++) {
  idx[t] = t;
  w[t] = fce_sem_corpus_idf(corp_batch, corpus[c].tokens[t]);
@@ -253,7 +268,8 @@ int main(void) {
  }
  }
  double score_ms = ms_since(t0);
- int unique_pairs = npairs / 2;
+ /* Inner loop runs over b > a, i.e. N*(N-1)/2 distinct unordered pairs. */
+ int unique_pairs = (int)(CORPUS_SIZE * (CORPUS_SIZE - 1) / 2);
  printf(" simple_score %d pairs × %d %8.2f ms (%.1f µs/pair)\n",
  unique_pairs, iterations, score_ms,
  score_ms * 1000.0 / (unique_pairs * iterations));

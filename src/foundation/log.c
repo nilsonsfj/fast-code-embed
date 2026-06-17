@@ -70,10 +70,11 @@ void fce_log(FCELogLevel level, const char *msg, ...) {
  if ((size_t)pos < sizeof(line_buf) - 1) {
  pos += snprintf(line_buf + pos, sizeof(line_buf) - (size_t)pos, " %s=%s", key, val);
  }
- /* snprintf can return negative on encoding
- * error. Clamp to 0 so the next snprintf doesn't compute an underflowed
- * pointer. Also clamp to buffer size so the next write is in-bounds. */
- if (pos < 0) pos = 0;
+ /* snprintf can return negative on encoding error. Stop appending rather
+ * than resetting pos to 0, which would rewind over the already-written
+ * "level=... msg=..." header and corrupt the line. Keep the in-bounds
+ * clamp below for the normal (positive) overflow case. */
+ if (pos < 0) break;
  /* snprintf returns the number of chars that
  * WOULD have been written, so pos can exceed sizeof(line_buf). Normalize
  * after each write so the next snprintf call computes a valid size. */

@@ -137,9 +137,16 @@ public class Corpus implements AutoCloseable {
          * cache immediately rather than waiting for the cleaner to run at GC. */
         try {
             String[] labels = FastCodeEmbed.getDocLabels(h);
+            int nativeDocCount = FastCodeEmbed.getDocCount(h);
             if (labels != null) {
-                for (String s : labels) {
-                    c.docPaths.add(s != null ? s : "");
+                if (labels.length != nativeDocCount) {
+                    System.err.println("WARNING: load() doc label count ("
+                        + labels.length + ") != native doc count ("
+                        + nativeDocCount + ") — labels discarded");
+                } else {
+                    for (String s : labels) {
+                        c.docPaths.add(s != null ? s : "");
+                    }
                 }
             }
         } catch (Throwable t) {
@@ -383,8 +390,16 @@ public class Corpus implements AutoCloseable {
         /* Only carry labels when they line up 1:1 with documents (they may have
          * been dropped via clearDocPaths). The native loader requires the label
          * count to be either zero or exactly the document count. */
-        String[] labels = (docPaths.size() == FastCodeEmbed.getDocCount(handle))
-            ? docPaths.toArray(new String[0]) : null;
+        int docCount = FastCodeEmbed.getDocCount(handle);
+        String[] labels;
+        if (docPaths.size() == docCount) {
+            labels = docPaths.toArray(new String[0]);
+        } else {
+            System.err.println("WARNING: save() dropping doc labels — tracked "
+                + docPaths.size() + " paths but corpus has " + docCount
+                + " documents (labels lost on load)");
+            labels = null;
+        }
         int rc = FastCodeEmbed.saveCorpus(handle, path, labels);
         if (rc != 0) {
             throw new java.io.IOException("Failed to save corpus to " + path);

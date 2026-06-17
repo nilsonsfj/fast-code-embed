@@ -643,6 +643,13 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
 
  for (int fi = 0; fi < path_count; fi++) {
  if (file_doc_counts) file_doc_counts[fi] = 0;
+ /* Guard NULL path elements: fopen(NULL, ...) is undefined behavior and
+  * crashes on glibc/musl/macOS. A direct C caller may leave gaps in the
+  * array; skip them rather than crash. */
+ if (!paths[fi]) {
+ fce_log_debug("add_files.skip", "index_is_null", "true", "reason", "null_path");
+ continue;
+ }
  FILE *f = fopen(paths[fi], "rb");
  if (!f) {
  /* log skip so batch indexers can surface failures. */
@@ -704,11 +711,11 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
  for (size_t offset = 0; offset < nread; ) {
  size_t end = offset + (size_t)chunk_size;
  if (end < nread) {
- size_t found = 0;
- for (size_t i = end; i < nread; i++) {
- if (file_buf[i] == '}') { found = i + 1; break; }
- }
- end = found ? found : nread;
+ /* Extend to the next '}' boundary. memchr is SIMD-optimized on most
+  * libc implementations; a byte-by-byte loop here is O(n^2) on files
+  * with no '}' (each chunk scans to EOF). */
+ const char *found = memchr(file_buf + end, '}', nread - end);
+ end = found ? (size_t)(found - file_buf) + 1 : nread;
  } else {
  end = nread;
  }
@@ -727,6 +734,13 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
  int base = batch_used * max_tok;
  for (int t = 0; t < ntok; t++) {
  all_tokens[base + t] = tok_buf[t];
+ }
+ /* NULL the trailing slots. all_tokens is malloc'd (not zeroed), so without
+  * this they retain freed pointers from a previous batch occupying the same
+  * row. Consumers read only token_counts[d] entries today, but a future
+  * reader iterating max_tok would otherwise hit a use-after-free/double-free. */
+ for (int t = ntok; t < max_tok; t++) {
+ all_tokens[base + t] = NULL;
  }
  token_counts[batch_used] = ntok;
  batch_file_idx[batch_used] = fi;
@@ -1316,6 +1330,12 @@ _Static_assert(offsetof(struct fce_sem_corpus, finalize_failed) ==
  "corpus_mirror_t: finalize_failed must immediately follow finalized");
 
 static int fce_corpus_get_or_add(fce_sem_corpus_t *c, const char *token) {
+ /* Guard NULL tokens: a NULL element inside a non-empty token array would
+  * otherwise reach strdup(NULL) below (UB/crash). Public add-doc entry points
+  * only check the array pointer and count, not individual elements. */
+ if (!token) {
+ return FCE_NOT_FOUND;
+ }
  /* fce_ht_set now exposes an 'inserted' out-param
  * that disambiguates "new key" (inserted=true) from "OOM" (inserted=false),
  * eliminating the previous fce_ht_get_key disambiguation dance. */
@@ -2780,6 +2800,13 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
  free(corpus->doc_vectors_q); corpus->doc_vectors_q = NULL;
  free(corpus->doc_vectors_q_inv_mag); corpus->doc_vectors_q_inv_mag = NULL;
  free(corpus->doc_vectors); corpus->doc_vectors = NULL;
+ /* Also release the enrichment arrays still attached to the corpus.
+  * finalize_failed forces the caller to free the corpus eventually, but on
+  * a multi-GB vocabulary leaving enriched_vecs_q (~3.8 GB at 5M vocab)
+  * attached until then risks pushing the process into OOM. Match the
+  * doc_vectors calloc-failure path above. */
+ free(corpus->enriched_vecs_q); corpus->enriched_vecs_q = NULL;
+ free(corpus->enriched_vecs); corpus->enriched_vecs = NULL;
  free(src_entries);
  free_reverse_index(rev);
  corpus->finalize_failed = true;
@@ -3225,10 +3252,15 @@ const char *fce_sem_corpus_token_at(const fce_sem_corpus_t *corpus, int index,
  *out_vec = corpus->enriched_vecs ? &corpus->enriched_vecs[index] : NULL;
  }
  }
- if (out_idf) *out_idf = 0.0F;
+ /* out_idf is optional: guard EVERY write, not just the first. The second
+  * write was previously unguarded and crashed when a caller passed NULL on a
+  * non-empty corpus. */
+ if (out_idf) {
+ *out_idf = 0.0F;
  if (corpus->doc_count > 0) {
  int df = corpus->entries[index].doc_freq;
  *out_idf = df > 0 ? logf((float)corpus->doc_count / (float)df) : 0.0F;
+ }
  }
  return corpus->entries[index].token;
 }
@@ -5057,9 +5089,13 @@ static int collect_candidates(const fce_sem_corpus_t *corpus,
  if (sc->seen[w] & ((uint64_t)1 << b)) continue;
  sc->seen[w] |= ((uint64_t)1 << b);
  if (nraw >= raw_need) {
- /* Grow buffer dynamically. */
- int new_cap = raw_need * 2;
- int *grown = (int *)realloc(sc->raw, (size_t)new_cap * sizeof(int));
+ /* Grow buffer dynamically. Compute in size_t and clamp to INT_MAX so
+  * the doubling cannot overflow signed int if a future caller raises the
+  * doc cap past INT_MAX/2 (today nraw <= doc_count <= 1M, so unreachable). */
+ size_t want = (size_t)raw_need * 2;
+ if (want > (size_t)INT_MAX) want = (size_t)INT_MAX;
+ int new_cap = (int)want;
+ int *grown = (int *)realloc(sc->raw, want * sizeof(int));
  if (grown) {
  sc->raw = grown;
  sc->raw_cap = new_cap;
@@ -5404,14 +5440,19 @@ static uint32_t merge_local_heaps(bf_chunk_ctx_t *chunks, int nchunks,
  * shrinking the count. This is O(top_k * total) but correct — the
  * old code simply copied the first top_k items from the first chunks,
  * which could miss better candidates in later chunks. */
+ /* init_brute_workers caps the worker count at 64; clamp defensively so a
+ * future change (or the assert being compiled out under NDEBUG) can never
+ * overflow rem[]. Excess chunks beyond 64 would be dropped, but the cap
+ * makes that unreachable in practice. */
  assert(nchunks <= 64); /* init_brute_workers caps at 64 */
  int rem[64];
- for (int c = 0; c < nchunks; c++) rem[c] = chunks[c].local_count;
+ int nc = nchunks < 64 ? nchunks : 64;
+ for (int c = 0; c < nc; c++) rem[c] = chunks[c].local_count;
  uint32_t k = 0;
  for (uint32_t take = 0; take < top_k; take++) {
  int best_c = -1, best_i = -1;
  float best_s = -1.0f;
- for (int c = 0; c < nchunks; c++) {
+ for (int c = 0; c < nc; c++) {
  for (int i = 0; i < rem[c]; i++) {
  float s = chunks[c].local_heap[i].score;
  if (s > best_s ||
@@ -5560,7 +5601,8 @@ static void bruteforce_precomputed(const fce_sem_corpus_t *corpus,
  fce_parallel_for_static(total_chunks, bf_chunk_worker, chunks, popts);
 
  /* Merge local heaps into final results. */
- *count_out = merge_local_heaps(chunks, total_chunks, top_k, results_out);
+ uint32_t merged = merge_local_heaps(chunks, total_chunks, top_k, results_out);
+ if (count_out) *count_out = merged;
 
  for (int c = 0; c < total_chunks; c++) free(chunks[c].local_heap);
  free(chunks);
