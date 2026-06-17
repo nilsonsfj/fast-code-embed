@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <unistd.h>
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -1575,6 +1576,460 @@ static void test_corpus_mirror_layout_sanity(void) {
     PASS();
 }
 
+/* ── Serialization (cache save/load) tests ───────────────────────── */
+
+static void tmp_cache_path(char *buf, size_t n, const char *tag) {
+    const char *dir = getenv("TMPDIR");
+    if (!dir || !*dir) {
+        dir = "/tmp";
+    }
+    size_t dlen = strlen(dir);
+    const char *sep = (dlen > 0 && dir[dlen - 1] == '/') ? "" : "/";
+    snprintf(buf, n, "%s%sfce_cache_%s_%ld.bin", dir, sep, tag, (long)getpid());
+}
+
+static int ranked_equal(const fce_sem_ranked_t *a, uint32_t an,
+                        const fce_sem_ranked_t *b, uint32_t bn) {
+    if (an != bn) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < an; i++) {
+        if (a[i].index != b[i].index || fabsf(a[i].score - b[i].score) > 1e-6f) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Build a small, deterministic corpus. sparse_nnz > 0 enables sparse storage. */
+static fce_sem_corpus_t *build_demo_corpus(int sparse_nnz) {
+    fce_sem_corpus_t *c = fce_sem_corpus_new();
+    if (!c) {
+        return NULL;
+    }
+    if (sparse_nnz > 0) {
+        fce_sem_corpus_set_sparse(c, sparse_nnz);
+    }
+    static const char *docs[][3] = {
+        {"handle", "request", "parse"},
+        {"handle", "error", "log"},
+        {"parse", "request", "body"},
+        {"send", "response", "body"},
+        {"open", "file", "read"},
+        {"read", "file", "buffer"},
+        {"write", "file", "buffer"},
+        {"close", "file", "handle"},
+        {"alloc", "memory", "buffer"},
+        {"free", "memory", "page"},
+    };
+    int ndocs = (int)(sizeof(docs) / sizeof(docs[0]));
+    for (int i = 0; i < ndocs; i++) {
+        fce_sem_corpus_add_doc(c, docs[i], 3);
+    }
+    if (fce_sem_corpus_finalize(c) != 0) {
+        fce_sem_corpus_free(c);
+        return NULL;
+    }
+    return c;
+}
+
+static void test_corpus_save_load_roundtrip(void) {
+    TEST(corpus save / load round - trip(dense + sparse));
+    const char *query = "handle request file buffer";
+
+    for (int mode = 0; mode < 2; mode++) {
+        int sparse = mode ? 24 : 0;
+        fce_sem_corpus_t *corp = build_demo_corpus(sparse);
+        ASSERT(corp != NULL);
+        int tok_n = fce_sem_corpus_token_count(corp);
+        int doc_n = fce_sem_corpus_doc_count(corp);
+        ASSERT(tok_n > 0 && doc_n > 0 && doc_n <= 16);
+
+        /* Reference query results from the in-memory corpus. */
+        fce_sem_ranked_t r0[8], b0[8];
+        uint32_t c0 = 0, bc0 = 0;
+        fce_sem_search_query(corp, query, 8, r0, &c0, NULL);
+        fce_sem_search_query_bruteforce(corp, query, 8, b0, &bc0);
+
+        /* Doc labels. */
+        char labbuf[16][32];
+        const char *labels[16];
+        for (int i = 0; i < doc_n; i++) {
+            snprintf(labbuf[i], sizeof(labbuf[i]), "src/file_%d.c", i);
+            labels[i] = labbuf[i];
+        }
+
+        char path[1024];
+        tmp_cache_path(path, sizeof(path), mode ? "rt_sparse" : "rt_dense");
+        ASSERT(fce_sem_corpus_save(corp, path, labels, doc_n) == 0);
+
+        fce_sem_corpus_t *ld = fce_sem_corpus_load(path);
+        ASSERT(ld != NULL);
+        ASSERT(fce_sem_corpus_token_count(ld) == tok_n);
+        ASSERT(fce_sem_corpus_doc_count(ld) == doc_n);
+        ASSERT(fce_sem_corpus_doc_label_count(ld) == doc_n);
+        for (int i = 0; i < doc_n; i++) {
+            const char *lbl = fce_sem_corpus_doc_label(ld, i);
+            ASSERT(lbl && strcmp(lbl, labbuf[i]) == 0);
+        }
+
+        /* Vocabulary, IDF, and enriched vectors must be bit-identical. */
+        for (int i = 0; i < tok_n; i++) {
+            const fce_sem_vec_t *v0, *v1;
+            float idf0 = 0.0f, idf1 = 0.0f;
+            const char *t0 = fce_sem_corpus_token_at(corp, i, &v0, &idf0);
+            fce_sem_vec_t saved;
+            memcpy(&saved, v0, sizeof(saved)); /* token_at scratch is reused */
+            const char *t1 = fce_sem_corpus_token_at(ld, i, &v1, &idf1);
+            ASSERT(t0 && t1 && strcmp(t0, t1) == 0);
+            ASSERT(fabsf(idf0 - idf1) < 1e-6f);
+            ASSERT(memcmp(&saved, v1, sizeof(saved)) == 0);
+        }
+
+        /* Query results must match exactly on the reloaded corpus. */
+        fce_sem_ranked_t r1[8], b1[8];
+        uint32_t c1 = 0, bc1 = 0;
+        fce_sem_search_query(ld, query, 8, r1, &c1, NULL);
+        fce_sem_search_query_bruteforce(ld, query, 8, b1, &bc1);
+        ASSERT(ranked_equal(r0, c0, r1, c1));
+        ASSERT(ranked_equal(b0, bc0, b1, bc1));
+        ASSERT(bc1 > 0); /* sanity: the corpus is actually searchable */
+
+        fce_sem_corpus_free(ld);
+        fce_sem_corpus_free(corp);
+        remove(path);
+    }
+    PASS();
+}
+
+static unsigned char *read_file_bytes(const char *p, long *out_n) {
+    FILE *f = fopen(p, "rb");
+    if (!f) {
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    unsigned char *buf = malloc((size_t)sz);
+    if (buf && fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf);
+        buf = NULL;
+    }
+    fclose(f);
+    *out_n = sz;
+    return buf;
+}
+
+static int write_file_bytes(const char *p, const unsigned char *buf, long n) {
+    FILE *f = fopen(p, "wb");
+    if (!f) {
+        return -1;
+    }
+    int ok = (fwrite(buf, 1, (size_t)n, f) == (size_t)n);
+    fclose(f);
+    return ok ? 0 : -1;
+}
+
+static void test_corpus_load_rejects_bad_files(void) {
+    TEST(corpus load rejects corrupt / foreign files);
+
+    /* Missing file. */
+    ASSERT(fce_sem_corpus_load("/nonexistent/dir/does_not_exist.bin") == NULL);
+
+    /* Produce a valid cache file, then derive corrupt variants from its bytes. */
+    fce_sem_corpus_t *corp = build_demo_corpus(0);
+    ASSERT(corp != NULL);
+    char path[1024];
+    tmp_cache_path(path, sizeof(path), "reject");
+    ASSERT(fce_sem_corpus_save(corp, path, NULL, 0) == 0);
+    fce_sem_corpus_free(corp);
+
+    long n = 0;
+    unsigned char *pristine = read_file_bytes(path, &n);
+    ASSERT(pristine != NULL && n > 64);
+
+    char bad[1024];
+    tmp_cache_path(bad, sizeof(bad), "reject_bad");
+
+    /* Truncated below the header size. */
+    ASSERT(write_file_bytes(bad, pristine, 16) == 0);
+    ASSERT(fce_sem_corpus_load(bad) == NULL);
+
+    /* Bad magic (byte 0). */
+    unsigned char *v = malloc((size_t)n);
+    ASSERT(v != NULL);
+    memcpy(v, pristine, (size_t)n);
+    v[0] ^= 0xFF;
+    ASSERT(write_file_bytes(bad, v, n) == 0);
+    ASSERT(fce_sem_corpus_load(bad) == NULL);
+
+    /* Bad version (offset 4). */
+    memcpy(v, pristine, (size_t)n);
+    v[4] ^= 0xFF;
+    ASSERT(write_file_bytes(bad, v, n) == 0);
+    ASSERT(fce_sem_corpus_load(bad) == NULL);
+
+    /* Bad endian marker (offset 8). */
+    memcpy(v, pristine, (size_t)n);
+    v[8] ^= 0xFF;
+    ASSERT(write_file_bytes(bad, v, n) == 0);
+    ASSERT(fce_sem_corpus_load(bad) == NULL);
+
+    /* Wrong dim (offset 12). */
+    memcpy(v, pristine, (size_t)n);
+    v[12] ^= 0xFF;
+    ASSERT(write_file_bytes(bad, v, n) == 0);
+    ASSERT(fce_sem_corpus_load(bad) == NULL);
+
+    /* The pristine file must still load cleanly. */
+    fce_sem_corpus_t *ok = fce_sem_corpus_load(path);
+    ASSERT(ok != NULL);
+    fce_sem_corpus_free(ok);
+
+    free(v);
+    free(pristine);
+    remove(path);
+    remove(bad);
+    PASS();
+}
+
+/* Section indices and table layout — must mirror the on-disk cache format in
+ * semantic.c (enum FCE_SEC_* and fce_cache_header_t). Used to reach into a
+ * valid file's section table and corrupt individual values for negative tests. */
+enum {
+    SEC_TOKEN_BLOB = 0,
+    SEC_TOKEN_OFFSETS,
+    SEC_DOC_FREQ,
+    SEC_ENR_DENSE,
+    SEC_ENR_SPARSE_IDX,
+    SEC_ENR_SPARSE_VAL,
+    SEC_DOC_DENSE,
+    SEC_DOC_SPARSE_IDX,
+    SEC_DOC_SPARSE_VAL,
+    SEC_DOC_INVMAG,
+    SEC_INV_OFFSETS,
+    SEC_INV_DOC_IDS,
+    SEC_LABEL_OFFSETS,
+    SEC_LABEL_BLOB
+};
+#define SEC_TABLE_OFF 40 /* offsetof(fce_cache_header_t, sections) */
+
+static uint64_t sec_field(const unsigned char *buf, int idx, int which) {
+    uint64_t v;
+    memcpy(&v, buf + SEC_TABLE_OFF + (size_t)idx * 16 + (which ? 8 : 0), sizeof(v));
+    return v;
+}
+
+static void test_corpus_load_rejects_bad_content(void) {
+    TEST(corpus load rejects out - of - range section values);
+
+    char path[1024], bad[1024];
+    tmp_cache_path(bad, sizeof(bad), "reject_content");
+
+    /* Dense corpus: corrupt an inverted-index doc id and a token terminator. */
+    {
+        fce_sem_corpus_t *corp = build_demo_corpus(0);
+        ASSERT(corp != NULL);
+        int doc_n = fce_sem_corpus_doc_count(corp);
+        tmp_cache_path(path, sizeof(path), "content_dense");
+        ASSERT(fce_sem_corpus_save(corp, path, NULL, 0) == 0);
+        fce_sem_corpus_free(corp);
+
+        long n = 0;
+        unsigned char *pristine = read_file_bytes(path, &n);
+        ASSERT(pristine != NULL && n > 64);
+
+        /* Inverted index must be present for this to be a meaningful test. */
+        uint64_t ids_off = sec_field(pristine, SEC_INV_DOC_IDS, 0);
+        uint64_t ids_len = sec_field(pristine, SEC_INV_DOC_IDS, 1);
+        ASSERT(ids_len >= sizeof(int32_t));
+        unsigned char *v = malloc((size_t)n);
+        ASSERT(v != NULL);
+
+        /* Doc id out of range ([0, doc_count)) → reject. */
+        memcpy(v, pristine, (size_t)n);
+        int32_t bad_id = doc_n; /* one past the last valid index */
+        memcpy(v + ids_off, &bad_id, sizeof(bad_id));
+        ASSERT(write_file_bytes(bad, v, n) == 0);
+        ASSERT(fce_sem_corpus_load(bad) == NULL);
+
+        /* Strip the final token's NUL terminator (last byte of the blob) → the
+         * token has no terminator inside its slice and must be rejected. */
+        uint64_t blob_off = sec_field(pristine, SEC_TOKEN_BLOB, 0);
+        uint64_t blob_len = sec_field(pristine, SEC_TOKEN_BLOB, 1);
+        ASSERT(blob_len > 0);
+        memcpy(v, pristine, (size_t)n);
+        ASSERT(v[blob_off + blob_len - 1] == 0); /* sanity: it was a NUL */
+        v[blob_off + blob_len - 1] = 'X';
+        ASSERT(write_file_bytes(bad, v, n) == 0);
+        ASSERT(fce_sem_corpus_load(bad) == NULL);
+
+        /* The pristine file still loads. */
+        fce_sem_corpus_t *ok = fce_sem_corpus_load(path);
+        ASSERT(ok != NULL);
+        fce_sem_corpus_free(ok);
+
+        free(v);
+        free(pristine);
+        remove(path);
+    }
+
+    /* Sparse corpus: corrupt an enriched sparse dimension index. */
+    {
+        fce_sem_corpus_t *corp = build_demo_corpus(24);
+        ASSERT(corp != NULL);
+        tmp_cache_path(path, sizeof(path), "content_sparse");
+        ASSERT(fce_sem_corpus_save(corp, path, NULL, 0) == 0);
+        fce_sem_corpus_free(corp);
+
+        long n = 0;
+        unsigned char *pristine = read_file_bytes(path, &n);
+        ASSERT(pristine != NULL && n > 64);
+
+        uint64_t idx_off = sec_field(pristine, SEC_ENR_SPARSE_IDX, 0);
+        uint64_t idx_len = sec_field(pristine, SEC_ENR_SPARSE_IDX, 1);
+        ASSERT(idx_len >= sizeof(uint16_t));
+        unsigned char *v = malloc((size_t)n);
+        ASSERT(v != NULL);
+
+        /* 0xFFFE is neither a valid dim index nor the 0xFFFF sentinel → reject. */
+        memcpy(v, pristine, (size_t)n);
+        uint16_t bad_idx = 0xFFFE;
+        memcpy(v + idx_off, &bad_idx, sizeof(bad_idx));
+        ASSERT(write_file_bytes(bad, v, n) == 0);
+        ASSERT(fce_sem_corpus_load(bad) == NULL);
+
+        fce_sem_corpus_t *ok = fce_sem_corpus_load(path);
+        ASSERT(ok != NULL);
+        fce_sem_corpus_free(ok);
+
+        free(v);
+        free(pristine);
+        remove(path);
+    }
+
+    remove(bad);
+    PASS();
+}
+
+#define HDR_FLAGS_OFF 16 /* offsetof(fce_cache_header_t, flags) */
+
+/* Negative tests for the value-level validations added during cache hardening:
+ * doc_freq range, inverted-index sortedness, label-offset integrity, unknown
+ * header flags, and non-finite inverse magnitudes. Each starts from a pristine
+ * file and corrupts exactly one field. */
+static void test_corpus_load_rejects_bad_content2(void) {
+    TEST(corpus load rejects bad doc_freq / inv - order / labels / flags / inv - mag);
+
+    char path[1024], bad[1024];
+    tmp_cache_path(bad, sizeof(bad), "reject_content2");
+
+    fce_sem_corpus_t *corp = build_demo_corpus(0);
+    ASSERT(corp != NULL);
+    int doc_n = fce_sem_corpus_doc_count(corp);
+
+    /* Build the pristine file WITH labels so the label sections are present. */
+    char labbuf[16][32];
+    const char *labels[16];
+    for (int i = 0; i < doc_n; i++) {
+        snprintf(labbuf[i], sizeof(labbuf[i]), "src/file_%d.c", i);
+        labels[i] = labbuf[i];
+    }
+    tmp_cache_path(path, sizeof(path), "content2");
+    ASSERT(fce_sem_corpus_save(corp, path, labels, doc_n) == 0);
+
+    /* Save must reject a label count that does not match doc_count. */
+    ASSERT(fce_sem_corpus_save(corp, bad, labels, doc_n - 1) != 0);
+    fce_sem_corpus_free(corp);
+
+    long n = 0;
+    unsigned char *pristine = read_file_bytes(path, &n);
+    ASSERT(pristine != NULL && n > 64);
+    unsigned char *v = malloc((size_t)n);
+    ASSERT(v != NULL);
+
+    /* (a) doc_freq out of range: set the first frequency to doc_count+1. */
+    {
+        uint64_t off = sec_field(pristine, SEC_DOC_FREQ, 0);
+        uint64_t len = sec_field(pristine, SEC_DOC_FREQ, 1);
+        ASSERT(len >= sizeof(int32_t));
+        memcpy(v, pristine, (size_t)n);
+        int32_t bad_df = doc_n + 1;
+        memcpy(v + off, &bad_df, sizeof(bad_df));
+        ASSERT(write_file_bytes(bad, v, n) == 0);
+        ASSERT(fce_sem_corpus_load(bad) == NULL);
+
+        /* Zero is also illegal for a finalized corpus. */
+        memcpy(v, pristine, (size_t)n);
+        int32_t zero = 0;
+        memcpy(v + off, &zero, sizeof(zero));
+        ASSERT(write_file_bytes(bad, v, n) == 0);
+        ASSERT(fce_sem_corpus_load(bad) == NULL);
+    }
+
+    /* (b) Unsorted/duplicated inverted-index ids: the first token (id 0,
+     * "handle") spans >= 2 docs; duplicate its first id to break ascending. */
+    {
+        uint64_t io_off = sec_field(pristine, SEC_INV_OFFSETS, 0);
+        uint64_t ids_off = sec_field(pristine, SEC_INV_DOC_IDS, 0);
+        int32_t first_range_end = 0;
+        memcpy(&first_range_end, pristine + io_off + sizeof(int32_t), sizeof(int32_t));
+        ASSERT(first_range_end >= 2); /* token 0 must contain >= 2 docs */
+        memcpy(v, pristine, (size_t)n);
+        int32_t id0 = 0;
+        memcpy(&id0, pristine + ids_off, sizeof(id0));
+        memcpy(v + ids_off + sizeof(int32_t), &id0, sizeof(id0)); /* ids[1] = ids[0] */
+        ASSERT(write_file_bytes(bad, v, n) == 0);
+        ASSERT(fce_sem_corpus_load(bad) == NULL);
+    }
+
+    /* (c) Label offsets: a non-zero first offset must be rejected. */
+    {
+        uint64_t off = sec_field(pristine, SEC_LABEL_OFFSETS, 0);
+        uint64_t len = sec_field(pristine, SEC_LABEL_OFFSETS, 1);
+        ASSERT(len >= sizeof(uint32_t));
+        memcpy(v, pristine, (size_t)n);
+        uint32_t bad_off = 1;
+        memcpy(v + off, &bad_off, sizeof(bad_off));
+        ASSERT(write_file_bytes(bad, v, n) == 0);
+        ASSERT(fce_sem_corpus_load(bad) == NULL);
+    }
+
+    /* (d) Unknown header flag bit must be rejected. */
+    {
+        memcpy(v, pristine, (size_t)n);
+        uint32_t flags = 0;
+        memcpy(&flags, pristine + HDR_FLAGS_OFF, sizeof(flags));
+        flags |= 0x4u; /* bit outside FCE_CACHE_KNOWN_FLAGS */
+        memcpy(v + HDR_FLAGS_OFF, &flags, sizeof(flags));
+        ASSERT(write_file_bytes(bad, v, n) == 0);
+        ASSERT(fce_sem_corpus_load(bad) == NULL);
+    }
+
+    /* (e) Non-finite inverse magnitude (NaN) must be rejected. */
+    {
+        uint64_t off = sec_field(pristine, SEC_DOC_INVMAG, 0);
+        uint64_t len = sec_field(pristine, SEC_DOC_INVMAG, 1);
+        ASSERT(len >= sizeof(float));
+        memcpy(v, pristine, (size_t)n);
+        uint32_t nan_bits = 0x7FC00000u;
+        memcpy(v + off, &nan_bits, sizeof(nan_bits));
+        ASSERT(write_file_bytes(bad, v, n) == 0);
+        ASSERT(fce_sem_corpus_load(bad) == NULL);
+    }
+
+    /* The pristine file still loads cleanly. */
+    fce_sem_corpus_t *ok = fce_sem_corpus_load(path);
+    ASSERT(ok != NULL);
+    fce_sem_corpus_free(ok);
+
+    free(v);
+    free(pristine);
+    remove(path);
+    remove(bad);
+    PASS();
+}
+
 /* ── Main ──────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1617,6 +2072,10 @@ int main(void) {
     test_corpus_add_and_finalize();
     test_corpus_batch_add();
     test_corpus_token_at();
+    test_corpus_save_load_roundtrip();
+    test_corpus_load_rejects_bad_files();
+    test_corpus_load_rejects_bad_content();
+    test_corpus_load_rejects_bad_content2();
 
     /* Proximity */
     printf("\nProximity:\n");

@@ -48,7 +48,7 @@ LIB = $(BUILDDIR)/libfast_code_embed.a
 TEST_SRC  = tests/test_semantic.c
 TEST_BIN  = $(BUILDDIR)/test_semantic
 
-.PHONY: all lib test test-asan install uninstall clean extract
+.PHONY: all lib test test-asan bench bench-256 loadquery install uninstall clean extract
 
 all: lib
 
@@ -109,6 +109,16 @@ BENCH_BIN  = $(BUILDDIR)/bench_mem_query
 bench: $(BENCH_BIN)
 
 $(BENCH_BIN): $(BENCH_SRC) $(LIB)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed -lpthread -lm -o $@
+
+# ── Example: load a saved corpus cache and query it ──────────────
+LOADQUERY_SRC = examples/loadquery.c
+LOADQUERY_BIN = $(BUILDDIR)/loadquery
+
+loadquery: $(LOADQUERY_BIN)
+
+$(LOADQUERY_BIN): $(LOADQUERY_SRC) $(LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed -lpthread -lm -o $@
 

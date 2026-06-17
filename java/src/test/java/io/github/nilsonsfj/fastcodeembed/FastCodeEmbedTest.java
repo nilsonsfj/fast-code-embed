@@ -361,6 +361,90 @@ public class FastCodeEmbedTest {
              * causing SIGTRAP (signal 5 / Trace/BPT trap). */
         });
 
+        test("save() then load() round-trips a queryable corpus", () -> {
+            String path = System.getProperty("java.io.tmpdir")
+                + "/fce_java_cache_" + System.nanoTime() + ".fce";
+            try {
+                int tokN, docN;
+                SearchResult[] before;
+                try (Corpus corp = new Corpus()) {
+                    String[][] docs = new String[200][];
+                    for (int i = 0; i < 200; i++) {
+                        docs[i] = new String[]{"token_" + i, "common", "shared"};
+                    }
+                    corp.addDocsBatch(docs);
+                    corp.complete();
+                    tokN = corp.getTokenCount();
+                    docN = corp.getDocCount();
+                    before = FastCodeEmbed.searchQuery(corp, "token_5 common shared", 10);
+                    corp.save(path);
+                }
+                try (Corpus loaded = Corpus.load(path)) {
+                    assertEquals(tokN, loaded.getTokenCount(), "token count must round-trip");
+                    assertEquals(docN, loaded.getDocCount(), "doc count must round-trip");
+                    assertEquals(docN, loaded.getDocPaths().length, "doc paths must round-trip");
+                    SearchResult[] after = FastCodeEmbed.searchQuery(loaded, "token_5 common shared", 10);
+                    assertEquals(before.length, after.length, "result count must match");
+                    for (int i = 0; i < before.length; i++) {
+                        assertEquals(before[i].getIndex(), after[i].getIndex(), "result index must match");
+                        assertEquals(before[i].getScore(), after[i].getScore(), 1e-6f, "result score must match");
+                    }
+                }
+            } catch (java.io.IOException e) {
+                throw new AssertionError("save/load failed: " + e.getMessage(), e);
+            } finally {
+                new java.io.File(path).delete();
+            }
+        });
+
+        test("load() of a missing file throws IOException", () -> {
+            boolean threw = false;
+            try {
+                Corpus.load("/nonexistent/dir/fce_does_not_exist.fce");
+            } catch (java.io.IOException e) {
+                threw = true;
+            }
+            assertTrue(threw, "expected IOException for a missing cache file");
+        });
+
+        test("addDocsTokenized aligns paths when a name yields zero tokens", () -> {
+            /* The empty name tokenizes to zero documents, so the C side accepts
+             * only the second name. The recorded path must be the accepted
+             * document's path ("real.c"), not the first input's ("empty.c"). */
+            try (Corpus corp = new Corpus()) {
+                corp.addDocsTokenized(new String[]{"", "realFunctionName"},
+                                      new String[]{"empty.c", "real.c"});
+                corp.complete();
+                assertEquals(1, corp.getDocCount(), "only the non-empty name is added");
+                String[] paths = corp.getDocPaths();
+                assertEquals(1, paths.length, "exactly one path tracked");
+                assertEquals("real.c", paths[0], "path must align with the accepted document");
+            }
+        });
+
+        test("addDocsTokenized then save/load round-trips correct labels", () -> {
+            String path = System.getProperty("java.io.tmpdir")
+                + "/fce_java_tok_" + System.nanoTime() + ".fce";
+            try {
+                try (Corpus corp = new Corpus()) {
+                    corp.addDocsTokenized(new String[]{"", "alphaBeta", "gammaDelta"},
+                                          new String[]{"skip.c", "a.c", "g.c"});
+                    corp.complete();
+                    corp.save(path);
+                }
+                try (Corpus loaded = Corpus.load(path)) {
+                    String[] paths = loaded.getDocPaths();
+                    assertEquals(2, paths.length, "two accepted docs round-trip");
+                    assertEquals("a.c", paths[0], "first accepted label");
+                    assertEquals("g.c", paths[1], "second accepted label");
+                }
+            } catch (java.io.IOException e) {
+                throw new AssertionError("save/load failed: " + e.getMessage(), e);
+            } finally {
+                new java.io.File(path).delete();
+            }
+        });
+
         test("double close() is safe", () -> {
             Corpus corp = new Corpus();
             corp.addDocsBatch(new String[][]{{"a", "b"}, {"c", "d"}});

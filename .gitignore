@@ -51,6 +51,7 @@ build/
 # debug information files
 *.dwo
 java/lib/
+java/target/
 bench_c
 bench_mem_query
 index_dir

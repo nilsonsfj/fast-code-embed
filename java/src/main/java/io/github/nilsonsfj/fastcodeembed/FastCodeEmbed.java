@@ -108,10 +108,21 @@ public final class FastCodeEmbed {
      * Rank corpus against a query using simple scoring.
      * Returns results sorted by score descending.
      *
+     * <p><b>LEGACY API — use {@link #simpleRankBatch} for production workloads.</b>
+     * This method marshals each {@code FuncDescriptor} individually across the
+     * JNI boundary, accumulating O(N) JNI local references (two per corpus
+     * element) that remain alive until the call completes. The native layer
+     * rejects corpora larger than 4096, but even smaller sizes can overflow
+     * the local-reference table on constrained JVMs (e.g., Android ART caps
+     * at 512 refs). {@link #simpleRankBatch} avoids per-item JNI transitions
+     * entirely by operating on pre-extracted flat arrays.</p>
+     *
      * @param query  the query function
-     * @param corpus array of function descriptors to rank
+     * @param corpus array of function descriptors to rank (max 4096)
      * @param topK   maximum number of results to return
      * @return ranked results (length ≤ topK)
+     * @throws IllegalArgumentException if corpus length exceeds 4096
+     * @see #simpleRankBatch
      */
     public static native SearchResult[] simpleRank(FuncDescriptor query, FuncDescriptor[] corpus, int topK);
 
@@ -119,11 +130,20 @@ public final class FastCodeEmbed {
      * Search corpus with a minimum score threshold.
      * Returns results sorted by score descending.
      *
+     * <p><b>LEGACY API — use {@link #simpleRankBatch} for production workloads.</b>
+     * This method has the same JNI local-reference accumulation issue as
+     * {@link #simpleRank}. The native layer rejects corpora larger than
+     * 4096. For production-scale search, pre-extract flat arrays via
+     * {@link Corpus#extractFlat(FuncDescriptor[])} and use
+     * {@link #simpleRankBatch}.</p>
+     *
      * @param query    the query function
-     * @param corpus   array of function descriptors to search
+     * @param corpus   array of function descriptors to search (max 4096)
      * @param topK     maximum number of results to return
      * @param minScore minimum score threshold (inclusive)
      * @return ranked results passing the threshold
+     * @throws IllegalArgumentException if corpus length exceeds 4096
+     * @see #simpleRankBatch
      */
     public static native SearchResult[] simpleSearch(FuncDescriptor query, FuncDescriptor[] corpus,
                                                      int topK, float minScore);
@@ -134,6 +154,10 @@ public final class FastCodeEmbed {
      *
      * <p>Use {@link Corpus#extractFlat(FuncDescriptor[])} to build the flat arrays
      * from an array of FuncDescriptors. The flat arrays can be reused across queries.</p>
+     *
+     * <p><b>NOTE:</b> This flat batch path uses Random Indexing (RI) cosines exclusively
+     * and is optimized for speed and bandwidth. It drops TF-IDF and proximity features
+     * because positional indices in the flat array are not global vocabulary IDs.</p>
      *
      * @param allWeights  flat IDF weights: [func * maxTokens + token]
      * @param allIndices  flat token indices: [func * maxTokens + token]
@@ -287,6 +311,9 @@ public final class FastCodeEmbed {
     static float[] getRiVec(long handle, String token) { return nGetRiVec(handle, token); }
     static int getDocCount(long handle) { return nGetDocCount(handle); }
     static int getTokenCount(long handle) { return nGetTokenCount(handle); }
+    static int saveCorpus(long handle, String path, String[] labels) { return nSaveCorpus(handle, path, labels); }
+    static long loadCorpus(String path) { return nLoadCorpus(path); }
+    static String[] getDocLabels(long handle) { return nGetDocLabels(handle); }
 
     private static native long nCreateCorpus();
     private static native void nFreeCorpus(long handle);
@@ -299,6 +326,9 @@ public final class FastCodeEmbed {
     private static native float[] nGetRiVec(long handle, String token);
     private static native int nGetDocCount(long handle);
     private static native int nGetTokenCount(long handle);
+    private static native int nSaveCorpus(long handle, String path, String[] labels);
+    private static native long nLoadCorpus(String path);
+    private static native String[] nGetDocLabels(long handle);
     private static native String[][] nTokenizeBatch(String[] names);
     private static native SearchResult[] nSimpleRankFlat(
             float[] allWeights, int[] allIndices, int[] tfidfLens,

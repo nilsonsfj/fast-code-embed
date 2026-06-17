@@ -94,6 +94,12 @@ void *fce_mmap_read(const char *path, size_t *out_size);
 /* Unmap a previously mapped region. */
 void fce_munmap(void *addr, size_t size);
 
+/* Atomically replace `final_path` with `tmp_path` (same directory expected).
+ * On success the temporary file no longer exists. Returns 0 on success, -1 on
+ * error (the temporary file is left in place for the caller to clean up).
+ * POSIX uses rename(); Windows uses MoveFileEx(MOVEFILE_REPLACE_EXISTING). */
+int fce_atomic_replace(const char *tmp_path, const char *final_path);
+
 /* ── Timing ────────────────────────────────────────────────────── */
 
 /* Monotonic nanosecond timestamp (for elapsed time measurement). */

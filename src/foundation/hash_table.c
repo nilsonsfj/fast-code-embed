@@ -115,6 +115,9 @@ static uint32_t next_pow2(uint32_t v) {
     if (v < HT_MIN_CAP) {
         return HT_MIN_CAP;
     }
+    if (v > (UINT32_C(1) << 31)) {
+        return UINT32_C(1) << 31;
+    }
     v--;
     v |= v >> HT_SHIFT_1;
     v |= v >> HT_SHIFT_2;

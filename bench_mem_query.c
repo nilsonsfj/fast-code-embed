@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <sys/resource.h>
 #include <time.h>
+#include <math.h>
 #include <fnmatch.h>
 
 #if defined(__APPLE__)
@@ -181,16 +182,59 @@ static long get_current_rss_bytes(void) {
 #endif
 }
 
+/* Fixed query set shared between the in-memory dump (this file) and the
+ * standalone loadquery tool, so their outputs can be diffed byte-for-byte. */
+static const char *const DUMP_QUERIES[] = {
+    "gpu display drivers",
+    "user mode scheduling",
+    "pcie ethernet code",
+    "memory allocation pages",
+    "file system inode",
+    "network socket buffer",
+    "interrupt handler irq",
+    "crypto aes cipher",
+};
+#define DUMP_QUERY_COUNT ((int)(sizeof(DUMP_QUERIES) / sizeof(DUMP_QUERIES[0])))
+
+/* Deterministic, process-independent dump of query results: result lines go to
+ * stdout (idx + score to 6 dp, so two processes can be diffed), per-query timing
+ * goes to stderr. Identical logic lives in loadquery.c. */
+static void dump_query_results(const fce_sem_corpus_t *corp) {
+    printf("=== QUERY DUMP (vocab=%d docs=%d) ===\n",
+           fce_sem_corpus_token_count(corp), fce_sem_corpus_doc_count(corp));
+    for (int i = 0; i < DUMP_QUERY_COUNT; i++) {
+        const char *q = DUMP_QUERIES[i];
+        fce_sem_ranked_t fr[15], br[15];
+        uint32_t fn = 0, bn = 0;
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        fce_sem_search_query(corp, q, 15, fr, &fn, NULL);
+        double fast_ms = ms_since(ts);
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        fce_sem_search_query_bruteforce(corp, q, 15, br, &bn);
+        double brute_ms = ms_since(ts);
+
+        printf("Q fast %s\n", q);
+        for (uint32_t j = 0; j < fn; j++) printf(" %u %.6f\n", fr[j].index, fr[j].score);
+        printf("Q brute %s\n", q);
+        for (uint32_t j = 0; j < bn; j++) printf(" %u %.6f\n", br[j].index, br[j].score);
+        fprintf(stderr, " query %-26s fast=%6.3f ms brute=%6.3f ms\n", q, fast_ms, brute_ms);
+    }
+}
+
 int main(int argc, char **argv) {
     setbuf(stdout, NULL); /* Disable buffering for incremental output */
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <directory> [chunk_size] [--brute-only] [--sparse[=N]]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <directory> [chunk_size] [--brute-only] [--sparse[=N]] [--save-load[=path]]\n", argv[0]);
         return 1;
     }
     const char *root_dir = argv[1];
     int chunk_size = DEFAULT_CHUNK_SIZE;
     int brute_only = 0;
     int sparse_nnz = 0;
+    int save_load = 0;
+    const char *save_load_path = NULL;
+    int dump_queries = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--brute-only") == 0) {
             brute_only = 1;
@@ -199,6 +243,13 @@ int main(int argc, char **argv) {
         } else if (strncmp(argv[i], "--sparse=", 9) == 0) {
             sparse_nnz = atoi(argv[i] + 9);
             if (sparse_nnz <= 0) sparse_nnz = 32;
+        } else if (strcmp(argv[i], "--save-load") == 0) {
+            save_load = 1;
+        } else if (strncmp(argv[i], "--save-load=", 12) == 0) {
+            save_load = 1;
+            save_load_path = argv[i] + 12;
+        } else if (strcmp(argv[i], "--dump-queries") == 0) {
+            dump_queries = 1;
         } else {
             chunk_size = atoi(argv[i]);
             if (chunk_size <= 0) chunk_size = DEFAULT_CHUNK_SIZE;
@@ -377,6 +428,126 @@ int main(int argc, char **argv) {
     printf(" Vocabulary: %d tokens\n", vocab);
     printf(" Documents: %d\n", ndocs);
 
+    /* ── 3a. Deterministic query dump (for cross-process parity check) ──
+     * Saves the cache if requested, dumps in-memory query results to stdout,
+     * then exits before the timing benchmark so the output is diff-friendly. */
+    if (dump_queries) {
+        if (save_load) {
+            char dpath[1024];
+            const char *cpath = save_load_path;
+            if (!cpath) {
+                const char *dir = getenv("TMPDIR");
+                if (!dir || !*dir) dir = "/tmp";
+                size_t dl = strlen(dir);
+                const char *sep = (dl > 0 && dir[dl - 1] == '/') ? "" : "/";
+                snprintf(dpath, sizeof(dpath), "%s%sfce_bench_corpus.fce", dir, sep);
+                cpath = dpath;
+            }
+            int rc = fce_sem_corpus_save(corp, cpath,
+                                         (const char *const *)doc_paths, doc_path_count);
+            if (rc != 0) {
+                /* Save failed: emitting the in-memory dump anyway would let a
+                 * caller diff it against a stale cache from a previous run and
+                 * believe cross-process load parity held. Fail loudly instead,
+                 * and unlink the destination so no stale cache is reused. */
+                fprintf(stderr, "ERROR: save of %s failed (rc=%d); not dumping queries\n",
+                        cpath, rc);
+                remove(cpath);
+                free(doc_paths);
+                for (int i = 0; i < files.count; i++) free(files.paths[i]);
+                free(files.paths);
+                fce_sem_corpus_free(corp);
+                return 1;
+            }
+            fprintf(stderr, "SAVED %s (rc=%d)\n", cpath, rc);
+        }
+        dump_query_results(corp);
+        free(doc_paths);
+        for (int i = 0; i < files.count; i++) free(files.paths[i]);
+        free(files.paths);
+        fce_sem_corpus_free(corp);
+        return 0;
+    }
+
+    /* ── 3b. Save / load (mmap cache) ─────────────────────────── */
+    int parity_failed = 0;
+    if (save_load) {
+        char default_path[1024];
+        const char *cpath = save_load_path;
+        if (!cpath) {
+            const char *dir = getenv("TMPDIR");
+            if (!dir || !*dir) dir = "/tmp";
+            size_t dl = strlen(dir);
+            const char *sep = (dl > 0 && dir[dl - 1] == '/') ? "" : "/";
+            snprintf(default_path, sizeof(default_path), "%s%sfce_bench_corpus.fce", dir, sep);
+            cpath = default_path;
+        }
+        printf("\n");
+        printf(" ── Save / Load (mmap cache) ────────────────\n");
+        printf(" Path: %s\n", cpath);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        int save_rc = fce_sem_corpus_save(corp, cpath,
+                                          (const char *const *)doc_paths, doc_path_count);
+        double save_ms = ms_since(t0);
+        if (save_rc != 0) {
+            printf(" Save: FAILED\n");
+        } else {
+            struct stat st;
+            double fsz = (stat(cpath, &st) == 0) ? (double)st.st_size : 0.0;
+            printf(" Save: %8.1f ms (%.2f GB, %.0f MB/s)\n",
+                   save_ms, fsz / 1073741824.0, fsz / 1e6 / (save_ms / 1000.0));
+
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            fce_sem_corpus_t *ldc = fce_sem_corpus_load(cpath);
+            double load_ms = ms_since(t0);
+            if (!ldc) {
+                printf(" Load: FAILED\n");
+            } else {
+                printf(" Load: %8.1f ms (%.0f MB/s, %.1fx faster than finalize)\n",
+                       load_ms, fsz / 1e6 / (load_ms / 1000.0), build_ms / load_ms);
+                printf(" Loaded: vocab=%d docs=%d labels=%d\n",
+                       fce_sem_corpus_token_count(ldc), fce_sem_corpus_doc_count(ldc),
+                       fce_sem_corpus_doc_label_count(ldc));
+
+                /* Confirm query results match the in-memory corpus exactly. */
+                const char *pq[] = {"gpu display drivers", "memory allocation pages", "file system inode"};
+                int npq = (int)(sizeof(pq) / sizeof(pq[0]));
+                int identical = 0;
+                for (int i = 0; i < npq; i++) {
+                    fce_sem_ranked_t a[10], b[10];
+                    uint32_t na = 0, nb = 0;
+                    fce_sem_search_query(corp, pq[i], 10, a, &na, NULL);
+                    fce_sem_search_query(ldc, pq[i], 10, b, &nb, NULL);
+                    int same = (na == nb);
+                    for (uint32_t j = 0; same && j < na; j++) {
+                        if (a[j].index != b[j].index || fabsf(a[j].score - b[j].score) > 1e-6f) same = 0;
+                    }
+                    identical += same;
+                }
+                printf(" Query parity vs in-memory corpus: %s (%d/%d identical)\n",
+                       identical == npq ? "OK" : "MISMATCH", identical, npq);
+
+                if (identical != npq) {
+                    /* This is a release-validation tool: a save/load that visibly
+                     * fails parity must not have its later timings presented as if the
+                     * loaded representation were trustworthy. Drop the loaded corpus,
+                     * keep the in-memory one, and propagate a non-zero exit code. */
+                    parity_failed = 1;
+                    fce_sem_corpus_free(ldc);
+                    printf(" PARITY MISMATCH: discarding loaded corpus; benchmarks below "
+                           "run on the in-memory corpus; exit code will be non-zero.\n");
+                } else {
+                    /* Continue the query benchmarks on the mmap-loaded corpus. Doc paths
+                     * are now served zero-copy from the loaded corpus's label table. */
+                    fce_sem_corpus_free(corp);
+                    corp = ldc;
+                    printf(" (query benchmarks below run on the mmap-loaded corpus)\n");
+                }
+            }
+        }
+        fflush(stdout);
+    }
+
     /* ── 4. Query benchmarks ──────────────────────────────────── */
     printf("\n");
     printf(" ── Query Benchmarks ───────────────────────\n");
@@ -541,5 +712,5 @@ int main(int argc, char **argv) {
     for (int i = 0; i < files.count; i++) free(files.paths[i]);
     free(files.paths);
     fce_sem_corpus_free(corp);
-    return 0;
+    return parity_failed ? 1 : 0;
 }

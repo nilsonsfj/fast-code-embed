@@ -35,7 +35,11 @@ FCELogLevel fce_log_get_level(void);
  *
  * Output:
  * level=info msg=pass.timing pass=defs elapsed_ms=42 */
+#if defined(__GNUC__) || defined(__clang__)
+void fce_log(FCELogLevel level, const char *msg, ...) __attribute__((sentinel));
+#else
 void fce_log(FCELogLevel level, const char *msg, ...);
+#endif
 
 /* Convenience macros. The msg tag is folded into __VA_ARGS__ so these stay
  * valid ISO C11: there is no trailing `, ##__VA_ARGS__` (a GNU extension that
