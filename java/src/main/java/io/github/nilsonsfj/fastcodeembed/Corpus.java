@@ -94,6 +94,65 @@ public class Corpus implements AutoCloseable {
         this.cleanable = CLEANER.register(this, closeAction);
     }
 
+    /** Wrap an already-allocated native handle (used by {@link #load}). */
+    private Corpus(long handle, boolean finalized) {
+        this.handle = handle;
+        this.finalized = finalized;
+        this.closeAction = new CloseAction(handle);
+        this.cleanable = CLEANER.register(this, closeAction);
+    }
+
+    /**
+     * Load a corpus previously written by {@link #save(String)} via a zero-copy
+     * memory map. The returned corpus is already finalized and ready to query;
+     * its document paths are restored from the cache file.
+     *
+     * <p>The cache file is a <b>same-build</b> artifact: it is tied to the host
+     * byte order and to the native library's embedding dimension
+     * ({@link FastCodeEmbed#SEM_DIM}). A file produced by a different build is
+     * rejected with an {@link java.io.IOException}.</p>
+     *
+     * @param path path to a cache file written by {@link #save(String)}
+     * @return a finalized, queryable corpus backed by the mapped file
+     * @throws java.io.IOException if the file is missing, corrupt, truncated,
+     *         or incompatible with the running native library
+     * @throws OutOfMemoryError if the native handle table is exhausted
+     * @since 0.0.9
+     */
+    public static Corpus load(String path) throws java.io.IOException {
+        if (path == null) throw new NullPointerException("path");
+        long h = FastCodeEmbed.loadCorpus(path);
+        if (h == 0) {
+            throw new java.io.IOException(
+                "Failed to load corpus from " + path
+                + " (missing, corrupt, or incompatible cache file)");
+        }
+        if (h < 0) {
+            throw new OutOfMemoryError("Failed to allocate corpus handle while loading " + path);
+        }
+        Corpus c = new Corpus(h, true);
+        /* Materializing labels can throw (e.g. OutOfMemoryError on a huge
+         * label set). If it does before we return, the caller never receives
+         * `c`, so close it here to release the native handle and unmap the
+         * cache immediately rather than waiting for the cleaner to run at GC. */
+        try {
+            String[] labels = FastCodeEmbed.getDocLabels(h);
+            if (labels != null) {
+                for (String s : labels) {
+                    c.docPaths.add(s != null ? s : "");
+                }
+            }
+        } catch (Throwable t) {
+            try {
+                c.close();
+            } catch (Throwable suppressed) {
+                t.addSuppressed(suppressed);
+            }
+            throw t;
+        }
+        return c;
+    }
+
     /**
      * Add a single document's tokens to the corpus.
      * Can be called multiple times before {@link #complete()}.
@@ -217,13 +276,25 @@ public class Corpus implements AutoCloseable {
         if (names.length != paths.length) {
             throw new IllegalArgumentException("names.length != paths.length");
         }
-        int before = FastCodeEmbed.getDocCount(handle);
-        FastCodeEmbed.addDocsTokenized(handle, names);
-        int added = FastCodeEmbed.getDocCount(handle) - before;
-        for (int i = 0; i < added; i++) {
-            String p = paths[i] != null ? paths[i] : "";
-            docPaths.add(p);
+        /* Tokenize in C (one row per input name), then route through
+         * addDocsBatch so its returned docMap aligns each path with the
+         * document the C side actually accepted. The previous approach
+         * appended the first `added` paths in order, which silently
+         * misassigned labels whenever a name tokenized to zero documents or
+         * hit a corpus limit (the accepted docs are not necessarily the first
+         * inputs) — and save() would then persist those wrong labels. */
+        String[][] docs = FastCodeEmbed.tokenizeBatch(names);
+        int maxLen = 0;
+        for (String[] d : docs) {
+            if (d.length > maxLen) maxLen = d.length;
         }
+        /* All names tokenized to nothing: add nothing, matching the no-path
+         * addDocsTokenized(names) overload (which is a no-op for empty input)
+         * rather than throwing as addDocsBatch does. */
+        if (maxLen == 0) {
+            return;
+        }
+        addDocsBatch(docs, paths);
     }
 
     /**
@@ -289,6 +360,35 @@ public class Corpus implements AutoCloseable {
             throw new IllegalStateException("Corpus finalization failed (out of memory)");
         }
         this.finalized = true;
+    }
+
+    /**
+     * Persist this finalized corpus to a local cache file so it can be reloaded
+     * with {@link #load(String)} without re-running the build pipeline. The
+     * corpus's document paths are stored alongside the vectors and restored on
+     * load.
+     *
+     * <p>The file is a <b>same-build</b> cache: it is tied to the host byte
+     * order and to the native library's embedding dimension, and is not a
+     * portable interchange format. See {@link #load(String)}.</p>
+     *
+     * @param path destination file path (overwritten if it exists)
+     * @throws IllegalStateException if {@link #complete()} has not been called
+     * @throws java.io.IOException if the corpus could not be written
+     * @since 0.0.9
+     */
+    public void save(String path) throws java.io.IOException {
+        checkFinalized();
+        if (path == null) throw new NullPointerException("path");
+        /* Only carry labels when they line up 1:1 with documents (they may have
+         * been dropped via clearDocPaths). The native loader requires the label
+         * count to be either zero or exactly the document count. */
+        String[] labels = (docPaths.size() == FastCodeEmbed.getDocCount(handle))
+            ? docPaths.toArray(new String[0]) : null;
+        int rc = FastCodeEmbed.saveCorpus(handle, path, labels);
+        if (rc != 0) {
+            throw new java.io.IOException("Failed to save corpus to " + path);
+        }
     }
 
     /**
@@ -361,15 +461,16 @@ public class Corpus implements AutoCloseable {
      * intended use case.
      * </p>
      *
+     * <p><b>Prefer {@link #extractFlat} + {@link FastCodeEmbed#simpleRankBatch}</b>
+     * for ranking at scale: that path marshals primitive arrays across JNI in a
+     * single call instead of one {@code FuncDescriptor} object per document. This
+     * object-based path remains supported for small corpora and simple use.</p>
+     *
      * @param filePath file path for the function
      * @param tokens   token strings for this function
      * @return a ready-to-score FuncDescriptor (positional indices)
      * @throws IllegalStateException if {@link #complete()} has not been called
-     * @deprecated Use {@code extractFlat} + {@code simpleRankBatch} for the
-     *             fast path; this method's FuncDescriptor is positional
-     *             and only safe with the simple* scoring family.
      */
-    @Deprecated
     public FuncDescriptor buildFunc(String filePath, String[] tokens) {
         checkFinalized();
         int[] indices = new int[tokens.length];

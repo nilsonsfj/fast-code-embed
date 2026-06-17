@@ -92,7 +92,15 @@ static inline jlong encode_handle(int slot, uint64_t gen) {
 static jlong alloc_handle(void *ptr) {
  pthread_mutex_lock(&g_handle_mutex);
  for (int i = 0; i < HANDLE_TABLE_CAP; i++) {
- if (g_handle_table[i].ptr == NULL) {
+ /* A slot is reusable only when it is both unowned (ptr==NULL) AND fully
+ * drained (refcount==0). Requiring ptr==NULL alone is unsafe: take_handle()
+ * clears ptr BEFORE it has waited for in-flight acquirers to finish, so a
+ * slot can momentarily have ptr==NULL while refcount>1. Reusing it then
+ * would reset refcount=1, let the draining closer observe its
+ * "refcount<=1" predicate prematurely, and free a corpus another thread is
+ * still querying (use-after-free). take_handle() sets refcount=0 only after
+ * the drain completes, so this guard closes that window. */
+ if (g_handle_table[i].ptr == NULL && g_handle_table[i].refcount == 0) {
  g_handle_table[i].gen++;
  if (g_handle_table[i].gen == 0) g_handle_table[i].gen = 1;
  g_handle_table[i].ptr = ptr;
@@ -215,6 +223,16 @@ static jclass cls_oom;
 #define CHECK_EXCEPTION_RETURN(env, retval) do { \
  if ((*env)->ExceptionCheck(env)) { return retval; } \
 } while (0)
+
+/* Raise OutOfMemoryError for a native allocation failure, so a failed
+ * malloc/calloc/strdup surfaces in Java as a thrown exception rather than a
+ * silent no-op (a void method that adds nothing) or a generic sentinel. Uses
+ * the cached cls_oom; if a JNI exception is already pending, leave it in place.
+ * Caller still returns its sentinel afterwards. */
+static void throw_oom(JNIEnv *env, const char *ctx) {
+ if ((*env)->ExceptionCheck(env)) return; /* don't mask an existing one */
+ if (cls_oom) (*env)->ThrowNew(env, cls_oom, ctx ? ctx : "native allocation failed");
+}
 
 /* Build a fce_sem_func_t from a Java FuncDescriptor object.
  *
@@ -605,6 +623,139 @@ JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nFre
  fce_sem_corpus_free((fce_sem_corpus_t *)ptr);
 }
 
+JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSaveCorpus(
+ JNIEnv *env, jclass cls, jlong handle, jstring jpath, jobjectArray jlabels) {
+ (void)cls;
+ fce_sem_corpus_t *corp = acquire_handle(handle);
+ if (!corp) return -1;
+ if (!jpath) {
+ if (cls_npe) (*env)->ThrowNew(env, cls_npe, "path is null");
+ release_handle(handle);
+ return -1;
+ }
+ const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
+ if (!path || (*env)->ExceptionCheck(env)) {
+ if (path) (*env)->ReleaseStringUTFChars(env, jpath, path);
+ release_handle(handle);
+ return -1;
+ }
+
+ const char **labels = NULL;
+ int label_count = 0;
+ int pinned = 0;
+ int rc = -1;
+
+ if (jlabels) {
+ label_count = (*env)->GetArrayLength(env, jlabels);
+ if (label_count > 0) {
+ /* Deep-copy each label and release its JNI string + local ref
+ * immediately, so at most one local reference is live at a time.
+ * Caching one jstring ref per label would accumulate `label_count`
+ * references (one per doc) and overflow the JNI local reference
+ * table on large corpora (ART hard-caps it at 512). */
+ labels = (const char **)calloc((size_t)label_count, sizeof(char *));
+ if (!labels) {
+ goto save_cleanup;
+ }
+ for (int i = 0; i < label_count; i++) {
+ jstring js = (jstring)(*env)->GetObjectArrayElement(env, jlabels, i);
+ if ((*env)->ExceptionCheck(env)) {
+ if (js) (*env)->DeleteLocalRef(env, js);
+ goto save_cleanup;
+ }
+ if (!js) {
+ if (cls_npe) (*env)->ThrowNew(env, cls_npe, "null label in array");
+ goto save_cleanup;
+ }
+ const char *s = (*env)->GetStringUTFChars(env, js, NULL);
+ if (!s || (*env)->ExceptionCheck(env)) {
+ if (s) (*env)->ReleaseStringUTFChars(env, js, s);
+ (*env)->DeleteLocalRef(env, js);
+ goto save_cleanup;
+ }
+ labels[i] = strdup(s);
+ (*env)->ReleaseStringUTFChars(env, js, s);
+ (*env)->DeleteLocalRef(env, js);
+ if (!labels[i]) goto save_cleanup; /* strdup OOM */
+ pinned = i + 1;
+ }
+ }
+ }
+
+ rc = fce_sem_corpus_save(corp, path, labels, label_count);
+
+save_cleanup:
+ for (int i = 0; i < pinned; i++) {
+ free((void *)labels[i]);
+ }
+ free(labels);
+ (*env)->ReleaseStringUTFChars(env, jpath, path);
+ release_handle(handle);
+ return rc;
+}
+
+JNIEXPORT jlong JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nLoadCorpus(
+ JNIEnv *env, jclass cls, jstring jpath) {
+ (void)cls;
+ if (!jpath) {
+ if (cls_npe) (*env)->ThrowNew(env, cls_npe, "path is null");
+ return 0;
+ }
+ const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
+ if (!path || (*env)->ExceptionCheck(env)) {
+ if (path) (*env)->ReleaseStringUTFChars(env, jpath, path);
+ return -1; /* OOM marshaling the path */
+ }
+ fce_sem_corpus_t *c = fce_sem_corpus_load(path);
+ (*env)->ReleaseStringUTFChars(env, jpath, path);
+ if (!c) {
+ return 0; /* missing/corrupt/foreign file → Java throws IOException */
+ }
+ jlong h = alloc_handle(c);
+ if (h < 0) {
+ fce_sem_corpus_free(c);
+ return -1; /* handle table full / OOM */
+ }
+ return h;
+}
+
+JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGetDocLabels(
+ JNIEnv *env, jclass cls, jlong handle) {
+ (void)cls;
+ fce_sem_corpus_t *corp = acquire_handle(handle);
+ if (!corp) return NULL;
+ int n = fce_sem_corpus_doc_label_count(corp);
+ jclass strcls = (*env)->FindClass(env, "java/lang/String");
+ if (!strcls) {
+ release_handle(handle);
+ return NULL;
+ }
+ jobjectArray arr = (*env)->NewObjectArray(env, n, strcls, NULL);
+ (*env)->DeleteLocalRef(env, strcls);
+ if (!arr) {
+ release_handle(handle);
+ return NULL; /* pending OOM */
+ }
+ for (int i = 0; i < n; i++) {
+ const char *lbl = fce_sem_corpus_doc_label(corp, i);
+ jstring js = (*env)->NewStringUTF(env, lbl ? lbl : "");
+ if (!js) {
+ release_handle(handle);
+ return NULL; /* pending OOM */
+ }
+ (*env)->SetObjectArrayElement(env, arr, i, js);
+ (*env)->DeleteLocalRef(env, js);
+ /* SetObjectArrayElement can throw (e.g. OOM); making further JNI calls
+  * with a pending exception is undefined, so bail out immediately. */
+ if ((*env)->ExceptionCheck(env)) {
+ release_handle(handle);
+ return NULL;
+ }
+ }
+ release_handle(handle);
+ return arr;
+}
+
 JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDoc(
  JNIEnv *env, jclass cls, jlong handle, jobjectArray jtokens) {
  (void)cls;
@@ -619,12 +770,13 @@ JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAdd
  * NULL, which the OOM guard below would treat as an allocation failure.
  * Return early on empty input — matching nAddDocsBatch (:329). */
  if (count == 0) { release_handle(handle); return; }
- const char **tokens = (const char **)malloc(sizeof(char *) * count);
- /* use calloc so that unpinned slots are
- * zeroed — if a future code change iterates `count` instead of `pinned`,
- * it won't call ReleaseStringUTFChars on garbage pointers. */
- jstring *refs = (jstring *)calloc(count, sizeof(jstring));
- if (!tokens || !refs) { free(tokens); free(refs); release_handle(handle); return; }
+ /* Deep-copy each token and release its JNI string + local ref immediately,
+ * so at most one local reference is live at a time. Caching one jstring ref
+ * per token would accumulate `count` references for a single document and
+ * overflow the JNI local reference table on token-heavy docs (ART hard-caps
+ * it at 512). calloc so unfilled slots are NULL and free(NULL)-safe. */
+ const char **tokens = (const char **)calloc(count, sizeof(char *));
+ if (!tokens) { throw_oom(env, "nAddDoc: token array allocation failed"); release_handle(handle); return; }
  int pinned = 0;
  for (int i = 0; i < count; i++) {
  jstring jtok = (jstring)(*env)->GetObjectArrayElement(env, jtokens, i);
@@ -637,22 +789,23 @@ JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAdd
  goto adddoc_cleanup;
  }
  if (!jtok) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "null token in array"); goto adddoc_cleanup; }
- tokens[i] = (*env)->GetStringUTFChars(env, jtok, NULL);
- if (!tokens[i] || (*env)->ExceptionCheck(env)) {
- if (tokens[i]) (*env)->ReleaseStringUTFChars(env, jtok, tokens[i]);
+ const char *s = (*env)->GetStringUTFChars(env, jtok, NULL);
+ if (!s || (*env)->ExceptionCheck(env)) {
+ if (s) (*env)->ReleaseStringUTFChars(env, jtok, s);
  (*env)->DeleteLocalRef(env, jtok);
  goto adddoc_cleanup;
  }
- refs[i] = jtok;
+ tokens[i] = strdup(s);
+ (*env)->ReleaseStringUTFChars(env, jtok, s);
+ (*env)->DeleteLocalRef(env, jtok);
+ if (!tokens[i]) { throw_oom(env, "nAddDoc: token copy failed"); goto adddoc_cleanup; }
  pinned = i + 1;
  }
  fce_sem_corpus_add_doc(corp, tokens, count);
 adddoc_cleanup:
  for (int i = 0; i < pinned; i++) {
- (*env)->ReleaseStringUTFChars(env, refs[i], tokens[i]);
- (*env)->DeleteLocalRef(env, refs[i]);
+ free((void *)tokens[i]);
  }
- free(refs);
  free(tokens);
  release_handle(handle);
 }
@@ -685,18 +838,22 @@ JNIEXPORT jintArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed
  if (maxTokensPerDoc > FCE_SEM_MAX_TOKENS) maxTokensPerDoc = FCE_SEM_MAX_TOKENS;
 
  /* Build the flat token array: all_tokens[doc * maxTokensPerDoc + tok].
- * Cache jstring refs so release pass doesn't re-fetch.
+ * Each token is deep-copied (strdup) and its JNI string + local ref are
+ * released immediately, so at most one local reference is live at a time.
+ * Caching one jstring local ref per token would accumulate up to
+ * docCount*maxTokensPerDoc references and overflow the JNI local reference
+ * table (hard-capped at 512 on Android ART), crashing the JVM on large
+ * batches.
  * Clamp per-doc token count to maxTokensPerDoc to prevent heap overflow. */
  size_t flat = (size_t)docCount * (size_t)maxTokensPerDoc;
- char **all_tokens = (char **)malloc(sizeof(char *) * flat);
- jstring *all_refs = (jstring *)calloc(flat, sizeof(jstring));
+ char **all_tokens = (char **)calloc(flat, sizeof(char *));
  int *token_counts = (int *)malloc(sizeof(int) * docCount);
- if (!all_tokens || !all_refs || !token_counts) {
- free(all_tokens); free(all_refs); free(token_counts);
+ if (!all_tokens || !token_counts) {
+ free(all_tokens); free(token_counts);
+ throw_oom(env, "nAddDocsBatch: token buffer allocation failed");
  release_handle(handle);
  return NULL;
  }
- memset(all_tokens, 0, sizeof(char *) * flat);
 
  /* hoist both result pointers to NULL before
  * the first goto so all error paths return a defined value and doc_map
@@ -735,8 +892,17 @@ JNIEXPORT jintArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed
  (*env)->DeleteLocalRef(env, jdoc);
  goto addbatch_cleanup;
  }
- all_tokens[(size_t)d * maxTokensPerDoc + t] = (char *)tok;
- all_refs[(size_t)d * maxTokensPerDoc + t] = jtok;
+ char *copy = strdup(tok);
+ (*env)->ReleaseStringUTFChars(env, jtok, tok);
+ (*env)->DeleteLocalRef(env, jtok);
+ if (!copy) {
+ /* strdup OOM: no pending JNI exception, but cannot proceed. The C
+  * batch add has not run yet, so nothing was added — surface OOM. */
+ throw_oom(env, "nAddDocsBatch: token copy failed");
+ (*env)->DeleteLocalRef(env, jdoc);
+ goto addbatch_cleanup;
+ }
+ all_tokens[(size_t)d * maxTokensPerDoc + t] = copy;
  }
  (*env)->DeleteLocalRef(env, jdoc);
  }
@@ -745,6 +911,10 @@ JNIEXPORT jintArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed
  * were accepted by the C side, so Java can map paths correctly. */
  doc_map = (int *)malloc(sizeof(int) * docCount);
  if (!doc_map) {
+ /* C batch add has not run yet, so nothing was added — surface OOM
+  * rather than returning NULL (which Java reads as the docs-added
+  * "use sequential mapping" fallback). */
+ throw_oom(env, "nAddDocsBatch: doc map allocation failed");
  goto addbatch_cleanup;
  }
 
@@ -760,18 +930,13 @@ addbatch_cleanup:
  /* free(NULL) is safe — doc_map is NULL on every error path that jumps
  * here before the malloc above, or after a failed malloc. */
  free(doc_map);
- /* Release JNI strings using cached refs. Iterate the full flat array so
- * partially-pinned docs (where the inner loop bailed mid-doc) are also
- * cleaned up. all_refs was calloc'd, so unprocessed entries are NULL. */
+ /* Free the deep-copied token strings. all_tokens was calloc'd, so slots
+ * never filled (a mid-doc bail) are NULL and free(NULL) is safe. The JNI
+ * strings + local refs were already released inside the extraction loop,
+ * so no JNI calls are needed here. */
  for (size_t idx = 0; idx < flat; idx++) {
- if (all_refs[idx]) {
- (*env)->ReleaseStringUTFChars(env, all_refs[idx], all_tokens[idx]);
- (*env)->DeleteLocalRef(env, all_refs[idx]);
- all_refs[idx] = NULL;
+ free(all_tokens[idx]);
  }
- }
-
- free(all_refs);
  free(all_tokens);
  free(token_counts);
  release_handle(handle);
@@ -815,27 +980,32 @@ JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAdd
  * heaps) while still providing good batching throughput. */
  const int BATCH = 1000;
  const char **names = (const char **)malloc(sizeof(char *) * BATCH);
- jstring *refs = (jstring *)malloc(sizeof(jstring) * BATCH);
- if (!names || !refs) { free(names); free(refs); release_handle(handle); return; }
+ if (!names) { throw_oom(env, "nAddDocsTokenized: name buffer allocation failed"); release_handle(handle); return; }
 
  for (int start = 0; start < total; start += BATCH) {
  int end = start + BATCH;
  if (end > total) end = total;
  int batch = end - start;
 
- /* Extract batch of strings + cache refs */
+ /* Extract batch of strings: deep-copy each and release its JNI string +
+ * local ref immediately, so at most one local reference is live at a time
+ * (caching them would overflow the local reference table, hard-capped at
+ * 512 on Android ART). */
  int pinned = 0;
  for (int i = 0; i < batch; i++) {
  jstring jname = (jstring)(*env)->GetObjectArrayElement(env, jnames, start + i);
  if ((*env)->ExceptionCheck(env)) { if (jname) (*env)->DeleteLocalRef(env, jname); goto addtok_cleanup; }
  if (!jname) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "null token in array"); goto addtok_cleanup; }
- names[i] = (*env)->GetStringUTFChars(env, jname, NULL);
- if (!names[i] || (*env)->ExceptionCheck(env)) {
- if (names[i]) (*env)->ReleaseStringUTFChars(env, jname, names[i]);
+ const char *s = (*env)->GetStringUTFChars(env, jname, NULL);
+ if (!s || (*env)->ExceptionCheck(env)) {
+ if (s) (*env)->ReleaseStringUTFChars(env, jname, s);
  (*env)->DeleteLocalRef(env, jname);
  goto addtok_cleanup;
  }
- refs[i] = jname;
+ names[i] = strdup(s);
+ (*env)->ReleaseStringUTFChars(env, jname, s);
+ (*env)->DeleteLocalRef(env, jname);
+ if (!names[i]) { throw_oom(env, "nAddDocsTokenized: name copy failed"); goto addtok_cleanup; }
  pinned = i + 1;
  }
 
@@ -843,10 +1013,10 @@ JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAdd
  fce_sem_corpus_add_docs_tokenized(corp, names, batch);
 
 addtok_cleanup:
- /* Release strings using cached refs */
+ /* Free the deep-copied strings (JNI refs already released above). */
  for (int i = 0; i < pinned; i++) {
- (*env)->ReleaseStringUTFChars(env, refs[i], names[i]);
- (*env)->DeleteLocalRef(env, refs[i]);
+ free((void *)names[i]);
+ names[i] = NULL;
  }
  /* if an exception is pending (NPE from
  * null element, OOM from GetStringUTFChars, or AIOOBE from
@@ -856,7 +1026,6 @@ addtok_cleanup:
  * crashes the JVM on HotSpot. */
  if ((*env)->ExceptionCheck(env)) break;
  }
- free(refs);
  free(names);
  release_handle(handle);
 }
@@ -874,10 +1043,13 @@ JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAdd
  int count = (*env)->GetArrayLength(env, jpaths);
  if (count == 0 || chunkSize <= 0) { release_handle(handle); return 0; }
 
- /* Extract all path strings in one pass, cache refs for cleanup. */
- const char **paths = (const char **)malloc(sizeof(char *) * count);
- jstring *refs = (jstring *)malloc(sizeof(jstring) * count);
- if (!paths || !refs) { free(paths); free(refs); release_handle(handle); return -1; }
+ /* Extract all path strings: deep-copy each and release its JNI string +
+ * local ref immediately, so at most one local reference is live at a time.
+ * Caching one jstring ref per file would accumulate `count` references and
+ * overflow the JNI local reference table on large trees (ART hard-caps it
+ * at 512), crashing the JVM. */
+ const char **paths = (const char **)calloc(count, sizeof(char *));
+ if (!paths) { throw_oom(env, "nAddFiles: path buffer allocation failed"); release_handle(handle); return -1; }
  /* hoist file_doc_counts declaration above the
  * for-loop to prevent goto from jumping over its initialization. */
  int *file_doc_counts = NULL;
@@ -892,15 +1064,19 @@ JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAdd
  goto addfiles_cleanup;
  }
  if (!jpath) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "null path in array"); goto addfiles_cleanup; }
- paths[i] = (*env)->GetStringUTFChars(env, jpath, NULL);
- if (!paths[i]) {
- /* OOM: a pending OutOfMemoryError is now set. Bail before any
+ const char *s = (*env)->GetStringUTFChars(env, jpath, NULL);
+ if (!s || (*env)->ExceptionCheck(env)) {
+ /* OOM: a pending OutOfMemoryError may be set. Bail before any
  * further JNI calls (which would be UB) or C function calls
  * (which would be invoked with a pending exception). */
+ if (s) (*env)->ReleaseStringUTFChars(env, jpath, s);
  (*env)->DeleteLocalRef(env, jpath);
  goto addfiles_cleanup;
  }
- refs[i] = jpath;
+ paths[i] = strdup(s);
+ (*env)->ReleaseStringUTFChars(env, jpath, s);
+ (*env)->DeleteLocalRef(env, jpath);
+ if (!paths[i]) { throw_oom(env, "nAddFiles: path copy failed"); goto addfiles_cleanup; }
  pinned = i + 1;
  }
 
@@ -921,10 +1097,8 @@ JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAdd
 
 addfiles_cleanup:
  for (int i = 0; i < pinned; i++) {
- (*env)->ReleaseStringUTFChars(env, refs[i], paths[i]);
- (*env)->DeleteLocalRef(env, refs[i]);
+ free((void *)paths[i]);
  }
- free(refs);
  free(paths);
  release_handle(handle);
  return result;
@@ -965,7 +1139,7 @@ JNIEXPORT jfloatArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmb
  if (!jtoken) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "token is null"); release_handle(handle); return NULL; }
  const char *tok = (*env)->GetStringUTFChars(env, jtoken, NULL);
  if (!tok || (*env)->ExceptionCheck(env)) {
- /* OOM: OutOfMemoryError is pending. Bail before calling C. */
+ if (tok) (*env)->ReleaseStringUTFChars(env, jtoken, tok);
  release_handle(handle);
  return NULL;
  }
@@ -1038,8 +1212,8 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  * and crashes the JVM. Throw NPE before reaching the JNI call. */
  if (!jname) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "name is null"); return NULL; }
  const char *name = (*env)->GetStringUTFChars(env, jname, NULL);
- if (!name) {
- /* OOM: pending OutOfMemoryError. */
+ if (!name || (*env)->ExceptionCheck(env)) {
+ if (name) (*env)->ReleaseStringUTFChars(env, jname, name);
  return NULL;
  }
 
@@ -1100,24 +1274,28 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  return empty;
  }
 
- /* Extract input strings */
+ /* Extract input strings: deep-copy each and release its JNI string +
+ * local ref immediately, so at most one local reference is live at a time.
+ * Caching one jstring ref per name would accumulate `count` references and
+ * overflow the JNI local reference table on large batches (ART hard-caps
+ * it at 512). */
  const char **names = (const char **)malloc(sizeof(char *) * count);
- jstring *refs = (jstring *)malloc(sizeof(jstring) * count);
- if (!names || !refs) { free(names); free(refs); return NULL; }
+ if (!names) { return NULL; }
  int pinned = 0;
  for (int i = 0; i < count; i++) {
  jstring jname = (jstring)(*env)->GetObjectArrayElement(env, jnames, i);
  if ((*env)->ExceptionCheck(env)) goto tokenize_cleanup_input;
  if (!jname) { if (cls_npe) (*env)->ThrowNew(env, cls_npe, "null token in array"); goto tokenize_cleanup_input; }
- names[i] = (*env)->GetStringUTFChars(env, jname, NULL);
- /* OOM check on GetStringUTFChars (a pending
- * OutOfMemoryError is set on NULL return; the next JNI call
- * would crash). */
- if (!names[i]) {
+ const char *s = (*env)->GetStringUTFChars(env, jname, NULL);
+ if (!s || (*env)->ExceptionCheck(env)) {
+ if (s) (*env)->ReleaseStringUTFChars(env, jname, s);
  (*env)->DeleteLocalRef(env, jname);
  goto tokenize_cleanup_input;
  }
- refs[i] = jname;
+ names[i] = strdup(s);
+ (*env)->ReleaseStringUTFChars(env, jname, s);
+ (*env)->DeleteLocalRef(env, jname);
+ if (!names[i]) goto tokenize_cleanup_input; /* strdup OOM */
  pinned = i + 1;
  }
 
@@ -1137,21 +1315,20 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  }
  fce_sem_tokenize_batch(names, count, all_tokens, token_counts, max_out);
 
- /* Release input strings using cached refs */
+ /* Free copied input strings (JNI refs already released during extraction). */
  for (int i = 0; i < count; i++) {
- (*env)->ReleaseStringUTFChars(env, refs[i], names[i]);
- (*env)->DeleteLocalRef(env, refs[i]);
+ free((void *)names[i]);
  }
- free(refs);
  free(names);
 
  /* Build Java String[][] result */
  {
+ jobjectArray result = NULL;
  jclass strCls = (*env)->FindClass(env, "java/lang/String");
  if ((*env)->ExceptionCheck(env)) goto tokenize_cleanup_tokens;
  jclass strArrCls = (*env)->FindClass(env, "[Ljava/lang/String;");
  if ((*env)->ExceptionCheck(env)) { (*env)->DeleteLocalRef(env, strCls); goto tokenize_cleanup_tokens; }
- jobjectArray result = (*env)->NewObjectArray(env, count, strArrCls, NULL);
+ result = (*env)->NewObjectArray(env, count, strArrCls, NULL);
  (*env)->DeleteLocalRef(env, strArrCls);
  if ((*env)->ExceptionCheck(env)) { (*env)->DeleteLocalRef(env, strCls); goto tokenize_cleanup_tokens; }
  /* Track the most recent docTokens array so an OOM/error exit from
@@ -1188,6 +1365,7 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  return result;
 
 tokenize_cleanup_result:
+ if (result) (*env)->DeleteLocalRef(env, result);
  if (pending_doc_tokens) (*env)->DeleteLocalRef(env, pending_doc_tokens);
  (*env)->DeleteLocalRef(env, strCls);
  }
@@ -1205,10 +1383,8 @@ tokenize_cleanup_tokens:
 
 tokenize_cleanup_input:
  for (int i = 0; i < pinned; i++) {
- (*env)->ReleaseStringUTFChars(env, refs[i], names[i]);
- (*env)->DeleteLocalRef(env, refs[i]);
+ free((void *)names[i]);
  }
- free(refs);
  free(names);
  return NULL;
 }
@@ -1244,9 +1420,9 @@ JNIEXPORT jfloat JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_pr
  * arrays) alive until the cleanup pass. HotSpot auto-grows the local ref table
  * but may abort under sustained pressure. For large corpora (N > 1000), use
  * nSimpleRankFlat which bypasses per-item JNI marshaling entirely.
- * this path is @Deprecated from Java;
- * consider gating behind a size assertion or removing once all callers
- * have migrated to the flat API. */
+ * This object-array path is the older, non-preferred model (the Java docs
+ * steer callers to extractFlat + simpleRankBatch); it stays supported for
+ * small corpora and is hard-gated below at corpusSize > 4096. */
 
 JNIEXPORT jfloat JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_simpleScore(
  JNIEnv *env, jclass cls, jobject ja, jobject jb) {
@@ -1291,7 +1467,7 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  if (corpusSize > 4096) {
  if (cls_illegal_arg) {
  (*env)->ThrowNew(env, cls_illegal_arg,
- "corpus too large for simpleRank (deprecated); use nSimpleRankFlat for corpora > 4096");
+ "corpus too large for simpleRank; use simpleRankBatch (nSimpleRankFlat) for corpora > 4096");
  }
  return NULL;
  }
@@ -1335,7 +1511,7 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  }
 
  results = (fce_sem_ranked_t *)malloc(sizeof(fce_sem_ranked_t) * topK);
- if (!results) goto simpleRank_cleanup;
+ if (!results) { throw_oom(env, "simpleRank: results allocation failed"); goto simpleRank_cleanup; }
  uint32_t count = 0;
  fce_sem_simple_rank(&query, corpus, corpusSize, topK, results, &count);
 
@@ -1356,6 +1532,12 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  }
  (*env)->SetObjectArrayElement(env, jresults, i, jres);
  (*env)->DeleteLocalRef(env, jres);
+ /* SetObjectArrayElement can throw; bail before any further JNI call. */
+ if ((*env)->ExceptionCheck(env)) {
+ (*env)->DeleteLocalRef(env, jresults);
+ jresults = NULL;
+ goto simpleRank_cleanup;
+ }
  }
 
 simpleRank_cleanup:
@@ -1401,7 +1583,7 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  if (corpusSize > 4096) {
  if (cls_illegal_arg) {
  (*env)->ThrowNew(env, cls_illegal_arg,
- "corpus too large for simpleSearch (deprecated); use nSimpleRankFlat for corpora > 4096");
+ "corpus too large for simpleSearch; use simpleRankBatch (nSimpleRankFlat) for corpora > 4096");
  }
  return NULL;
  }
@@ -1439,7 +1621,7 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  }
 
  results = (fce_sem_ranked_t *)malloc(sizeof(fce_sem_ranked_t) * topK);
- if (!results) goto simpleSearch_cleanup;
+ if (!results) { throw_oom(env, "simpleSearch: results allocation failed"); goto simpleSearch_cleanup; }
  uint32_t count = 0;
  fce_sem_simple_search(&query, corpus, corpusSize, topK, minScore, results, &count);
 
@@ -1459,6 +1641,12 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  }
  (*env)->SetObjectArrayElement(env, jresults, i, jres);
  (*env)->DeleteLocalRef(env, jres);
+ /* SetObjectArrayElement can throw; bail before any further JNI call. */
+ if ((*env)->ExceptionCheck(env)) {
+ (*env)->DeleteLocalRef(env, jresults);
+ jresults = NULL;
+ goto simpleSearch_cleanup;
+ }
  }
 
 simpleSearch_cleanup:
@@ -1673,7 +1861,7 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
 
  /* Score all pairs in C */
  results = (fce_sem_ranked_t *)malloc(sizeof(fce_sem_ranked_t) * topK);
- if (!results) goto flat_cleanup_query;
+ if (!results) { throw_oom(env, "nSimpleRankFlat: results allocation failed"); goto flat_cleanup_query; }
  uint32_t count = 0;
  fce_sem_simple_rank_flat(
  all_weights, all_indices, tfidf_lens, all_ri_vecs,
@@ -1698,6 +1886,12 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
  }
  (*env)->SetObjectArrayElement(env, jresults, i, jres);
  (*env)->DeleteLocalRef(env, jres);
+ /* SetObjectArrayElement can throw; bail before any further JNI call. */
+ if ((*env)->ExceptionCheck(env)) {
+ (*env)->DeleteLocalRef(env, jresults);
+ jresults = NULL;
+ goto flat_cleanup_results;
+ }
  }
 
 flat_cleanup_results:
@@ -1738,6 +1932,11 @@ static jobjectArray build_search_results(JNIEnv *env, fce_sem_ranked_t *results,
  }
  (*env)->SetObjectArrayElement(env, jresults, i, jres);
  (*env)->DeleteLocalRef(env, jres);
+ /* SetObjectArrayElement can throw; bail before any further JNI call. */
+ if ((*env)->ExceptionCheck(env)) {
+ (*env)->DeleteLocalRef(env, jresults);
+ return NULL;
+ }
  }
  return jresults;
 }

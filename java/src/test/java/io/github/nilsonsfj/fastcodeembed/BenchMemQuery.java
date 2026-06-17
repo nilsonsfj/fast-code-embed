@@ -7,7 +7,12 @@ import java.util.*;
 /**
  * Java equivalent of bench_mem_query.c — index directory, measure memory, benchmark queries.
  *
- * Build + run: cd java && ./build.sh memquery <directory> [chunk_size]
+ * Build + run: cd java && ./build.sh memquery <directory> [chunk_size] [--save-load[=path]]
+ *
+ * With --save-load, the finalized corpus is written to a cache file and reloaded
+ * via zero-copy mmap; save/load throughput is reported, query parity against the
+ * in-memory corpus is verified (non-zero exit on mismatch), and the remaining
+ * query benchmarks run on the mmap-loaded corpus.
  */
 public class BenchMemQuery {
 
@@ -42,15 +47,27 @@ public class BenchMemQuery {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
-            System.err.println("Usage: BenchMemQuery <directory> [chunk_size]");
+            System.err.println("Usage: BenchMemQuery <directory> [chunk_size] [--save-load[=path]]");
             System.exit(1);
         }
 
         String rootDir = args[0];
         int chunkSize = DEFAULT_CHUNK_SIZE;
-        if (args.length >= 2) {
-            try { chunkSize = Integer.parseInt(args[1]); } catch (NumberFormatException ignored) {}
-            if (chunkSize <= 0) chunkSize = DEFAULT_CHUNK_SIZE;
+        boolean saveLoad = false;
+        String saveLoadPath = null;
+        for (int i = 1; i < args.length; i++) {
+            String a = args[i];
+            if (a.equals("--save-load")) {
+                saveLoad = true;
+            } else if (a.startsWith("--save-load=")) {
+                saveLoad = true;
+                saveLoadPath = a.substring("--save-load=".length());
+            } else {
+                try {
+                    int cs = Integer.parseInt(a);
+                    if (cs > 0) chunkSize = cs;
+                } catch (NumberFormatException ignored) {}
+            }
         }
 
         long tTotal = System.nanoTime();
@@ -90,7 +107,10 @@ public class BenchMemQuery {
 
         /* ── 3. Finalize corpus ─────────────────────────────────────── */
         String[] docPaths = corp.getDocPaths();
-        corp.clearDocPaths(); /* #3: free path tracking memory */
+        /* Free path-tracking memory before finalize — but only when not saving:
+         * save() persists labels only while the internal path list still lines up
+         * 1:1 with the documents, so keep it intact for the --save-load path. */
+        if (!saveLoad) corp.clearDocPaths(); /* #3: free path tracking memory */
 
         long rssBefore = FastCodeEmbed.getCurrentRssBytes();
         t0 = System.nanoTime();
@@ -118,6 +138,71 @@ public class BenchMemQuery {
         System.out.println("  -- Corpus -----------------------------------------");
         System.out.printf("  Vocabulary:      %d tokens%n", vocab);
         System.out.printf("  Documents:       %d%n", ndocs);
+
+        /* ── 3b. Save / load (mmap cache) ─────────────────────────── */
+        boolean parityFailed = false;
+        if (saveLoad) {
+            String cpath = saveLoadPath;
+            if (cpath == null) {
+                String dir = System.getenv("TMPDIR");
+                if (dir == null || dir.isEmpty()) dir = "/tmp";
+                if (!dir.endsWith("/")) dir = dir + "/";
+                cpath = dir + "fce_bench_corpus.fce";
+            }
+            System.out.println();
+            System.out.println("  -- Save / Load (mmap cache) -----------------------");
+            System.out.printf("  Path: %s%n", cpath);
+
+            long ts = System.nanoTime();
+            corp.save(cpath);
+            double saveMs = (System.nanoTime() - ts) / 1e6;
+            double fsz = Files.size(Path.of(cpath));
+            System.out.printf("  Save:                     %8.1f ms  (%.2f GB, %.0f MB/s)%n",
+                    saveMs, fsz / 1073741824.0, fsz / 1e6 / (saveMs / 1000.0));
+
+            ts = System.nanoTime();
+            Corpus loaded = Corpus.load(cpath);
+            double loadMs = (System.nanoTime() - ts) / 1e6;
+            String[] loadedPaths = loaded.getDocPaths();
+            System.out.printf("  Load:                     %8.1f ms  (%.0f MB/s, %.1fx faster than finalize)%n",
+                    loadMs, fsz / 1e6 / (loadMs / 1000.0), finalizeMs / loadMs);
+            System.out.printf("  Loaded: vocab=%d docs=%d labels=%d%n",
+                    loaded.getTokenCount(), loaded.getDocCount(), loadedPaths.length);
+
+            /* Confirm query results match the in-memory corpus exactly. */
+            String[] pq = {"gpu display drivers", "memory allocation pages", "file system inode"};
+            int identical = 0;
+            for (String q : pq) {
+                SearchResult[] a = FastCodeEmbed.searchQuery(corp, q, 10);
+                SearchResult[] b = FastCodeEmbed.searchQuery(loaded, q, 10);
+                boolean same = (a.length == b.length);
+                for (int j = 0; same && j < a.length; j++) {
+                    if (a[j].getIndex() != b[j].getIndex()
+                        || Math.abs(a[j].getScore() - b[j].getScore()) > 1e-6f) same = false;
+                }
+                if (same) identical++;
+            }
+            System.out.printf("  Query parity vs in-memory corpus: %s (%d/%d identical)%n",
+                    identical == pq.length ? "OK" : "MISMATCH", identical, pq.length);
+
+            if (identical != pq.length) {
+                /* A save/load that visibly fails parity must not have its later
+                 * timings presented as if the loaded representation were
+                 * trustworthy. Drop the loaded corpus, keep the in-memory one,
+                 * and propagate a non-zero exit code. */
+                parityFailed = true;
+                loaded.close();
+                System.out.println("  PARITY MISMATCH: discarding loaded corpus; benchmarks below "
+                        + "run on the in-memory corpus; exit code will be non-zero.");
+            } else {
+                /* Continue the query benchmarks on the mmap-loaded corpus; its
+                 * doc paths are restored from the cache's label table. */
+                corp.close();
+                corp = loaded;
+                docPaths = loadedPaths;
+                System.out.println("  (query benchmarks below run on the mmap-loaded corpus)");
+            }
+        }
 
         /* ── 4. Query benchmarks ──────────────────────────────────── */
 
@@ -239,5 +324,7 @@ public class BenchMemQuery {
         System.out.printf("  Post-build RSS:  %.1f GB%n", rssAfter / 1073741824.0);
 
         corp.close();
+
+        if (parityFailed) System.exit(1);
     }
 }

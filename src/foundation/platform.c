@@ -67,6 +67,13 @@ void fce_munmap(void *addr, size_t size) {
  }
 }
 
+int fce_atomic_replace(const char *tmp_path, const char *final_path) {
+ if (!tmp_path || !final_path) {
+ return -1;
+ }
+ return MoveFileExA(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
+}
+
 uint64_t fce_now_ns(void) {
  LARGE_INTEGER freq, count;
  QueryPerformanceFrequency(&freq);
@@ -167,6 +174,16 @@ void fce_munmap(void *addr, size_t size) {
  if (addr && size > 0) {
  munmap(addr, size);
  }
+}
+
+int fce_atomic_replace(const char *tmp_path, const char *final_path) {
+ if (!tmp_path || !final_path) {
+ return -1;
+ }
+ /* rename() is atomic within a filesystem and replaces an existing
+  * destination, so a concurrent reader sees either the old file or the
+  * fully-written new one — never a torn intermediate. */
+ return rename(tmp_path, final_path) == 0 ? 0 : -1;
 }
 
 /* ── Timing ────────────────────────────────────────────────────── */

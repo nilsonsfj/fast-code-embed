@@ -178,16 +178,36 @@ void fce_sem_vec_add_scaled(fce_sem_vec_t *dst, const fce_sem_vec_t *src, float 
 
 /* ── Per-function semantic data ──────────────────────────────────── */
 
-/* All computed signals for one function. */
+/* All computed signals for one function.
+ *
+ * WARNING FOR DIRECT C CALLERS:
+ * The tfidf_indices array MUST be sorted in strict ascending order (no
+ * duplicates). The two-pointer merge in the sparse TF-IDF cosine scorer
+ * relies on this invariant; unsorted or duplicate indices silently produce
+ * incorrect (too-low) similarity scores. The JNI layer validates this
+ * automatically on marshaled Java arrays; direct C consumers MUST enforce
+ * this themselves before passing fce_sem_func_t to any ranking, search,
+ * or scoring function. See the debug-only FCE_ASSERT_TFIDF_SORTED macro
+ * for a runtime check usable during development. */
 typedef struct {
  int64_t node_id;
  const char *file_path;
  const char *file_ext;
 
  /* Sparse TF-IDF: stored as parallel arrays of (token_index, weight).
- * IMPORTANT: tfidf_indices MUST be sorted in ascending order.
- * The sparse cosine merge relies on this invariant; unsorted input
- * produces silently wrong (too-low) scores. */
+  *
+  * CONTRACT (applies to ALL consumers — JNI, C API, and tests):
+  *   tfidf_indices MUST be sorted in strict ascending order (no duplicates).
+  *
+  * The sparse cosine merge (fce_sparse_tfidf_cosine) uses a two-pointer
+  * scan that assumes ascending order. Violations cause:
+  *   - Unsorted indices: missed matches → artificially low scores.
+  *   - Duplicate indices: desynchronized pointers → incorrect dot product.
+  *
+  * The JNI marshaling layer (marshal_func in fast_code_embed_jni.c) checks
+  * this at runtime. Direct C callers receive NO automatic check in release
+  * builds — enable FCE_ASSERT_TFIDF_SORTED in debug builds to catch
+  * violations early. */
  int *tfidf_indices;
  float *tfidf_weights;
  int tfidf_len;
@@ -244,7 +264,13 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus);
 /* Configure sparse vector storage. Must be called before finalize.
  * When enabled, enriched and doc vectors are stored as top-K non-zero
  * entries per vector (sorted index+value pairs), saving ~60-70% memory.
- * nnz=0 disables sparse mode (dense, default). */
+ * nnz=0 disables sparse mode (dense, default).
+ *
+ * RANK DISTORTION RISK: Sparsification introduces asymmetric magnitude
+ * normalization because document vectors are truncated but queries remain
+ * dense. This can cause non-monotonic rank swapping for diffuse vectors.
+ * Use dense mode (nnz=0) for exact mathematical parity, and sparse mode
+ * only for resource-constrained setups. */
 void fce_sem_corpus_set_sparse(fce_sem_corpus_t *corpus, int nnz);
 
 /* Get IDF weight for a token. Returns 0.0 for unknown tokens. */
@@ -278,6 +304,53 @@ int fce_sem_corpus_token_count(const fce_sem_corpus_t *corpus);
  * a pointer returned by this function, and vice versa. */
 const char *fce_sem_corpus_token_at(const fce_sem_corpus_t *corpus, int index,
  const fce_sem_vec_t **out_vec, float *out_idf);
+
+/* Persist a finalized corpus to a local cache file so it can be reloaded
+ * without re-running the tokenize + finalize pipeline. doc_labels is optional
+ * per-document metadata (e.g. file paths) of length doc_label_count; pass
+ * NULL/0 to omit. Returns 0 on success, -1 on error (corpus not finalized,
+ * unsupported representation, or I/O failure).
+ *
+ * This is a SAME-BUILD cache, not a portable interchange format: the file is
+ * tied to the host byte order and to FCE_SEM_DIM (the 256- vs 768-dim build).
+ * fce_sem_corpus_load rejects any file that does not match the running binary.
+ *
+ * doc_label_count must be either 0 or exactly corpus->doc_count (one label per
+ * document); any other positive count returns -1, matching the invariant the
+ * loader enforces. Labels are stored verbatim; when a cache will be read back
+ * through the Java binding the bytes must be valid modified UTF-8 (Java strings
+ * already are), since the JNI layer hands them to NewStringUTF unchanged.
+ *
+ * The write is atomic: data goes to a sibling temporary file that is renamed
+ * over `path` on success, so a concurrent reader never observes a torn file. */
+int fce_sem_corpus_save(const fce_sem_corpus_t *corpus, const char *path,
+ const char *const *doc_labels, int doc_label_count);
+
+/* Load a corpus written by fce_sem_corpus_save, via zero-copy mmap. Returns a
+ * finalized, queryable corpus, or NULL on error (missing/corrupt/truncated
+ * file, or magic/version/dim/endianness mismatch). Every value the file
+ * supplies that is later used as an index, offset, string, or score input is
+ * range-validated at load; structurally invalid files are rejected, not mapped.
+ *
+ * The returned corpus references the memory mapping until fce_sem_corpus_free,
+ * which unmaps it. Any per-document labels stored in the file are exposed
+ * (zero-copy) via fce_sem_corpus_doc_label below.
+ *
+ * CAVEAT: because the corpus points directly into the mapping, the underlying
+ * file must not be truncated or overwritten while the corpus is live — on POSIX
+ * a shrinking file can fault (SIGBUS) on later access to no-longer-backed pages.
+ * Treat loaded cache files as immutable for the corpus's lifetime; replace them
+ * via atomic rename (as fce_sem_corpus_save does) rather than in-place edits. */
+fce_sem_corpus_t *fce_sem_corpus_load(const char *path);
+
+/* Number of per-document labels carried by a loaded corpus (0 if the corpus
+ * was built in memory or saved without labels). */
+int fce_sem_corpus_doc_label_count(const fce_sem_corpus_t *corpus);
+
+/* Borrowed pointer to document `index`'s label (e.g. its file path), or NULL
+ * if out of range or unavailable. The pointer is valid until the corpus is
+ * freed; copy it if you need to outlive the corpus. */
+const char *fce_sem_corpus_doc_label(const fce_sem_corpus_t *corpus, int index);
 
 /* Free corpus. */
 void fce_sem_corpus_free(fce_sem_corpus_t *corpus);

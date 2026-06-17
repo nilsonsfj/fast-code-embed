@@ -8,6 +8,23 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Corpus cache save/load: `fce_sem_corpus_save` writes a finalized corpus to a
+  single file and `fce_sem_corpus_load` maps it back via zero-copy `mmap`,
+  rebuilding only the small vocabulary hash table. Reloading is dramatically
+  faster than rebuilding (measured ~166× vs. `finalize` on the Linux-source
+  corpus: ~0.24 s load vs. ~39 s build) and shares pages across processes.
+  Optional per-document labels (e.g. file paths) round-trip in the same file and
+  are exposed zero-copy via `fce_sem_corpus_doc_label`. Exposed in Java as
+  `Corpus.save(String)` / `Corpus.load(String)`. The file is a same-build cache
+  (tied to host byte order and `FCE_SEM_DIM`); mismatched or corrupt files are
+  rejected at load. `bench_mem_query` gained a `--save-load[=path]` flag that
+  times save/load and verifies query parity against the in-memory corpus.
+  The loader range-validates every value it later uses as an index, offset,
+  string, or score input (token/label offsets, `doc_freq`, inverted-index
+  sortedness, sparse dimension indices, inverse magnitudes, and header flags),
+  so a truncated or crafted cache is rejected rather than mapped; saves are
+  atomic (written to a sibling temp file then renamed over the destination) so a
+  concurrent reader never observes a partially written file
 - `make install` / `make uninstall` targets that install the static library,
   public headers, and a generated `fast-code-embed.pc` pkg-config file (honors
   `PREFIX` and `DESTDIR`; portable across Linux and macOS), so C consumers can
@@ -24,6 +41,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `h*/m*` priority prefixes from test function names
 
 ### Fixed
+- JNI handle table: a slot could be reused (`alloc_handle`) after `take_handle`
+  cleared its pointer but before in-flight users had drained, letting a
+  concurrent `close` free a corpus another thread was still querying
+  (use-after-free). Slots are now reused only when both unowned and fully
+  drained
+- JNI native allocation failures (`malloc`/`calloc`/`strdup`) in the document
+  add, tokenize, and ranking paths now raise `OutOfMemoryError` instead of
+  silently no-op'ing or returning a bare sentinel; result-array builders check
+  `ExceptionCheck` after `SetObjectArrayElement`
+- `Corpus.addDocsTokenized(names, paths)` no longer misassigns file-path labels
+  when a name tokenizes to zero documents (it routes through the doc-map-aware
+  batch path), so saved caches carry correct labels; `Corpus.load` closes the
+  partially built corpus if label materialization throws
 - Removed the last leftover internal review reference from the
   `.note.GNU-stack` comment in `code_vectors_blob.S`, completing the review-ID
   cleanup

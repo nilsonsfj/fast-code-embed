@@ -1280,6 +1280,21 @@ struct fce_sem_corpus {
  * Built during finalize. Enables fast keyword candidate retrieval. */
  int *inv_offsets; /* inv_offsets[token_id] = start in inv_doc_ids */
  int *inv_doc_ids; /* flat array of unique doc_ids per token */
+
+ /* Non-NULL when this corpus was loaded from a cache file (fce_sem_corpus_load).
+  * The large arrays above (enriched/doc vectors, inv index) and the token_map
+  * keys point INTO this read-only mapping; they must NOT be individually freed.
+  * Only `entries` and the token_map structure itself are heap-owned in that case.
+  * Appended at the end of the struct to preserve the offsetof asserts below. */
+ void *mmap_base;
+ size_t mmap_len;
+
+ /* Optional per-document labels (e.g. file paths) carried in a loaded cache
+  * file. These point into mmap_base (zero-copy) and are NULL/0 for a corpus
+  * built in memory. See fce_sem_corpus_doc_label / _doc_label_count. */
+ const char *label_blob;
+ const uint32_t *label_off;
+ int label_count;
 };
 
 /* These assertions protect the corpus_mirror_t layout in tests/test_semantic.c,
@@ -1764,6 +1779,17 @@ void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
  }
  corpus->entry_count = 0;
  fce_ht_clear(corpus->token_map);
+ /* The pre-existing documents (0..base_doc-1) still hold token IDs
+ * that reference the vocabulary we just destroyed. Leaving them in
+ * place would make any later query read freed / out-of-bounds
+ * entries[] (UAF/OOB). Wipe the documents too so the corpus is left
+ * empty-but-consistent rather than corrupt. doc_count was already
+ * rolled back to base_doc above. */
+ for (int d = 0; d < corpus->doc_count; d++) {
+ free(corpus->doc_token_ids[d]);
+ corpus->doc_token_ids[d] = NULL;
+ }
+ corpus->doc_count = 0;
  }
  }
  invalidate_doc_map(doc_map_out, doc_count);
@@ -1825,6 +1851,12 @@ typedef struct {
  uint16_t indices[FCE_SEM_SPARSE_NNZE]; /* 8 * 2 = 16 bytes */
  float values[FCE_SEM_SPARSE_NNZE]; /* 8 * 4 = 32 bytes */
  const int8_t *dense_int8; /* points into FCE_PRETRAINED_VECTOR_BLOB */
+#ifdef FCE_SEM_DIM_256
+ /* Cached PCA-projected 256-dim vector for dense entries.
+ * Computed once in build_src_entry so the hot enrichment loop
+ * avoids the O(256×768) PCA multiply per neighbor-add. */
+ fce_sem_vec_t projected;
+#endif
 } fce_sem_src_entry_t;
 
 /* Inline helper: initialize a target vector from a sparse/dense source.
@@ -1837,27 +1869,19 @@ static inline void sem_target_init_from_src(fce_sem_vec_t *dst, const fce_sem_sr
  for (int k = 0; k < src->nnz; k++) {
  dst->v[src->indices[k]] = src->values[k];
  }
- } else {
- const int8_t *s = src->dense_int8;
+  } else {
 #ifdef FCE_SEM_DIM_256
- /* PCA projection: center → multiply by 768×256 matrix.
- * Same as fce_sem_random_index so corpus vectors and RI queries
- * are in the same basis. */
- for (int d = 0; d < FCE_SEM_DIM; d++) {
- float sum = 0.0f;
- for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
- sum += ((float)s[k] / FCE_SEM_INT8_MAX - fce_pca_mean[k]) * fce_pca_proj[k][d];
- }
- dst->v[d] = sum;
- }
+ /* Use cached PCA-projected vector (computed once in build_src_entry). */
+ memcpy(dst->v, src->projected.v, sizeof(dst->v));
 #else
- const float inv127 = FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX;
- /* Do NOT replace with fce_init_f32_from_i8_768() — see note in fce_sem_vec_add_scaled. */
- for (int d = 0; d < FCE_SEM_DIM; d++) {
- dst->v[d] = inv127 * (float)s[d];
- }
+  const int8_t *s = src->dense_int8;
+  const float inv127 = FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX;
+  /* Do NOT replace with fce_init_f32_from_i8_768() — see note in fce_sem_vec_add_scaled. */
+  for (int d = 0; d < FCE_SEM_DIM; d++) {
+  dst->v[d] = inv127 * (float)s[d];
+  }
 #endif
- }
+  }
 }
 
 /* Inline helper: add weighted source into target.
@@ -1871,25 +1895,22 @@ static inline void sem_vec_add_src_scaled(fce_sem_vec_t *dst, const fce_sem_src_
  for (int k = 0; k < src->nnz; k++) {
  dst->v[src->indices[k]] += scale * src->values[k];
  }
- } else {
- const int8_t *s = src->dense_int8;
+  } else {
 #ifdef FCE_SEM_DIM_256
- /* PCA projection: center → multiply by 768×256 matrix, then scale. */
+ /* Use cached PCA-projected vector, then scale-add. */
+ const float *proj = src->projected.v;
  for (int d = 0; d < FCE_SEM_DIM; d++) {
- float sum = 0.0f;
- for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
- sum += ((float)s[k] / FCE_SEM_INT8_MAX - fce_pca_mean[k]) * fce_pca_proj[k][d];
- }
- dst->v[d] += scale * sum;
+ dst->v[d] += scale * proj[d];
  }
 #else
- const float mul = scale * (FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX);
- /* Do NOT replace with fce_axpy_i8_768() — see note in fce_sem_vec_add_scaled. */
- for (int d = 0; d < FCE_SEM_DIM; d++) {
- dst->v[d] += mul * (float)s[d];
- }
+  const int8_t *s = src->dense_int8;
+  const float mul = scale * (FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX);
+  /* Do NOT replace with fce_axpy_i8_768() — see note in fce_sem_vec_add_scaled. */
+  for (int d = 0; d < FCE_SEM_DIM; d++) {
+  dst->v[d] += mul * (float)s[d];
+  }
 #endif
- }
+  }
 }
 
 /* Pass 1 context: uses sparse/int8 tagged sources (most memory-efficient).
@@ -2179,6 +2200,18 @@ static void build_src_entry(const char *token, fce_sem_src_entry_t *out) {
  if (idx >= 0 && idx < FCE_PRETRAINED_TOKEN_COUNT) {
  out->is_sparse = 0;
  out->dense_int8 = fce_pretrained_vec_at(idx);
+#ifdef FCE_SEM_DIM_256
+ /* Cache PCA-projected 256-dim vector so the hot enrichment
+ * loop avoids the O(256×768) PCA multiply per neighbor-add. */
+ const int8_t *pvec = out->dense_int8;
+ for (int d = 0; d < FCE_SEM_DIM; d++) {
+ float sum = 0.0f;
+ for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
+ sum += ((float)pvec[k] / FCE_SEM_INT8_MAX - fce_pca_mean[k]) * fce_pca_proj[k][d];
+ }
+ out->projected.v[d] = sum;
+ }
+#endif
  atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
  return;
  }
@@ -2281,6 +2314,8 @@ static reverse_index_t *build_reverse_index(fce_sem_corpus_t *corpus) {
  * memory limits (1B occurrences ≈ 8GB for cooccur_pos_t). Exceeding this would
  * indicate either pathological input or adversarial DoS. */
  const int64_t MAX_OCCURRENCES = ((int64_t)1 << 30);
+ _Static_assert(((int64_t)1 << 30) <= INT32_MAX,
+ "MAX_OCCURRENCES must fit in int32 (rev->offsets[])");
  if (total > MAX_OCCURRENCES) {
  char total_buf[32], max_buf[32];
  snprintf(total_buf, sizeof total_buf, "%" PRId64, total);
@@ -3208,6 +3243,19 @@ void fce_sem_corpus_free(fce_sem_corpus_t *corpus) {
  if (!corpus) {
  return;
  }
+ /* Cache-loaded corpus: the large arrays and the token_map keys point into the
+  * read-only mmap'd file, not the heap. Free only the heap-owned pieces (the
+  * entries index array and the hash-table structure — NOT its keys), then unmap
+  * the file. */
+ if (corpus->mmap_base) {
+ free(corpus->entries);
+ if (corpus->token_map) {
+ fce_ht_free(corpus->token_map); /* keys borrow the mapping; do not free them */
+ }
+ fce_munmap(corpus->mmap_base, corpus->mmap_len);
+ free(corpus);
+ return;
+ }
  /* Don't free entries[i].token — they point at hash table interned keys,
  * which are freed by fce_free_ht_kv below. */
  free(corpus->entries);
@@ -3234,6 +3282,677 @@ void fce_sem_corpus_free(fce_sem_corpus_t *corpus) {
  free(corpus->inv_offsets);
  free(corpus->inv_doc_ids);
  free(corpus);
+}
+
+/* ── Corpus cache: save / load ───────────────────────────────────────
+ * Persist a finalized corpus to a local cache file and reload it via a
+ * zero-copy mmap. This is a SAME-BUILD cache, not a portable interchange
+ * format: the file records the host byte order and FCE_SEM_DIM, and load()
+ * refuses any file that does not match the running binary.
+ *
+ * On load, the large arrays (enriched/doc vectors, inverted index) and the
+ * token strings point directly into the read-only mapping; only the small
+ * token_map hash table and the entries[] index array are rebuilt on the heap.
+ * The matching teardown is the mmap_base branch in fce_sem_corpus_free. */
+
+#define FCE_CACHE_VERSION 1u
+#define FCE_CACHE_ENDIAN_MARKER 0x01020304u
+#define FCE_CACHE_FLAG_ENR_SPARSE 0x1u
+#define FCE_CACHE_FLAG_DOC_SPARSE 0x2u
+/* All currently-defined flag bits. The loader rejects any file that sets a bit
+ * outside this mask so an older binary cannot silently misinterpret a cache
+ * written by a future version that gives those bits meaning. */
+#define FCE_CACHE_KNOWN_FLAGS (FCE_CACHE_FLAG_ENR_SPARSE | FCE_CACHE_FLAG_DOC_SPARSE)
+
+enum {
+ FCE_SEC_TOKEN_BLOB = 0, /* packed NUL-terminated token strings */
+ FCE_SEC_TOKEN_OFFSETS, /* uint32[entry_count+1] into token blob */
+ FCE_SEC_DOC_FREQ, /* int32[entry_count] */
+ FCE_SEC_ENR_DENSE, /* int8[entry_count*DIM] */
+ FCE_SEC_ENR_SPARSE_IDX, /* uint16[entry_count*nnz] */
+ FCE_SEC_ENR_SPARSE_VAL, /* int8[entry_count*nnz] */
+ FCE_SEC_DOC_DENSE, /* int8[doc_count*DIM] */
+ FCE_SEC_DOC_SPARSE_IDX, /* uint16[doc_count*nnz] */
+ FCE_SEC_DOC_SPARSE_VAL, /* int8[doc_count*nnz] */
+ FCE_SEC_DOC_INVMAG, /* float[doc_count] */
+ FCE_SEC_INV_OFFSETS, /* int32[entry_count+1] */
+ FCE_SEC_INV_DOC_IDS, /* int32[inv_offsets[entry_count]] */
+ FCE_SEC_LABEL_OFFSETS, /* uint32[doc_label_count+1] */
+ FCE_SEC_LABEL_BLOB, /* packed NUL-terminated doc labels */
+ FCE_SEC_COUNT
+};
+
+typedef struct {
+ uint64_t offset;
+ uint64_t length;
+} fce_cache_section_t;
+
+typedef struct {
+ char magic[4]; /* "FCES" */
+ uint32_t version;
+ uint32_t endian_marker; /* host order; load rejects a swapped value */
+ uint32_t dim; /* FCE_SEM_DIM */
+ uint32_t flags;
+ int32_t entry_count;
+ int32_t doc_count;
+ int32_t sparse_nnz;
+ int32_t doc_label_count;
+ uint32_t reserved;
+ fce_cache_section_t sections[FCE_SEC_COUNT];
+} fce_cache_header_t;
+
+_Static_assert(offsetof(fce_cache_header_t, sections) == 40,
+ "cache header section table must start at offset 40");
+_Static_assert(sizeof(fce_cache_section_t) == 16, "cache section entry must be 16 bytes");
+/* The inverted-index sections are stored as int32 on disk and aliased as the
+ * corpus's `int *` fields on load, so `int` must be exactly 32 bits. */
+_Static_assert(sizeof(int) == 4, "cache load aliases int32 sections as int *");
+
+static inline uint64_t fce_cache_align16(uint64_t v) {
+ return (v + 15u) & ~(uint64_t)15u;
+}
+
+/* Source descriptor for one section while saving: a borrowed pointer and its
+ * byte length (len == 0 means the section is absent). */
+typedef struct {
+ const void *data;
+ uint64_t len;
+} fce_sec_src_t;
+
+int fce_sem_corpus_save(const fce_sem_corpus_t *corpus, const char *path,
+ const char *const *doc_labels, int doc_label_count) {
+ if (!corpus || !path) {
+ return -1;
+ }
+ if (!corpus->finalized) {
+ fce_log_warn("fce_sem_corpus_save: corpus is not finalized");
+ return -1;
+ }
+ if (corpus->enriched_vecs) {
+ /* Rare float32-fallback representation (int8 re-quant OOMed during
+  * finalize). The cache format stores only the int8/sparse forms, so
+  * refuse rather than silently changing the scoring representation. */
+ fce_log_warn("fce_sem_corpus_save: float-fallback enriched vectors cannot be cached");
+ return -1;
+ }
+ if (doc_label_count < 0 || (doc_label_count > 0 && !doc_labels)) {
+ return -1;
+ }
+ /* Labels are per-document, so a non-empty label set must cover exactly one
+  * label per document. The loader enforces the same invariant
+  * (label_count == doc_count), so refuse here rather than write a cache the
+  * library will later refuse to load. */
+ if (doc_label_count > 0 && doc_label_count != corpus->doc_count) {
+ fce_log_warn("fce_sem_corpus_save: doc_label_count must equal doc_count");
+ return -1;
+ }
+
+ const int entry_count = corpus->entry_count;
+ const int doc_count = corpus->doc_count;
+ const int nnz = corpus->sparse_nnz;
+ const bool enr_sparse = corpus->enriched_sparse_idx != NULL;
+ const bool doc_sparse = corpus->doc_sparse_idx != NULL;
+
+ if (entry_count > 0 && !enr_sparse && !corpus->enriched_vecs_q) {
+ fce_log_warn("fce_sem_corpus_save: no enriched vectors to cache");
+ return -1;
+ }
+ if (doc_count > 0 && !doc_sparse && !corpus->doc_vectors_q) {
+ fce_log_warn("fce_sem_corpus_save: no document vectors to cache");
+ return -1;
+ }
+
+ int rc = -1;
+ FILE *f = NULL;
+ char *tmp_path = NULL;
+ uint32_t *token_off = NULL;
+ char *token_blob = NULL;
+ int32_t *doc_freq = NULL;
+ uint32_t *label_off = NULL;
+ char *label_blob = NULL;
+
+ /* Pack token strings (NUL-terminated so they stay valid C strings in the
+  * mapping) and their offsets. */
+ token_off = malloc(((size_t)entry_count + 1) * sizeof(uint32_t));
+ if (!token_off) goto done;
+ uint64_t blob_len = 0;
+ for (int i = 0; i < entry_count; i++) {
+ token_off[i] = (uint32_t)blob_len;
+ blob_len += (uint64_t)strlen(corpus->entries[i].token) + 1;
+ if (blob_len > UINT32_MAX) {
+ fce_log_warn("fce_sem_corpus_save: token blob exceeds 4 GiB");
+ goto done;
+ }
+ }
+ token_off[entry_count] = (uint32_t)blob_len;
+ token_blob = blob_len ? malloc((size_t)blob_len) : NULL;
+ if (blob_len && !token_blob) goto done;
+ for (int i = 0; i < entry_count; i++) {
+ size_t n = strlen(corpus->entries[i].token) + 1;
+ memcpy(token_blob + token_off[i], corpus->entries[i].token, n);
+ }
+
+ /* doc_freq is interleaved inside entries[]; flatten to a contiguous array. */
+ if (entry_count > 0) {
+ doc_freq = malloc((size_t)entry_count * sizeof(int32_t));
+ if (!doc_freq) goto done;
+ for (int i = 0; i < entry_count; i++) {
+ doc_freq[i] = corpus->entries[i].doc_freq;
+ }
+ }
+
+ /* Pack optional doc labels. */
+ if (doc_label_count > 0) {
+ label_off = malloc(((size_t)doc_label_count + 1) * sizeof(uint32_t));
+ if (!label_off) goto done;
+ uint64_t lblob = 0;
+ for (int i = 0; i < doc_label_count; i++) {
+ label_off[i] = (uint32_t)lblob;
+ const char *s = doc_labels[i] ? doc_labels[i] : "";
+ lblob += (uint64_t)strlen(s) + 1;
+ if (lblob > UINT32_MAX) {
+ fce_log_warn("fce_sem_corpus_save: label blob exceeds 4 GiB");
+ goto done;
+ }
+ }
+ label_off[doc_label_count] = (uint32_t)lblob;
+ label_blob = lblob ? malloc((size_t)lblob) : NULL;
+ if (lblob && !label_blob) goto done;
+ for (int i = 0; i < doc_label_count; i++) {
+ const char *s = doc_labels[i] ? doc_labels[i] : "";
+ size_t n = strlen(s) + 1;
+ memcpy(label_blob + label_off[i], s, n);
+ }
+ }
+
+ uint64_t inv_total = (corpus->inv_offsets && entry_count > 0)
+ ? (uint64_t)corpus->inv_offsets[entry_count] : 0;
+
+ /* Describe each section: pointer + byte length (0 = absent). */
+ fce_sec_src_t sec[FCE_SEC_COUNT] = {0};
+ sec[FCE_SEC_TOKEN_BLOB] = (fce_sec_src_t){token_blob, blob_len};
+ sec[FCE_SEC_TOKEN_OFFSETS] = (fce_sec_src_t){token_off, ((uint64_t)entry_count + 1) * sizeof(uint32_t)};
+ sec[FCE_SEC_DOC_FREQ] = (fce_sec_src_t){doc_freq, (uint64_t)entry_count * sizeof(int32_t)};
+ if (enr_sparse) {
+ sec[FCE_SEC_ENR_SPARSE_IDX] = (fce_sec_src_t){corpus->enriched_sparse_idx, (uint64_t)entry_count * nnz * sizeof(uint16_t)};
+ sec[FCE_SEC_ENR_SPARSE_VAL] = (fce_sec_src_t){corpus->enriched_sparse_val, (uint64_t)entry_count * nnz};
+ } else {
+ sec[FCE_SEC_ENR_DENSE] = (fce_sec_src_t){corpus->enriched_vecs_q, (uint64_t)entry_count * FCE_SEM_DIM};
+ }
+ if (doc_sparse) {
+ sec[FCE_SEC_DOC_SPARSE_IDX] = (fce_sec_src_t){corpus->doc_sparse_idx, (uint64_t)doc_count * nnz * sizeof(uint16_t)};
+ sec[FCE_SEC_DOC_SPARSE_VAL] = (fce_sec_src_t){corpus->doc_sparse_val, (uint64_t)doc_count * nnz};
+ } else {
+ sec[FCE_SEC_DOC_DENSE] = (fce_sec_src_t){corpus->doc_vectors_q, (uint64_t)doc_count * FCE_SEM_DIM};
+ }
+ if (corpus->doc_vectors_q_inv_mag) {
+ sec[FCE_SEC_DOC_INVMAG] = (fce_sec_src_t){corpus->doc_vectors_q_inv_mag, (uint64_t)doc_count * sizeof(float)};
+ }
+ if (corpus->inv_offsets) {
+ sec[FCE_SEC_INV_OFFSETS] = (fce_sec_src_t){corpus->inv_offsets, ((uint64_t)entry_count + 1) * sizeof(int32_t)};
+ sec[FCE_SEC_INV_DOC_IDS] = (fce_sec_src_t){corpus->inv_doc_ids, inv_total * sizeof(int32_t)};
+ }
+ if (doc_label_count > 0) {
+ sec[FCE_SEC_LABEL_OFFSETS] = (fce_sec_src_t){label_off, ((uint64_t)doc_label_count + 1) * sizeof(uint32_t)};
+ sec[FCE_SEC_LABEL_BLOB] = (fce_sec_src_t){label_blob, label_off[doc_label_count]};
+ }
+
+ fce_cache_header_t hdr;
+ memset(&hdr, 0, sizeof(hdr));
+ memcpy(hdr.magic, "FCES", 4);
+ hdr.version = FCE_CACHE_VERSION;
+ hdr.endian_marker = FCE_CACHE_ENDIAN_MARKER;
+ hdr.dim = (uint32_t)FCE_SEM_DIM;
+ hdr.flags = (enr_sparse ? FCE_CACHE_FLAG_ENR_SPARSE : 0u) |
+ (doc_sparse ? FCE_CACHE_FLAG_DOC_SPARSE : 0u);
+ hdr.entry_count = entry_count;
+ hdr.doc_count = doc_count;
+ hdr.sparse_nnz = nnz;
+ hdr.doc_label_count = doc_label_count;
+
+ uint64_t pos = sizeof(hdr);
+ for (int i = 0; i < FCE_SEC_COUNT; i++) {
+ if (sec[i].len == 0) {
+ continue;
+ }
+ pos = fce_cache_align16(pos);
+ hdr.sections[i].offset = pos;
+ hdr.sections[i].length = sec[i].len;
+ pos += sec[i].len;
+ }
+
+ /* Write to a sibling temporary file, then atomically rename it over the
+  * final path. A concurrent reader calling fce_sem_corpus_load() therefore
+  * sees either the previous cache or the complete new one, never a
+  * half-written file mid-fwrite. */
+ size_t plen = strlen(path);
+ tmp_path = malloc(plen + 16);
+ if (!tmp_path) goto done;
+ memcpy(tmp_path, path, plen);
+ memcpy(tmp_path + plen, ".tmp", 5); /* includes NUL */
+
+ f = fopen(tmp_path, "wb");
+ if (!f) {
+ fce_log_warn("fce_sem_corpus_save: cannot open file for writing");
+ goto done;
+ }
+ if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) goto write_err;
+ uint64_t cur = sizeof(hdr);
+ for (int i = 0; i < FCE_SEC_COUNT; i++) {
+ if (sec[i].len == 0) {
+ continue;
+ }
+ /* pad to the section's aligned offset */
+ while (cur < hdr.sections[i].offset) {
+ if (fputc(0, f) == EOF) goto write_err;
+ cur++;
+ }
+ if (fwrite(sec[i].data, 1, (size_t)sec[i].len, f) != (size_t)sec[i].len) {
+ goto write_err;
+ }
+ cur += sec[i].len;
+ }
+ if (fflush(f) != 0 || ferror(f)) goto write_err;
+ if (fclose(f) != 0) {
+ f = NULL;
+ fce_log_warn("fce_sem_corpus_save: error closing cache file");
+ remove(tmp_path);
+ goto done;
+ }
+ f = NULL;
+ if (fce_atomic_replace(tmp_path, path) != 0) {
+ fce_log_warn("fce_sem_corpus_save: error finalizing cache file");
+ remove(tmp_path);
+ goto done;
+ }
+ rc = 0;
+ goto done;
+
+write_err:
+ fce_log_warn("fce_sem_corpus_save: write error");
+ if (f) {
+ fclose(f);
+ f = NULL;
+ }
+ if (tmp_path) remove(tmp_path);
+done:
+ if (f) fclose(f);
+ free(tmp_path);
+ free(token_off);
+ free(token_blob);
+ free(doc_freq);
+ free(label_off);
+ free(label_blob);
+ return rc;
+}
+
+/* Validate one section: present (len>0) sections must be 16-aligned and fully
+ * inside the file; absent sections must have length 0. Returns false on any
+ * violation. `want` is the exact expected byte length. */
+static bool fce_cache_sec_ok(const fce_cache_header_t *hdr, int idx,
+ uint64_t want, size_t file_size) {
+ uint64_t off = hdr->sections[idx].offset;
+ uint64_t len = hdr->sections[idx].length;
+ if (len != want) {
+ return false;
+ }
+ if (len == 0) {
+ return true;
+ }
+ if ((off & 15u) != 0 || off < sizeof(fce_cache_header_t)) {
+ return false;
+ }
+ if (off > file_size || len > (uint64_t)file_size - off) {
+ return false;
+ }
+ return true;
+}
+
+fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
+ if (!path) {
+ return NULL;
+ }
+
+ size_t size = 0;
+ void *base = fce_mmap_read(path, &size);
+ if (!base) {
+ return NULL;
+ }
+ if (size < sizeof(fce_cache_header_t)) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+
+ fce_cache_header_t hdr;
+ memcpy(&hdr, base, sizeof(hdr));
+ if (memcmp(hdr.magic, "FCES", 4) != 0 ||
+ hdr.version != FCE_CACHE_VERSION ||
+ hdr.endian_marker != FCE_CACHE_ENDIAN_MARKER ||
+ hdr.dim != (uint32_t)FCE_SEM_DIM ||
+ (hdr.flags & ~(uint32_t)FCE_CACHE_KNOWN_FLAGS) != 0) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+
+ const int entry_count = hdr.entry_count;
+ const int doc_count = hdr.doc_count;
+ const int nnz = hdr.sparse_nnz;
+ const int label_count = hdr.doc_label_count;
+ const bool enr_sparse = (hdr.flags & FCE_CACHE_FLAG_ENR_SPARSE) != 0;
+ const bool doc_sparse = (hdr.flags & FCE_CACHE_FLAG_DOC_SPARSE) != 0;
+
+ if (entry_count < 0 || entry_count > FCE_SEM_MAX_ENTRY_COUNT ||
+ doc_count < 0 || doc_count > FCE_SEM_MAX_DOC_COUNT ||
+ nnz < 0 || nnz > FCE_SEM_DIM || label_count < 0 ||
+ ((enr_sparse || doc_sparse) && nnz <= 0) ||
+ (label_count > 0 && label_count != doc_count)) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+
+ /* Validate token offsets first, then derive the blob length from it. */
+ bool ok = fce_cache_sec_ok(&hdr, FCE_SEC_TOKEN_OFFSETS,
+ ((uint64_t)entry_count + 1) * sizeof(uint32_t), size);
+ const uint32_t *tok_off = ok
+ ? (const uint32_t *)((const char *)base + hdr.sections[FCE_SEC_TOKEN_OFFSETS].offset)
+ : NULL;
+ uint64_t tok_blob_len = (ok && entry_count >= 0) ? tok_off[entry_count] : 0;
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_TOKEN_BLOB, tok_blob_len, size);
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_FREQ, (uint64_t)entry_count * sizeof(int32_t), size);
+
+ if (enr_sparse) {
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_SPARSE_IDX, (uint64_t)entry_count * nnz * sizeof(uint16_t), size);
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_SPARSE_VAL, (uint64_t)entry_count * nnz, size);
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_DENSE, 0, size);
+ } else {
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_DENSE, (uint64_t)entry_count * FCE_SEM_DIM, size);
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_SPARSE_IDX, 0, size);
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_SPARSE_VAL, 0, size);
+ }
+ if (doc_sparse) {
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_SPARSE_IDX, (uint64_t)doc_count * nnz * sizeof(uint16_t), size);
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_SPARSE_VAL, (uint64_t)doc_count * nnz, size);
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_DENSE, 0, size);
+ } else {
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_DENSE, (uint64_t)doc_count * FCE_SEM_DIM, size);
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_SPARSE_IDX, 0, size);
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_SPARSE_VAL, 0, size);
+ }
+
+ /* inv-mag is required whenever the corpus has documents: scoring normalizes
+  * every candidate by doc_vectors_q_inv_mag[i], and a missing section would
+  * silently degrade all scores to the neutral value (looking "loaded" while
+  * returning meaningless rankings). Absent is only legal for an empty corpus. */
+ uint64_t invmag_len = hdr.sections[FCE_SEC_DOC_INVMAG].length;
+ if (doc_count > 0) {
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_INVMAG, (uint64_t)doc_count * sizeof(float), size);
+ } else {
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_INVMAG, 0, size);
+ }
+
+ /* Inverted index is optional. */
+ uint64_t invoff_len = hdr.sections[FCE_SEC_INV_OFFSETS].length;
+ const int32_t *inv_off = NULL;
+ if (invoff_len != 0) {
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_INV_OFFSETS, ((uint64_t)entry_count + 1) * sizeof(int32_t), size);
+ if (ok) {
+ inv_off = (const int32_t *)((const char *)base + hdr.sections[FCE_SEC_INV_OFFSETS].offset);
+ uint64_t inv_total = (entry_count > 0 && inv_off[entry_count] >= 0)
+ ? (uint64_t)inv_off[entry_count] : 0;
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_INV_DOC_IDS, inv_total * sizeof(int32_t), size);
+ }
+ } else {
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_INV_DOC_IDS, 0, size);
+ }
+
+ /* Labels. */
+ const uint32_t *lab_off = NULL;
+ if (label_count > 0) {
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_LABEL_OFFSETS, ((uint64_t)label_count + 1) * sizeof(uint32_t), size);
+ if (ok) {
+ lab_off = (const uint32_t *)((const char *)base + hdr.sections[FCE_SEC_LABEL_OFFSETS].offset);
+ ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_LABEL_BLOB, lab_off[label_count], size);
+ }
+ }
+
+ if (!ok) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+
+ /* Section non-overlap: each section was bounds-checked independently above,
+  * but two sections aliasing the same bytes would silently corrupt scoring
+  * (e.g. doc vectors reading token bytes). Reject any pairwise overlap. */
+ for (int i = 0; i < FCE_SEC_COUNT; i++) {
+ if (hdr.sections[i].length == 0) continue;
+ uint64_t ai = hdr.sections[i].offset, aj = ai + hdr.sections[i].length;
+ for (int j = i + 1; j < FCE_SEC_COUNT; j++) {
+ if (hdr.sections[j].length == 0) continue;
+ uint64_t bi = hdr.sections[j].offset, bj = bi + hdr.sections[j].length;
+ if (ai < bj && bi < aj) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ }
+ }
+
+ /* Content validation. The bounds checks above guarantee each section lies
+  * within the file, but the *values* inside still come from an untrusted
+  * mapping and are used as array indices or C strings at query time. Reject
+  * anything out of range here rather than fault (or worse, write OOB) later. */
+ {
+ const char *vb = (const char *)base;
+
+ /* Token offsets must be monotonic, bounded by the blob length, and each
+  * token NUL-terminated inside its slice (fce_ht_set runs strlen on it). */
+ if (entry_count > 0) {
+ const char *blob = vb + hdr.sections[FCE_SEC_TOKEN_BLOB].offset;
+ if (tok_off[0] != 0) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ for (int i = 0; i < entry_count; i++) {
+ uint32_t s = tok_off[i], e = tok_off[i + 1];
+ if (e < s || (uint64_t)e > tok_blob_len ||
+ memchr(blob + s, '\0', (size_t)(e - s)) == NULL) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ }
+
+ /* Document frequency feeds IDF (logf(doc_count/df)) and candidate
+  * pre-sizing (sum of df). For a finalized corpus every token appears in
+  * at least one and at most doc_count documents; out-of-range values
+  * would produce negative/NaN IDF or corrupt allocation sizing. */
+ const int32_t *df = (const int32_t *)(vb + hdr.sections[FCE_SEC_DOC_FREQ].offset);
+ for (int i = 0; i < entry_count; i++) {
+ if (df[i] <= 0 || df[i] > doc_count) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ }
+ }
+
+ /* Sparse dimension indices index a DIM-sized dequant buffer (v[idx]); the
+  * only legal values are [0, FCE_SEM_DIM) or the 0xFFFF early-stop sentinel. */
+ if (enr_sparse) {
+ const uint16_t *idx = (const uint16_t *)(vb + hdr.sections[FCE_SEC_ENR_SPARSE_IDX].offset);
+ size_t n = (size_t)entry_count * (size_t)nnz;
+ for (size_t i = 0; i < n; i++) {
+ if (idx[i] != 0xFFFFu && idx[i] >= FCE_SEM_DIM) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ }
+ }
+ if (doc_sparse) {
+ const uint16_t *idx = (const uint16_t *)(vb + hdr.sections[FCE_SEC_DOC_SPARSE_IDX].offset);
+ size_t n = (size_t)doc_count * (size_t)nnz;
+ for (size_t i = 0; i < n; i++) {
+ if (idx[i] != 0xFFFFu && idx[i] >= FCE_SEM_DIM) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ }
+ }
+
+ /* Inverse magnitudes scale every cosine score; a NaN/Inf or negative value
+  * would poison ranking. Require each to be finite and >= 0. */
+ if (doc_count > 0) {
+ const float *im = (const float *)(vb + hdr.sections[FCE_SEC_DOC_INVMAG].offset);
+ for (int i = 0; i < doc_count; i++) {
+ if (!isfinite(im[i]) || im[i] < 0.0f) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ }
+ }
+
+ /* Inverted index: offsets must start at 0, be monotonic, and stay within
+  * inv_doc_ids; every doc id must index a real document. The search path
+  * uses these as [start,end) ranges and as doc/bitmap indices unchecked. */
+ if (inv_off) {
+ if (inv_off[entry_count] < 0 || inv_off[0] != 0) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ uint64_t inv_total = (uint64_t)inv_off[entry_count];
+ for (int t = 0; t < entry_count; t++) {
+ if (inv_off[t] < 0 || inv_off[t + 1] < inv_off[t] ||
+ (uint64_t)inv_off[t + 1] > inv_total) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ }
+ const int32_t *ids = (const int32_t *)(vb + hdr.sections[FCE_SEC_INV_DOC_IDS].offset);
+ /* Each token's doc-id list must be in range AND strictly ascending. The
+  * score callbacks (idf_score_fn / tfidf_mass_score_fn) binary-search
+  * within [inv_off[t], inv_off[t+1]); an unsorted or duplicated list makes
+  * the search silently miss real candidates and rank inconsistently. The
+  * build path documents this as an invariant, so enforce it on load. */
+ for (int t = 0; t < entry_count; t++) {
+ int32_t s = inv_off[t], e = inv_off[t + 1];
+ for (int32_t j = s; j < e; j++) {
+ if (ids[j] < 0 || ids[j] >= doc_count ||
+ (j > s && ids[j] <= ids[j - 1])) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ }
+ }
+ }
+
+ /* Labels are returned to callers (and to Java's NewStringUTF) as bare C
+  * strings pointing into the mapping. Validate offset 0 is 0, offsets are
+  * monotonic and within the blob, and every label slice is NUL-terminated;
+  * otherwise a crafted cache could drive an out-of-bounds read at the point
+  * a label is read. */
+ if (label_count > 0 && lab_off) {
+ const char *lblob = vb + hdr.sections[FCE_SEC_LABEL_BLOB].offset;
+ uint64_t lblob_len = lab_off[label_count];
+ if (lab_off[0] != 0) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ for (int i = 0; i < label_count; i++) {
+ uint32_t s = lab_off[i], e = lab_off[i + 1];
+ if (e < s || (uint64_t)e > lblob_len ||
+ memchr(lblob + s, '\0', (size_t)(e - s)) == NULL) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ }
+ }
+ }
+
+ fce_sem_corpus_t *c = calloc(1, sizeof(*c));
+ if (!c) {
+ fce_munmap(base, size);
+ return NULL;
+ }
+ /* Take ownership of the mapping immediately so any error below can route
+  * through fce_sem_corpus_free's mmap_base branch (which munmaps). */
+ c->mmap_base = base;
+ c->mmap_len = size;
+ c->entry_count = entry_count;
+ c->doc_count = doc_count;
+ c->sparse_nnz = nnz;
+ c->finalized = true;
+
+ const char *b = (const char *)base;
+ if (enr_sparse) {
+ c->enriched_sparse_idx = (uint16_t *)(uintptr_t)(b + hdr.sections[FCE_SEC_ENR_SPARSE_IDX].offset);
+ c->enriched_sparse_val = (int8_t *)(uintptr_t)(b + hdr.sections[FCE_SEC_ENR_SPARSE_VAL].offset);
+ } else if (entry_count > 0) {
+ c->enriched_vecs_q = (int8_t *)(uintptr_t)(b + hdr.sections[FCE_SEC_ENR_DENSE].offset);
+ }
+ if (doc_sparse) {
+ c->doc_sparse_idx = (uint16_t *)(uintptr_t)(b + hdr.sections[FCE_SEC_DOC_SPARSE_IDX].offset);
+ c->doc_sparse_val = (int8_t *)(uintptr_t)(b + hdr.sections[FCE_SEC_DOC_SPARSE_VAL].offset);
+ } else if (doc_count > 0) {
+ c->doc_vectors_q = (int8_t *)(uintptr_t)(b + hdr.sections[FCE_SEC_DOC_DENSE].offset);
+ }
+ if (invmag_len != 0) {
+ c->doc_vectors_q_inv_mag = (float *)(uintptr_t)(b + hdr.sections[FCE_SEC_DOC_INVMAG].offset);
+ }
+ if (inv_off) {
+ c->inv_offsets = (int *)(uintptr_t)inv_off;
+ c->inv_doc_ids = (int *)(uintptr_t)(b + hdr.sections[FCE_SEC_INV_DOC_IDS].offset);
+ }
+
+ /* Rebuild the entries[] index array (small) with token pointers into the
+  * mapping, then re-intern them into a fresh hash table. */
+ if (entry_count > 0) {
+ c->entries = malloc((size_t)entry_count * sizeof(corpus_entry_t));
+ if (!c->entries) {
+ fce_sem_corpus_free(c);
+ return NULL;
+ }
+ c->entry_cap = entry_count;
+ const char *blob = b + hdr.sections[FCE_SEC_TOKEN_BLOB].offset;
+ const int32_t *df = (const int32_t *)(b + hdr.sections[FCE_SEC_DOC_FREQ].offset);
+ for (int i = 0; i < entry_count; i++) {
+ c->entries[i].token = (char *)(uintptr_t)(blob + tok_off[i]);
+ c->entries[i].doc_freq = df[i];
+ }
+ }
+
+ uint32_t init_cap = entry_count > 0 ? (uint32_t)entry_count + (uint32_t)entry_count / 2u + 16u
+ : FCE_CORPUS_INIT_CAP;
+ c->token_map = fce_ht_create(init_cap);
+ if (!c->token_map) {
+ fce_sem_corpus_free(c);
+ return NULL;
+ }
+ for (int i = 0; i < entry_count; i++) {
+ bool inserted = false;
+ fce_ht_set(c->token_map, c->entries[i].token, token_idx_to_ptr(i), &inserted);
+ if (!inserted) {
+ fce_sem_corpus_free(c);
+ return NULL;
+ }
+ }
+
+ /* Doc labels stay zero-copy: point at the mapped sections. Valid until the
+  * corpus is freed (which unmaps the file). */
+ if (label_count > 0 && lab_off) {
+ c->label_off = lab_off;
+ c->label_blob = b + hdr.sections[FCE_SEC_LABEL_BLOB].offset;
+ c->label_count = label_count;
+ }
+
+ return c;
+}
+
+int fce_sem_corpus_doc_label_count(const fce_sem_corpus_t *corpus) {
+ return corpus ? corpus->label_count : 0;
+}
+
+const char *fce_sem_corpus_doc_label(const fce_sem_corpus_t *corpus, int index) {
+ if (!corpus || !corpus->label_blob || index < 0 || index >= corpus->label_count) {
+ return NULL;
+ }
+ return corpus->label_blob + corpus->label_off[index];
 }
 
 /* precompute per-corpus-item slash counts so that
@@ -3331,7 +4050,9 @@ float fce_sem_proximity(const char *path_a, const char *path_b) {
  * Returns 0 when either side is empty or the magnitude product is below epsilon. */
 static float fce_sparse_tfidf_cosine(const fce_sem_func_t *a, const fce_sem_func_t *b,
  float mag_a_sq) {
- if (a->tfidf_len <= 0 || b->tfidf_indices == NULL || b->tfidf_weights == NULL || b->tfidf_len <= 0) {
+ if (!a || !b || a->tfidf_len <= 0 || b->tfidf_len <= 0 ||
+ !a->tfidf_indices || !a->tfidf_weights ||
+ !b->tfidf_indices || !b->tfidf_weights) {
  return 0.0F;
  }
  float dot = 0.0F;
@@ -4244,7 +4965,7 @@ static void tls_cand_key_init(void) {
  * callers already handle (collect_candidates checks for NULL). */
  if (pthread_key_create(&tls_cand_key, tls_cand_scratch_destructor) != 0) {
  fce_log_warn("tls_cand_key_init",
- "pthread_key_create failed (TLS key exhaustion)");
+ "detail", "pthread_key_create failed (TLS key exhaustion)");
  }
 }
 static cand_scratch_t *tls_cand_scratch_get(void) {
