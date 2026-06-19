@@ -15,6 +15,10 @@ scoring defaults, and a cleaner API.
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.nilsonsfj/fast-code-embed.svg)](https://central.sonatype.com/artifact/io.github.nilsonsfj/fast-code-embed)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+**Status:** Early `0.0.x` release. The API and on-disk corpus cache format may
+change between minor versions; pin a specific version in production and check the
+[changelog](CHANGELOG.md) before upgrading.
+
 ## ✨ What you get
 
 - ⚡ **Sub-millisecond scoring** — Lookup-based. No transformers, no GPU, no latency spikes.
@@ -28,7 +32,7 @@ scoring defaults, and a cleaner API.
 
 ```bash
 make            # build build/libfast_code_embed.a
-make test       # run the test suite (64/64 pass)
+make test       # run the test suite
 make bench      # build bench_mem_query
 ```
 

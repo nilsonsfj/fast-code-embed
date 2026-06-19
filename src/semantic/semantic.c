@@ -1657,7 +1657,7 @@ void fce_sem_corpus_add_docs_batch(fce_sem_corpus_t *corpus, char **all_tokens,
 
     /* Phase A (SEQUENTIAL): Build token_map and allocate doc arrays.
      * Hash table mutation can't be parallelized; strdup+insert is the cost.
-     * Per-doc cap is FCE_SEM_MAX_TOKENS (public header, see §8.3). */
+     * Per-doc cap is FCE_SEM_MAX_TOKENS (see the public header). */
 
     /* First pass: count valid docs and build compacted index mapping. */
     int valid_doc_count = 0;

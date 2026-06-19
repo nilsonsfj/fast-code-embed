@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Documentation: dropped hardcoded test-count figures from `README.md`,
+  `CONTRIBUTING.md`, `java/README.md`, and `docs/OVERVIEW-AND-ARCHITECTURE.md`
+  so the counts no longer drift as tests are added
+- Rewrote the query-mode and configuration sections of
+  `docs/CONFIGURABLE-QUERY-MODES.md` from change-log phrasing into present-tense
+  reference documentation, and noted that the benchmark timings are machine- and
+  corpus-dependent
+
+### Fixed
+- `scripts/check_version.sh` now fails when the changelog section for the target
+  version exists but has no content, catching the blank-release-notes case the
+  previous existence-only check missed
+- Removed the remaining internal review/task-ID references from the `[0.0.8]`
+  changelog entry, a JNI test comment, and a dangling header cross-reference in
+  `semantic.c`
+
+## [0.0.11] — 2026-06-17
+
 ### Added
 - Corpus cache save/load: `fce_sem_corpus_save` writes a finalized corpus to a
   single file and `fce_sem_corpus_load` maps it back via zero-copy `mmap`,
@@ -33,12 +52,6 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `NOTICE` file documenting third-party redistribution: the Apache 2.0
   nomic-embed-code vectors and the BSD-2-Clause vendored xxHash
 - `SECURITY.md` describing the private vulnerability-reporting policy
-
-### Changed
-- Renamed the internal "Priority / Edge Case / Concurrency Fixes" test-output
-  banners to neutral functional groupings (Robustness & Memory Limits, Edge
-  Cases, Concurrency, Tokenization, Corpus Lifecycle), and dropped the internal
-  `h*/m*` priority prefixes from test function names
 
 ### Fixed
 - `fce_sem_corpus_token_at` no longer dereferences `out_idf` when it is NULL on a
@@ -96,14 +109,9 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   when a name tokenizes to zero documents (it routes through the doc-map-aware
   batch path), so saved caches carry correct labels; `Corpus.load` closes the
   partially built corpus if label materialization throws
-- Removed the last leftover internal review reference from the
-  `.note.GNU-stack` comment in `code_vectors_blob.S`, completing the review-ID
-  cleanup
-- Filled in the previously empty `[0.0.9]` and `[0.0.10]` changelog sections;
-  the release workflow uses these as GitHub release notes, so tagged releases no
-  longer ship with a blank description
-
-## [0.0.11] — 2026-06-17
+- Removed an obsolete comment from the `.note.GNU-stack` section in
+  `code_vectors_blob.S`
+- Filled in the previously empty `[0.0.9]` and `[0.0.10]` changelog sections
 
 ## [0.0.10] — 2026-06-17
 
@@ -120,9 +128,8 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.0.8] — 2026-06-16
 
 ### Changed
-- Removed the remaining development-time review/task ID prefixes (e.g. `C-1:`,
-  `H-2:`, `Review NNNN §X`) from all C, JNI, and test source comments,
-  completing the cleanup begun in 0.0.4
+- Removed the remaining development-time review/task ID prefixes from all C,
+  JNI, and test source comments, completing the cleanup begun in 0.0.4
 - Rewrote `docs/OVERVIEW-AND-ARCHITECTURE.md` and
   `docs/CONFIGURABLE-QUERY-MODES.md` from internal-review/worklog style into
   user-facing reference documentation
