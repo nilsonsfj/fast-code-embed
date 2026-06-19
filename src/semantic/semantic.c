@@ -69,6 +69,10 @@ enum {
     FCE_CORPUS_INIT_CAP = 4096,
     FCE_DOC_TOKENS_INIT = 64,
     FCE_RI_SEED_BASE = 0x52494E44, /* "RIND" */
+    /* Longest subword length tried when decomposing an out-of-vocab token into
+     * in-vocab pieces (greedy longest-match). Bounds the per-position lookup
+     * scan; the pretrained vocabulary's longest entries are well under this. */
+    FCE_SUBWORD_MAX_PIECE = 24,
     FCE_PM_UNINIT = 0,
     FCE_PM_INIT = 1,
     FCE_PM_READY = 2,
@@ -1146,6 +1150,101 @@ void fce_sem_shutdown(void) {
     atomic_store_explicit(&g_shutting_down, false, memory_order_seq_cst);
 }
 
+/* ── Subword decomposition (replaces random vectors for OOV tokens) ──
+ *
+ * The original model (nomic-embed-code) uses a byte-level BPE tokenizer, so
+ * every input decomposes into known subword tokens — there is no out-of-vocab
+ * case. This static port instead does whole-word lookup, and any token missing
+ * from the distilled vocabulary used to fall back to a *random* vector, which
+ * is mutually near-orthogonal noise and destroys cosine similarity for any
+ * code heavy in OOV identifiers.
+ *
+ * Instead we greedily decompose the OOV token into the longest in-vocab pieces
+ * and represent it as the unit-normalized sum of those subword vectors. Two
+ * tokens that share subword structure (e.g. "xxh" and "xxhash") then share
+ * components and become *similar* rather than random-orthogonal. A character
+ * with no 1-char vocab entry is skipped; this still yields a structured vector
+ * whenever any substring is in the vocabulary. (Once the single-character base
+ * layer is distilled into the asset, decomposition always terminates on known
+ * pieces and the random fallback below becomes unreachable.)
+ *
+ * Caller must hold the g_pretrained_map reader-count bracket. */
+_Static_assert(FCE_PRETRAINED_TOKEN_COUNT <= 65535,
+               "subword indices are stored as uint16_t — vocab must fit in 16 bits");
+
+static int fce_decompose_subwords(const char *token,
+                                  uint16_t idx_out[FCE_SEM_SPARSE_NNZE]) {
+    if (!g_pretrained_map || !token) {
+        return 0;
+    }
+    int n = (int)strlen(token);
+    int count = 0;
+    int i = 0;
+    char sub[FCE_TOKEN_BUF_LEN];
+    while (i < n && count < FCE_SEM_SPARSE_NNZE) {
+        int max_l = n - i;
+        if (max_l > FCE_SUBWORD_MAX_PIECE) {
+            max_l = FCE_SUBWORD_MAX_PIECE;
+        }
+        int matched = 0;
+        for (int l = max_l; l >= 1; l--) {
+            memcpy(sub, token + i, (size_t)l);
+            sub[l] = '\0';
+            void *p = fce_ht_get(g_pretrained_map, sub);
+            if (p) {
+                int bi = ptr_to_token_idx(p);
+                if (bi >= 0 && bi < FCE_PRETRAINED_TOKEN_COUNT) {
+                    idx_out[count++] = (uint16_t)bi;
+                    i += l;
+                    matched = 1;
+                    break;
+                }
+            }
+        }
+        if (!matched) {
+            i += 1; /* char with no vocab entry — skip, no random noise */
+        }
+    }
+    return count;
+}
+
+/* Sum the unit vectors of the given subword blob indices (in int8/127 space)
+ * and unit-normalize. Writes a 768-dim float vector (out768, nullable) and/or
+ * the reciprocal magnitude of the unnormalized sum (inv_norm_out, nullable).
+ * Returns false if the sum is degenerate (caller falls back to sparse). */
+static bool fce_subword_combine_f768(const uint16_t *idx, int count,
+                                     float *out768, float *inv_norm_out) {
+    float acc[FCE_PRETRAINED_DIM];
+    for (int d = 0; d < FCE_PRETRAINED_DIM; d++) {
+        acc[d] = 0.0f;
+    }
+    const float inv127 = FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX;
+    for (int k = 0; k < count; k++) {
+        const int8_t *v = fce_pretrained_vec_at(idx[k]);
+        for (int d = 0; d < FCE_PRETRAINED_DIM; d++) {
+            acc[d] += inv127 * (float)v[d];
+        }
+    }
+    float mag = 0.0f;
+    for (int d = 0; d < FCE_PRETRAINED_DIM; d++) {
+        mag += acc[d] * acc[d];
+    }
+    mag = sqrtf(mag);
+    if (mag < FCE_SEM_DENOM_EPS) {
+        return false;
+    }
+    float inv = FCE_SEM_UNIT_POS / mag;
+    if (inv_norm_out) {
+        *inv_norm_out = inv;
+    }
+    if (out768) {
+        for (int d = 0; d < FCE_PRETRAINED_DIM; d++) {
+            out768[d] = inv * acc[d];
+        }
+    }
+    return true;
+}
+
 void fce_sem_random_index(const char *token, fce_sem_vec_t *out) {
     memset(out, 0, sizeof(*out));
     if (!token) {
@@ -1201,10 +1300,37 @@ void fce_sem_random_index(const char *token, fce_sem_vec_t *out) {
                 return;
             }
         }
+        /* Miss: decompose into in-vocab subwords instead of a random vector. */
+        uint16_t sw[FCE_SEM_SPARSE_NNZE];
+        int nsw = fce_decompose_subwords(token, sw);
+        if (nsw > 0) {
+            float comb[FCE_PRETRAINED_DIM];
+            if (fce_subword_combine_f768(sw, nsw, comb, NULL)) {
+#ifdef FCE_SEM_DIM_256
+                /* Project the combined vector through the same PCA basis as a hit. */
+                for (int d = 0; d < FCE_SEM_DIM; d++) {
+                    float sum = 0.0f;
+                    for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
+                        sum += (comb[k] - fce_pca_mean[k]) * fce_pca_proj[k][d];
+                    }
+                    out->v[d] = sum;
+                }
+#else
+                for (int d = 0; d < FCE_SEM_DIM && d < FCE_PRETRAINED_DIM; d++) {
+                    out->v[d] = comb[d];
+                }
+#endif
+                atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
+                return;
+            }
+        }
     }
     atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
 
-    /* Fallback: sparse random vector for tokens not in pretrained vocab.
+    /* Last-resort fallback: sparse random vector only when a token has no
+     * in-vocab substring at all (and, before the single-char base layer is
+     * distilled, for stray single characters). Unreachable once the asset
+     * includes the base layer.
      * Use collision-merging like build_src_entry
      * so both code paths produce the same vector for the same token. Without
      * merging, colliding hash positions accumulate (e.g. +1 + +1 = +2),
@@ -1886,9 +2012,13 @@ typedef struct {
  * less source traffic) is equivalent in wall time despite the conversion cost,
  * while saving 90 MB of binary size. */
 typedef struct {
-    uint8_t is_sparse; /* 1 = sparse path, 0 = dense int8 reference */
-    uint8_t nnz;       /* number of nonzeros used in sparse path */
-    uint16_t _pad;
+    uint8_t is_sparse;  /* 1 = sparse path, 0 = dense int8 reference */
+    uint8_t nnz;        /* nonzeros (sparse) or subword count (subword path) */
+    uint8_t is_subword; /* 1 = subword path: indices[] are pretrained blob token
+                         * indices and values[] their per-piece weights. Only
+                         * meaningful in the default 768-dim build; the 256-dim
+                         * build stores the combined vector in `projected`. */
+    uint8_t _pad;
     uint16_t indices[FCE_SEM_SPARSE_NNZE]; /* 8 * 2 = 16 bytes */
     float values[FCE_SEM_SPARSE_NNZE];     /* 8 * 4 = 32 bytes */
     const int8_t *dense_int8;              /* points into FCE_PRETRAINED_VECTOR_BLOB */
@@ -1915,11 +2045,22 @@ static inline void sem_target_init_from_src(fce_sem_vec_t *dst, const fce_sem_sr
         /* Use cached PCA-projected vector (computed once in build_src_entry). */
         memcpy(dst->v, src->projected.v, sizeof(dst->v));
 #else
-        const int8_t *s = src->dense_int8;
-        const float inv127 = FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX;
-        /* Do NOT replace with fce_init_f32_from_i8_768() — see note in fce_sem_vec_add_scaled. */
-        for (int d = 0; d < FCE_SEM_DIM; d++) {
-            dst->v[d] = inv127 * (float)s[d];
+        if (src->is_subword) {
+            /* Subword path: weighted sum of pretrained piece vectors. */
+            for (int k = 0; k < src->nnz; k++) {
+                const int8_t *s = fce_pretrained_vec_at(src->indices[k]);
+                const float w = src->values[k];
+                for (int d = 0; d < FCE_SEM_DIM; d++) {
+                    dst->v[d] += w * (float)s[d];
+                }
+            }
+        } else {
+            const int8_t *s = src->dense_int8;
+            const float inv127 = FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX;
+            /* Do NOT replace with fce_init_f32_from_i8_768() — see note in fce_sem_vec_add_scaled. */
+            for (int d = 0; d < FCE_SEM_DIM; d++) {
+                dst->v[d] = inv127 * (float)s[d];
+            }
         }
 #endif
     }
@@ -1944,11 +2085,22 @@ static inline void sem_vec_add_src_scaled(fce_sem_vec_t *dst, const fce_sem_src_
             dst->v[d] += scale * proj[d];
         }
 #else
-        const int8_t *s = src->dense_int8;
-        const float mul = scale * (FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX);
-        /* Do NOT replace with fce_axpy_i8_768() — see note in fce_sem_vec_add_scaled. */
-        for (int d = 0; d < FCE_SEM_DIM; d++) {
-            dst->v[d] += mul * (float)s[d];
+        if (src->is_subword) {
+            /* Subword path: scaled weighted sum of pretrained piece vectors. */
+            for (int k = 0; k < src->nnz; k++) {
+                const int8_t *s = fce_pretrained_vec_at(src->indices[k]);
+                const float w = scale * src->values[k];
+                for (int d = 0; d < FCE_SEM_DIM; d++) {
+                    dst->v[d] += w * (float)s[d];
+                }
+            }
+        } else {
+            const int8_t *s = src->dense_int8;
+            const float mul = scale * (FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX);
+            /* Do NOT replace with fce_axpy_i8_768() — see note in fce_sem_vec_add_scaled. */
+            for (int d = 0; d < FCE_SEM_DIM; d++) {
+                dst->v[d] += mul * (float)s[d];
+            }
         }
 #endif
     }
@@ -2256,6 +2408,47 @@ static void build_src_entry(const char *token, fce_sem_src_entry_t *out) {
                 atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
                 return;
             }
+        }
+        /* Miss: decompose into in-vocab subwords instead of a random vector,
+         * so OOV tokens that share structure get correlated (not orthogonal)
+         * vectors. See fce_decompose_subwords for the rationale. */
+        uint16_t sw[FCE_SEM_SPARSE_NNZE];
+        int nsw = fce_decompose_subwords(token, sw);
+        if (nsw > 0) {
+#ifdef FCE_SEM_DIM_256
+            float comb[FCE_PRETRAINED_DIM];
+            if (fce_subword_combine_f768(sw, nsw, comb, NULL)) {
+                out->is_sparse = 0; /* 256-dim dense path reads `projected` */
+                out->dense_int8 = NULL;
+                for (int d = 0; d < FCE_SEM_DIM; d++) {
+                    float sum = 0.0f;
+                    for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
+                        sum += (comb[k] - fce_pca_mean[k]) * fce_pca_proj[k][d];
+                    }
+                    out->projected.v[d] = sum;
+                }
+                atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
+                return;
+            }
+#else
+            float inv_norm;
+            if (fce_subword_combine_f768(sw, nsw, NULL, &inv_norm)) {
+                /* Store the subword list; per-piece weight folds in the int8→float
+                 * scale and the unit-normalization of the combined vector, so the
+                 * dense hot path reconstructs the same unit vector. */
+                out->is_sparse = 0;
+                out->is_subword = 1;
+                out->nnz = (uint8_t)nsw;
+                out->dense_int8 = NULL;
+                const float w = inv_norm / FCE_SEM_INT8_MAX;
+                for (int k = 0; k < nsw; k++) {
+                    out->indices[k] = sw[k];
+                    out->values[k] = w;
+                }
+                atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
+                return;
+            }
+#endif
         }
     }
     atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);

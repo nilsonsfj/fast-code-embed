@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
 """
-Extract token embeddings from nomic-embed-code (7B) for static lookup table.
+Extract token embeddings from nomic-embed-code (7B) — 4-bit NF4 GPU variant.
 
-Loads the full model, filters the vocabulary to code-relevant tokens,
-runs full inference on each token, applies simulated attention, quantizes
-to int8, and outputs files compatible with vendored/unixcoder/ format.
+Identical to extract_nomic_vectors.py except the model is loaded in 4-bit
+(bitsandbytes NF4) so the 7B model fits in ~4 GB of VRAM and runs on a small
+GPU (e.g. an 8 GB RTX 4060) instead of crawling on CPU. The fp16 path OOMs on
+an 8 GB card because the model needs ~14 GB at fp16.
 
-Usage:
-    pip3.9 install torch transformers sentence-transformers
-    python3.9 scripts/extract_nomic_vectors.py [--output-dir src/embed]
+The weights are still downloaded in whatever dtype the repo hosts (~30 GB for
+fp32) — 4-bit quantization happens after load, in memory. The vectors are a
+hair different from the fp16 path, but the whole vocabulary is re-distilled in
+one consistent pass and ends up int8-quantized in the blob, so relative
+geometry is preserved.
+
+Usage (Windows/Linux with CUDA):
+    pip install torch --index-url https://download.pytorch.org/whl/cu121
+    pip install transformers accelerate bitsandbytes sentence-transformers einops
+    python scripts/extract_nomic_vectors_nf4.py [--output-dir src/embed]
 
 Output:
     code_vectors.bin   — [int32 count][int32 dim] + count×dim int8
     code_tokens.txt    — one token per line
-    code_tokens.h      — C header: static const char *PRETRAINED_TOKENS[N]
+    code_tokens.h      — C header: static const char *FCE_PRETRAINED_TOKENS[N]
     code_vectors.h     — C header: defines + inline accessor
-    code_vectors_blob.S — assembler .incbin
+    code_vectors_blob.S — assembler .incbin (cross-platform)
 
-One-time extraction. ~2-3h on GPU, ~6-10h on M3 Pro CPU (float16, ~14GB RAM).
+Resumable: checkpoints to <output-dir>/checkpoint.npz every 500 tokens. Copy a
+checkpoint.npz from a partial CPU run here to resume instead of restarting.
 """
 
 import argparse
@@ -40,7 +49,7 @@ torch.set_num_interop_threads(max(NUM_THREADS // 2, 1))
 os.environ.setdefault("OMP_NUM_THREADS", str(NUM_THREADS))
 os.environ.setdefault("MKL_NUM_THREADS", str(NUM_THREADS))
 
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig
 
 
 # ── Configuration ──────────────────────────────────────────────────────
@@ -442,13 +451,24 @@ def main():
     print("step 1: loading model + tokenizer...")
     t0 = time.time()
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,  # extra ~0.4 GB saving — helps on 8 GB
+    )
     model = AutoModel.from_pretrained(
         MODEL_NAME,
         trust_remote_code=True,
-        dtype=torch.float16,             # 7B×2B = ~14GB (vs 28GB float32)
-        low_cpu_mem_usage=True,          # Stream weights, no 2x peak during load
+        quantization_config=bnb_config,
+        device_map="auto",               # places quantized weights on the GPU
+        dtype=torch.float16,             # compute dtype for non-quantized modules
+        low_cpu_mem_usage=True,
     )
-    model = model.to(device)
+    # NOTE: do NOT call model.to(device) here — bitsandbytes + device_map have
+    # already placed the (quantized) weights; calling .to() raises an error.
+    # Re-sync `device` to where the model actually landed so inputs match.
+    device = str(model.device)
     print(f"  loaded in {time.time() - t0:.1f}s")
     print(f"  hidden_size={model.config.hidden_size}")
     print(f"  vocab_size={tokenizer.vocab_size}")
