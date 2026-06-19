@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.12] — 2026-06-19
+
+- Automate changelog generation from commit history
+- Finalize changelog, drop test-count figures, and scrub internal IDs
+
 ## [0.0.11] — 2026-06-17
 
 ### Added
