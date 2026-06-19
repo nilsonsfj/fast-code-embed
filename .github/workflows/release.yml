@@ -23,39 +23,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            artifact: libfast_code_embed.a
+          # Linux artifacts build inside manylinux_2_34 (AlmaLinux 9, glibc 2.34)
+          # so the shipped binaries load on glibc >= 2.34 and every newer release.
+          # The container ships a modern GCC, so codegen/optimization is unaffected.
+          # aarch64 builds natively on an arm64 runner (no cross-compile).
+          - runner: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_34_x86_64
             arch: x86_64
-            cross: false
-          - os: ubuntu-latest
-            artifact: libfast_code_embed.a
+          - runner: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_34_aarch64
             arch: aarch64
-            cross: true
-          - os: macos-latest
-            artifact: libfast_code_embed.a
+          - runner: macos-latest
+            container: ''
             arch: arm64
-            cross: false
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
     name: Build (${{ matrix.arch }})
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install cross-compiler
-        if: matrix.cross
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
       - name: Build static library
         run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            make clean && make -j4 lib \
-              CC=aarch64-linux-gnu-gcc \
-              AR=aarch64-linux-gnu-ar \
-              CFLAGS="-O2 -Wall -Wextra -Wpedantic -std=c11 -DNDEBUG -fPIC -march=armv8.2-a"
-          else
-            make clean && make -j4 lib
-          fi
+          make clean && make -j4 lib
           cp build/libfast_code_embed.a "build/libfast_code_embed.a-${{ matrix.arch }}"
 
       - name: Upload artifact
@@ -70,74 +61,64 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Both Linux JNI libraries build natively inside manylinux_2_34, so the
+          # full JNI test suite (build.sh) now also runs on aarch64 — the old
+          # cross-compiled aarch64 .so was never exercised on real hardware.
+          - runner: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_34_x86_64
             libname: libfast_code_embed_jni.so
             arch: x86_64
-            cross: false
-            java_arch: x64
-          - os: ubuntu-latest
+          - runner: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_34_aarch64
             libname: libfast_code_embed_jni.so
             arch: aarch64
-            cross: true
-            java_arch: aarch64
-          - os: macos-latest
+          - runner: macos-latest
+            container: ''
             libname: libfast_code_embed_jni.dylib
             arch: arm64
-            cross: false
             java_arch: aarch64
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
     name: Java JNI (${{ matrix.arch }})
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 11
+      # In the manylinux container, install a JDK with JNI headers via dnf;
+      # build.sh autodetects JAVA_HOME from `which java`. macOS has no container,
+      # so it keeps using setup-java.
+      - name: Set up JDK 11 (container)
+        if: matrix.container != ''
+        run: dnf install -y java-11-openjdk-devel
+
+      - name: Set up JDK 11 (macOS)
+        if: matrix.container == ''
         uses: actions/setup-java@v4
         with:
           java-version: '11'
           distribution: 'temurin'
           architecture: ${{ matrix.java_arch }}
 
-      - name: Install cross-compiler
-        if: matrix.cross
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Build C library
-        run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            make clean && make -j4 lib \
-              CC=aarch64-linux-gnu-gcc \
-              AR=aarch64-linux-gnu-ar \
-              CFLAGS="-O2 -Wall -Wextra -Wpedantic -std=c11 -DNDEBUG -fPIC -march=armv8.2-a"
-          else
-            make clean && make -j4 lib
-          fi
-
-      - name: Build JNI shared library
-        if: "!matrix.cross"
+      - name: Build JNI shared library (also runs the JNI test suite)
         run: |
           cd java && ./build.sh
           cp lib/native/${{ matrix.libname }} "lib/native/${{ matrix.libname }}-${{ matrix.arch }}"
 
-      - name: Build JNI shared library (cross)
-        if: matrix.cross
+      # Guardrail: fail the release if a Linux .so ever references a glibc symbol
+      # newer than 2.34, rather than silently shipping a higher portability floor.
+      - name: Verify glibc floor (Linux)
+        if: matrix.container != ''
         run: |
-          cd java
-          PROJECT_ROOT="$(dirname "$(pwd)")"
-          JNI_INCLUDE="$JAVA_HOME/include"
-          JNI_PLATFORM_INCLUDE="$JNI_INCLUDE/linux"
-          mkdir -p lib/native
-          aarch64-linux-gnu-gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
-            -Werror=uninitialized -Werror=maybe-uninitialized \
-            -DNDEBUG -march=armv8.2-a \
-            -I"$PROJECT_ROOT/src" \
-            -I"$JNI_INCLUDE" -I"$JNI_PLATFORM_INCLUDE" \
-            src/main/native/fast_code_embed_jni.c \
-            -L../build -lfast_code_embed \
-            -lpthread -lm \
-            -o lib/native/libfast_code_embed_jni.so
-          cp lib/native/libfast_code_embed_jni.so "lib/native/libfast_code_embed_jni.so-${{ matrix.arch }}"
+          so="java/lib/native/${{ matrix.libname }}-${{ matrix.arch }}"
+          max="$(objdump -T "$so" \
+            | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' \
+            | sed 's/GLIBC_//' | sort -V | tail -1)"
+          echo "Highest glibc symbol referenced: GLIBC_${max:-<none>}"
+          if [ -n "$max" ] && [ "$(printf '%s\n2.34\n' "$max" | sort -V | tail -1)" != "2.34" ]; then
+            echo "ERROR: $so requires GLIBC_$max (> 2.34); portability floor regressed."
+            exit 1
+          fi
 
       - name: Upload JNI artifact
         uses: actions/upload-artifact@v4
