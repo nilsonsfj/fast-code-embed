@@ -289,7 +289,7 @@ def write_tokens_txt(path: str, tokens: list):
 def write_tokens_h(path: str, tokens: list):
     """Write C header with token string array."""
     with open(path, "w") as f:
-        f.write(f"/* nomic-embed-code token vocabulary — {len(tokens)} tokens. */\n")
+        f.write(f"/* nomic-embed-code token vocabulary - {len(tokens)} tokens. */\n")
         f.write("#ifndef FCE_EMBED_TOKENS_H\n")
         f.write("#define FCE_EMBED_TOKENS_H\n\n")
         f.write(f"static const char *FCE_PRETRAINED_TOKENS[{len(tokens)}] = {{\n")

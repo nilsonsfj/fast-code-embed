@@ -1,4 +1,4 @@
-/* nomic-embed-code token vocabulary — 40892 tokens. */
+/* nomic-embed-code token vocabulary - 40892 tokens. */
 #ifndef FCE_EMBED_TOKENS_H
 #define FCE_EMBED_TOKENS_H
 
