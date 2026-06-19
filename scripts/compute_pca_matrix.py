@@ -44,7 +44,7 @@ def compute_pca(X, n_components):
 
 def write_header(P, mean, out_path):
     d, k = P.shape
-    with open(out_path, 'w') as f:
+    with open(out_path, 'w', encoding='utf-8') as f:
         f.write("/* pca_projection.h — Auto-generated PCA projection matrix.\n")
         f.write(f" * {d}-dim → {k}-dim projection for FCE_SEM_DIM_256 mode.\n")
         f.write(" * Computed from nomic-embed-code pretrained vectors (40856 tokens).\n")
