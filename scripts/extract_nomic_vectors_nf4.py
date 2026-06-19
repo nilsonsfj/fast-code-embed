@@ -578,7 +578,9 @@ def main():
     write_tokens_txt(str(out_dir / "code_tokens.txt"), filtered_tokens)
     write_tokens_h(str(out_dir / "code_tokens.h"), filtered_tokens)
 
-    incbin_path = str(out_dir / "code_vectors.bin")
+    # Always use forward slashes: this path is embedded in the .incbin directive,
+    # and backslashes (from a Windows run) break the macOS/Linux assembler.
+    incbin_path = (out_dir / "code_vectors.bin").as_posix()
     write_vectors_h(str(out_dir / "code_vectors.h"), len(filtered_tokens), dim, incbin_path)
     write_blob_s(str(out_dir / "code_vectors_blob.S"), incbin_path)
     print()
