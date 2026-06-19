@@ -9,7 +9,7 @@
 
 #define FCE_VERSION_MAJOR 0
 #define FCE_VERSION_MINOR 0
-#define FCE_VERSION_PATCH 11
+#define FCE_VERSION_PATCH 12
 
 /* stringify helpers */
 #define FCE_VERSION_STR_(major, minor, patch) #major "." #minor "." #patch
