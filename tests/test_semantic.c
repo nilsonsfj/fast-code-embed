@@ -283,6 +283,57 @@ static void test_random_index_null_token(void) {
     PASS();
 }
 
+/* ── Subword decomposition (OOV tokens) ───────────────────────────
+ * Out-of-vocabulary tokens are decomposed into the longest in-vocab subwords
+ * and represented as the unit-normalized sum of those piece vectors, instead
+ * of the old random-vector fallback. These tests guard that the random path
+ * stays dead and that the single-character base layer is present in the asset. */
+
+static void test_subword_related_tokens_correlated(void) {
+    TEST(OOV tokens sharing subwords are correlated not random);
+    fce_sem_vec_t a, b;
+    fce_sem_ensure_ready();
+    /* Neither is a whole-vocab token; both decompose into shared subwords, so
+     * their cosine must be well above the ~0 a random fallback would produce. */
+    fce_sem_random_index("xxhash", &a);
+    fce_sem_random_index("xxh", &b);
+    ASSERT(fce_sem_cosine(&a, &b) > 0.3f);
+    PASS();
+}
+
+static void test_subword_digit_suffix_distinct(void) {
+    TEST(uint32 and uint64 are related but not identical);
+    fce_sem_vec_t a, b;
+    fce_sem_ensure_ready();
+    /* Before the single-char base layer existed, the digit suffix was dropped
+     * and both collapsed onto the "uint" vector (cosine == 1.0). With the base
+     * layer they share "uint" yet differ on the digit. The upper bound guards
+     * against a regression to the random/whole-word-only behavior. */
+    fce_sem_random_index("uint32", &a);
+    fce_sem_random_index("uint64", &b);
+    float sim = fce_sem_cosine(&a, &b);
+    ASSERT(sim > 0.5f);    /* still clearly related */
+    ASSERT(sim < 0.9995f); /* but NOT identical */
+    PASS();
+}
+
+static void test_subword_single_char_resolves(void) {
+    TEST(single - char tokens resolve to a real unit vector);
+    fce_sem_vec_t v;
+    fce_sem_ensure_ready();
+    /* The base layer guarantees a real distilled vector for every [a-z0-9]
+     * character, so decomposition always terminates on a known token and the
+     * random fallback (which yields a non-unit magnitude ~sqrt(nnz)) is never
+     * reached. A hit returns the pretrained unit vector (magnitude ~1.0). */
+    fce_sem_random_index("x", &v);
+    float mag = 0.0f;
+    for (int i = 0; i < FCE_SEM_DIM; i++) {
+        mag += v.v[i] * v.v[i];
+    }
+    ASSERT_NEAR(sqrtf(mag), 1.0f, 0.05f);
+    PASS();
+}
+
 /* ── Cosine similarity tests ──────────────────────────────────── */
 
 static void test_cosine_identical(void) {
@@ -2094,6 +2145,12 @@ int main(void) {
     test_random_index_deterministic();
     test_random_index_different_tokens();
     test_random_index_null_token();
+
+    /* Subword decomposition (OOV) */
+    printf("\nSubword Decomposition (OOV):\n");
+    test_subword_related_tokens_correlated();
+    test_subword_digit_suffix_distinct();
+    test_subword_single_char_resolves();
 
     /* Cosine similarity */
     printf("\nCosine Similarity:\n");
