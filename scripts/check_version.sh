@@ -83,6 +83,21 @@ check "CHANGELOG.md" \
     "\[$VERSION\]" \
     "CHANGELOG.md"
 
+# The release workflow uses the body of the matching changelog section as the
+# GitHub release notes, so an empty section ships a blank release. Verify the
+# section for this version exists AND has non-whitespace content.
+CHANGELOG_BODY="$(awk -v ver="$VERSION" '
+    $0 ~ "^## \\[" ver "\\]" { found=1; next }
+    found && /^## \[/        { exit }
+    found                    { print }
+' "$REPO_ROOT/CHANGELOG.md" 2>/dev/null)"
+if [ -z "$(echo "$CHANGELOG_BODY" | tr -d '[:space:]')" ]; then
+    echo "  FAIL: CHANGELOG.md ([$VERSION] section is empty)"
+    ERRORS=$((ERRORS + 1))
+else
+    echo "  OK:   CHANGELOG.md ([$VERSION] section has content)"
+fi
+
 echo ""
 if [ "$ERRORS" -gt 0 ]; then
     echo "FAILED: $ERRORS version mismatch(es) found."

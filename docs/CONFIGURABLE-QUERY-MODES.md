@@ -15,16 +15,16 @@ typedef enum {
 } fce_query_mode_t;
 ```
 
-Added `fce_query_mode_t query_mode` field to `fce_sem_config_t`. Default: `FCE_QUERY_AUTO`.
+`fce_sem_config_t` carries a `fce_query_mode_t query_mode` field. The default is `FCE_QUERY_AUTO`.
 
 ## Selecting the mode (no env var reading)
 
 The library does NOT read env vars for query mode. The caller sets `cfg.query_mode` on
 the config struct before calling search functions. This keeps the library generic.
 
-- `fce_sem_search_query()` and `fce_sem_search_query_tfidf()` now take `const fce_sem_config_t *cfg`
+- `fce_sem_search_query()` and `fce_sem_search_query_tfidf()` take a `const fce_sem_config_t *cfg`
 - Pass `NULL` for backward-compatible AUTO behavior
-- Redirect logic: BRUTE → direct brute-force; TFIDF → calls tfidf function; FAST → forces inverted index
+- Redirect logic: BRUTE → direct brute-force; TFIDF → calls the tfidf function; FAST → forces the inverted index
 
 ## Finalize-time skip (`FCE_BRUTE_ONLY`)
 
@@ -33,7 +33,8 @@ Two mechanisms to skip inverted index build during finalize:
 - **Compile-time**: `cc -DFCE_BRUTE_ONLY ...` — unconditionally skips inverted index
 - **Runtime**: `FCE_SEM_SKIP_INV_INDEX=1` env var — skips inverted index for benchmarking without recompilation
 
-Savings (193K docs, 657K tokens):
+Savings (measured on the 193K-doc, 657K-token Linux-source corpus; absolute
+timings vary by machine and corpus):
 | Metric | Normal | Brute-only | Δ |
 |--------|--------|------------|---|
 | Finalize time | 64,654ms | 62,476ms | -3.4% |
@@ -45,7 +46,7 @@ not 1-1.8 GB). `inv_doc_ids` is 64.8 MB for 16.9M unique doc-token pairs.
 
 ## Benchmark tool (`bench_mem_query.c`)
 
-New flags:
+The tool accepts the following flags:
 ```
 ./bench_mem_query <dir> [chunk_size] [--brute-only] [--sparse[=N]]
 ```

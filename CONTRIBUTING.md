@@ -19,8 +19,8 @@ cd java && ./build.sh
 
 ## Testing
 
-C tests: `make test` (64 tests)
-Java tests: `cd java && ./build.sh` (24 tests)
+C tests: `make test`
+Java tests: `cd java && ./build.sh`
 Sanitizers: `make test-asan`
 
 All tests must pass before submitting a pull request.
@@ -29,7 +29,6 @@ All tests must pass before submitting a pull request.
 
 - C11 (`-std=c11`), no C23 features
 - The tree builds warning-clean under `-Wall -Wextra -Wpedantic` on both GCC and Clang — please keep it that way
-- No internal review/task ID prefixes in comments (those were used during development)
 - Keep comments explaining *why*, not *what*
 
 ## Pull requests

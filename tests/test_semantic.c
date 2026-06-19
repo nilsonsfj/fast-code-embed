@@ -931,7 +931,7 @@ static void test_corpus_search_query(void) {
     PASS();
 }
 
-/* Low-priority fix tests */
+/* Corpus lifecycle */
 
 static void test_corpus_free_after_finalize(void) {
     TEST(corpus free after finalize releases doc_vectors);
@@ -999,12 +999,11 @@ static void test_search_query_repeated_same_corpus(void) {
     PASS();
 }
 
-/* Pre-existing Low-priority fix tests */
+/* Robustness & memory limits */
 
 static void test_abbreviation_lazy_allocation(void) {
     TEST(abbreviation hash table lazy allocation);
-    /* Test that abbreviations work with lazy allocation.
-     * This verifies P3 fix: abbreviations are only allocated on first tokenize call. */
+    /* Abbreviations are allocated lazily on the first tokenize call. */
     char *out[100];
     int count = fce_sem_tokenize("ctx", out, 100);
     ASSERT(count > 0);
@@ -1023,8 +1022,7 @@ static void test_abbreviation_lazy_allocation(void) {
 
 static void test_abbreviation_concurrent_init(void) {
     TEST(abbreviation hash table concurrent initialization);
-    /* Test that multiple concurrent calls to tokenize don't cause issues
-     * with lazy allocation (tests thread-safety of P3 fix). */
+    /* Multiple concurrent tokenize calls must not race lazy abbreviation init. */
     char *out[100];
 
     /* Multiple sequential calls should all work. */
@@ -1290,7 +1288,7 @@ static void test_corpus_get_or_add_oom_rollback(void) {
     PASS();
 }
 
-/* ── Edge case fix tests ──────────────────── */
+/* Concurrency */
 
 /* degenerate (all-OOV) query must return 0 results and must not
  * leak the strdup'd tokens from fce_sem_tokenize.  Before the fix the
@@ -1329,27 +1327,27 @@ static void test_oov_query_returns_empty(void) {
  * directly: N items dispatched with max_workers = N must visit each
  * index [0, N) exactly once. */
 
-#define H3_CHUNKS 8
-static _Atomic int h3_visit_count[H3_CHUNKS];
+#define PAR_CHUNKS 8
+static _Atomic int par_visit_count[PAR_CHUNKS];
 
-static void h3_count_worker(int idx, void *ctx) {
+static void par_count_worker(int idx, void *ctx) {
     (void)ctx;
-    if (idx >= 0 && idx < H3_CHUNKS) {
-        atomic_fetch_add_explicit(&h3_visit_count[idx], 1, memory_order_relaxed);
+    if (idx >= 0 && idx < PAR_CHUNKS) {
+        atomic_fetch_add_explicit(&par_visit_count[idx], 1, memory_order_relaxed);
     }
 }
 
 static void test_parallel_for_static_covers_all_chunks(void) {
     TEST(parallel_for_static visits each index exactly once);
-    for (int i = 0; i < H3_CHUNKS; i++) {
-        atomic_store(&h3_visit_count[i], 0);
+    for (int i = 0; i < PAR_CHUNKS; i++) {
+        atomic_store(&par_visit_count[i], 0);
     }
 
-    fce_parallel_for_opts_t opts = { .max_workers = H3_CHUNKS };
-    fce_parallel_for_static(H3_CHUNKS, h3_count_worker, NULL, opts);
+    fce_parallel_for_opts_t opts = { .max_workers = PAR_CHUNKS };
+    fce_parallel_for_static(PAR_CHUNKS, par_count_worker, NULL, opts);
 
-    for (int i = 0; i < H3_CHUNKS; i++) {
-        int v = atomic_load(&h3_visit_count[i]);
+    for (int i = 0; i < PAR_CHUNKS; i++) {
+        int v = atomic_load(&par_visit_count[i]);
         if (v != 1) {
             printf("FAIL (index %d visited %d times, expected 1)\n", i, v);
             return;
@@ -1358,7 +1356,7 @@ static void test_parallel_for_static_covers_all_chunks(void) {
     PASS();
 }
 
-/* ── Medium-priority fix tests ─────────────────────────── */
+/* Validation */
 
 /* fce_sem_corpus_finalize returns -1 (not 0) when finalize_failed.
  *

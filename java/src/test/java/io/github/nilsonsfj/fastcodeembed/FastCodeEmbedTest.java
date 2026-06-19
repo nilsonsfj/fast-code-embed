@@ -446,7 +446,7 @@ public class FastCodeEmbedTest {
         });
 
         test("save() warns when docPaths size mismatches doc count", () -> {
-            /* JAVA-02: save() should warn (not crash) when labels are out of sync.
+            /* save() should warn (not crash) when labels are out of sync.
              * clearDocPaths() removes all tracked paths, so save() will detect
              * the mismatch and drop labels silently (with a stderr warning). */
             String path = System.getProperty("java.io.tmpdir")

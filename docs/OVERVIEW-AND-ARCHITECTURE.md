@@ -37,7 +37,7 @@ index candidates + RI rerank. Search path is configurable via
 | `foundation/` | Hash table, threads, platform | Reusable low-level primitives |
 | `pipeline/worker_pool.c` | `parallel_for` | Spawns workers per parallel region |
 | `java/…/fast_code_embed_jni.c` | JNI bridge | Handle table + exception-safe marshalling |
-| `tests/test_semantic.c` | 64 unit tests | Unit and regression coverage |
+| `tests/test_semantic.c` | unit + regression tests | Unit and regression coverage |
 
 ---
 

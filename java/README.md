@@ -164,7 +164,7 @@ java/
 ├── src/main/native/
 │   └── fast_code_embed_jni.c             JNI bridge implementation
 └── src/test/java/.../fastcodeembed/
-    ├── FastCodeEmbedTest.java            24 tests (no framework)
+    ├── FastCodeEmbedTest.java            Test suite (no framework)
     ├── BenchJava.java                    Micro-benchmark
     ├── BenchMemQuery.java                Memory + query benchmark
     └── IndexDir.java                     Directory indexer
