@@ -129,18 +129,52 @@ echo "  java/README.md"
 "${SED_INPLACE[@]}" "s/\"$CURRENT_VERSION\"/\"$TARGET_VERSION\"/" "$REPO_ROOT/java/src/main/java/io/github/nilsonsfj/fastcodeembed/FastCodeEmbed.java"
 echo "  FastCodeEmbed.java"
 
-# 6. CHANGELOG.md — insert new section before the current-version section.
-# Done with awk (portable) rather than sed's non-portable `i\` insert command.
-if ! grep -qF "[$TARGET_VERSION]" "$REPO_ROOT/CHANGELOG.md"; then
+# 6. CHANGELOG.md — auto-generate the new version section from commit history.
+# The release notes are the commit subjects since the previous release tag, so no
+# manual changelog editing is ever required. The generated section is inserted
+# right after the "## [Unreleased]" placeholder; release.yml later extracts it
+# verbatim as the GitHub release body.
+if grep -qF "[$TARGET_VERSION]" "$REPO_ROOT/CHANGELOG.md"; then
+    echo "  CHANGELOG.md ([$TARGET_VERSION] section already exists, skipping)"
+else
+    # Range start: the previous release tag if it exists locally, else full history.
+    RANGE=""
+    if [ -n "$CURRENT_TAG" ] && \
+       git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$CURRENT_TAG^{commit}" >/dev/null 2>&1; then
+        RANGE="$CURRENT_TAG..HEAD"
+    fi
+
+    # Commit subjects since the last release, minus merges and prior bump commits.
+    # shellcheck disable=SC2086
+    NOTES="$(git -C "$REPO_ROOT" log --no-merges --pretty='- %s' $RANGE \
+        | grep -vE '^- bump version to ' || true)"
+    if [ -z "$NOTES" ]; then
+        NOTES="- Maintenance release (no notable changes)"
+    fi
+
+    # Build the section in a temp file, then splice it in after "## [Unreleased]".
+    # Using getline (not awk -v) keeps commit subjects byte-exact regardless of
+    # any backslashes they may contain.
+    SECTION_TMP="$(mktemp)"
+    {
+        printf '\n## [%s] — %s\n\n' "$TARGET_VERSION" "$TODAY"
+        printf '%s\n' "$NOTES"
+    } > "$SECTION_TMP"
+
     CHANGELOG_TMP="$(mktemp)"
-    awk -v cur="## [$CURRENT_VERSION]" -v new="## [$TARGET_VERSION] — $TODAY" '
-        !done && index($0, cur) == 1 { print new; print ""; done = 1 }
+    awk -v sf="$SECTION_TMP" '
         { print }
+        !done && index($0, "## [Unreleased]") == 1 {
+            while ((getline line < sf) > 0) print line
+            close(sf)
+            done = 1
+        }
     ' "$REPO_ROOT/CHANGELOG.md" > "$CHANGELOG_TMP"
     mv "$CHANGELOG_TMP" "$REPO_ROOT/CHANGELOG.md"
-    echo "  CHANGELOG.md (added [$TARGET_VERSION] section)"
-else
-    echo "  CHANGELOG.md (section already exists, skipping)"
+    rm -f "$SECTION_TMP"
+
+    N_NOTES="$(printf '%s\n' "$NOTES" | grep -c '^- ')"
+    echo "  CHANGELOG.md (generated [$TARGET_VERSION] section from $N_NOTES commit(s))"
 fi
 
 # --- Validate with check_version.sh ---

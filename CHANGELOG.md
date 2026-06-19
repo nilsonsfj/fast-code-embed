@@ -7,23 +7,6 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
-- Documentation: dropped hardcoded test-count figures from `README.md`,
-  `CONTRIBUTING.md`, `java/README.md`, and `docs/OVERVIEW-AND-ARCHITECTURE.md`
-  so the counts no longer drift as tests are added
-- Rewrote the query-mode and configuration sections of
-  `docs/CONFIGURABLE-QUERY-MODES.md` from change-log phrasing into present-tense
-  reference documentation, and noted that the benchmark timings are machine- and
-  corpus-dependent
-
-### Fixed
-- `scripts/check_version.sh` now fails when the changelog section for the target
-  version exists but has no content, catching the blank-release-notes case the
-  previous existence-only check missed
-- Removed the remaining internal review/task-ID references from the `[0.0.8]`
-  changelog entry, a JNI test comment, and a dangling header cross-reference in
-  `semantic.c`
-
 ## [0.0.11] — 2026-06-17
 
 ### Added
