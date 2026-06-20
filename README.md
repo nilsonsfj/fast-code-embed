@@ -181,6 +181,10 @@ Sparse vector storage is available via `fce_sem_corpus_set_sparse()`; it saves
 memory but is a rank-changing trade-off, not a lossless optimization. See the
 docs for details.
 
+For a quality/performance comparison against a general-purpose static embedding
+(potion-base-8M) on Linux kernel source, see
+[COMPARISON-VS-POTION-BASE-8M.md](docs/COMPARISON-VS-POTION-BASE-8M.md).
+
 `fce_sem_ensure_ready()` eagerly builds the pretrained token lookup map. Under
 extreme memory pressure the map may be only partially populated; any token that
 fails to insert falls back to a deterministic sparse random vector, with a log
