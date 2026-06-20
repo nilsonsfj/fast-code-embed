@@ -68,7 +68,6 @@ enum {
     FCE_TOKEN_BUF_LEN = 256,
     FCE_CORPUS_INIT_CAP = 4096,
     FCE_DOC_TOKENS_INIT = 64,
-    FCE_RI_SEED_BASE = 0x52494E44, /* "RIND" */
     /* Longest subword length tried when decomposing an out-of-vocab token into
      * in-vocab pieces (greedy longest-match). Bounds the per-position lookup
      * scan; the pretrained vocabulary's longest entries are well under this. */
@@ -1264,7 +1263,7 @@ void fce_sem_random_index(const char *token, fce_sem_vec_t *out) {
     atomic_thread_fence(memory_order_seq_cst);
     if (atomic_load_explicit(&g_shutting_down, memory_order_seq_cst)) {
         atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
-        goto sparse_fallback;
+        return; /* shutting down — leave the zero vector from the memset above */
     }
 
     ensure_pretrained_map();
@@ -1327,48 +1326,10 @@ void fce_sem_random_index(const char *token, fce_sem_vec_t *out) {
     }
     atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
 
-    /* Last-resort fallback: sparse random vector only when a token has no
-     * in-vocab substring at all (and, before the single-char base layer is
-     * distilled, for stray single characters). Unreachable once the asset
-     * includes the base layer.
-     * Use collision-merging like build_src_entry
-     * so both code paths produce the same vector for the same token. Without
-     * merging, colliding hash positions accumulate (e.g. +1 + +1 = +2),
-     * producing magnitude > 1.0 inconsistent with pretrained vectors.
-     * hash includes NUL terminator for consistency with abbreviation and
-     * token-dedup hashing. Position mod 768 gives slight bias (acceptable for RI). */
-sparse_fallback:;
-    uint64_t seed = XXH3_64bits(token, strlen(token) + 1);
-    uint16_t tmp_idx[FCE_SEM_SPARSE_NNZE];
-    float tmp_val[FCE_SEM_SPARSE_NNZE];
-    int count = 0;
-    for (int i = 0; i < FCE_SEM_SPARSE_NNZE; i++) {
-        uint32_t le_i = fce_htole32((uint32_t)i);
-        uint64_t h = XXH3_64bits_withSeed(&le_i, sizeof(le_i), seed + FCE_RI_SEED_BASE);
-        int pos = (int)(h % FCE_SEM_DIM);
-        float sign = (h & 1) ? FCE_SEM_UNIT_POS : -FCE_SEM_UNIT_POS;
-        /* Merge collisions */
-        int found = FCE_NOT_FOUND;
-        for (int j = 0; j < count; j++) {
-            if (tmp_idx[j] == (uint16_t)pos) {
-                found = j;
-                break;
-            }
-        }
-        if (found >= 0) {
-            tmp_val[found] += sign;
-        } else {
-            tmp_idx[count] = (uint16_t)pos;
-            tmp_val[count] = sign;
-            count++;
-        }
-    }
-    /* Write non-zero entries */
-    for (int j = 0; j < count; j++) {
-        if (tmp_val[j] != 0.0F) {
-            out->v[tmp_idx[j]] = tmp_val[j];
-        }
-    }
+    /* No in-vocab subword. This is only reachable for input the runtime
+     * tokenizer never produces (non-[a-z0-9]/empty strings passed straight to
+     * the public API) or a degenerate subword sum. Leave the zero vector from
+     * the memset above — the previous random-vector fallback is gone. */
 }
 
 void fce_sem_normalize(fce_sem_vec_t *v) {
@@ -2454,43 +2415,13 @@ static void build_src_entry(const char *token, fce_sem_src_entry_t *out) {
     atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
 
 sparse_entry:
-    /* Sparse path: compute 8 hash positions with collision merging. */
+    /* No in-vocab subword: emit an empty (zero) base vector via the sparse path
+     * with no nonzeros. Reachable only for non-[a-z0-9] tokens supplied through
+     * the pre-tokenized public API, or a degenerate subword sum — the runtime
+     * tokenizer never produces such tokens. The random-vector fallback is gone;
+     * a zero base vector still accumulates co-occurrence context in enrichment. */
     out->is_sparse = 1;
-    uint16_t tmp_idx[FCE_SEM_SPARSE_NNZE];
-    float tmp_val[FCE_SEM_SPARSE_NNZE];
-    int count = 0;
-    uint64_t seed = XXH3_64bits(token, strlen(token) + 1);
-    for (int i = 0; i < FCE_SEM_SPARSE_NNZE; i++) {
-        uint32_t le_i = fce_htole32((uint32_t)i);
-        uint64_t h = XXH3_64bits_withSeed(&le_i, sizeof(le_i), seed + FCE_RI_SEED_BASE);
-        int pos = (int)(h % FCE_SEM_DIM);
-        float sign = (h & 1) ? FCE_SEM_UNIT_POS : -FCE_SEM_UNIT_POS;
-        /* Merge collisions */
-        int found = FCE_NOT_FOUND;
-        for (int j = 0; j < count; j++) {
-            if (tmp_idx[j] == (uint16_t)pos) {
-                found = j;
-                break;
-            }
-        }
-        if (found >= 0) {
-            tmp_val[found] += sign;
-        } else {
-            tmp_idx[count] = (uint16_t)pos;
-            tmp_val[count] = sign;
-            count++;
-        }
-    }
-    /* Filter zeros */
-    int nnz = 0;
-    for (int j = 0; j < count; j++) {
-        if (tmp_val[j] != 0.0F) {
-            out->indices[nnz] = tmp_idx[j];
-            out->values[nnz] = tmp_val[j];
-            nnz++;
-        }
-    }
-    out->nnz = (uint8_t)nnz;
+    out->nnz = 0;
 }
 
 static void src_build_worker(int worker_id, void *ctx_ptr) {
