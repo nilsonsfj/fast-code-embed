@@ -1417,6 +1417,16 @@ struct fce_sem_corpus {
     const char *label_blob;
     const uint32_t *label_off;
     int label_count;
+
+    /* Mean-centering: corpus mean of the unit doc vectors, subtracted from every
+     * doc vector (and the query) to break the shared "common direction" that
+     * otherwise collapses every cosine into a narrow ~0.99 cone. Computed at
+     * finalize and persisted in the cache (FCE_SEC_DOC_MEAN). has_doc_mean is
+     * false for empty/degenerate (doc_count < 2) corpora, where centering is a
+     * no-op. Appended at the very end so the offsetof asserts / corpus_mirror_t
+     * layout above stay valid. */
+    float doc_mean[FCE_SEM_DIM];
+    bool has_doc_mean;
 };
 
 /* These assertions protect the corpus_mirror_t layout in tests/test_semantic.c,
@@ -2756,6 +2766,31 @@ static void docvec_quantize_worker(int wid, void *ctx_ptr) {
     }
 }
 
+/* Worker for parallel mean-centering of doc vectors. Subtracts the corpus mean
+ * from each unit doc vector and renormalizes in place. Run AFTER the mean is
+ * computed (needs all doc vectors) and BEFORE quantization (so every downstream
+ * representation derives from the centered float vectors). A doc that sat right
+ * at the mean becomes ~zero; fce_sem_normalize leaves it zero (inv_mag 0 → it
+ * scores 0 everywhere, which is correct for a maximally-generic document). */
+typedef struct {
+    fce_sem_vec_t *doc_vectors;
+    const float *mean; /* FCE_SEM_DIM */
+    int doc_count;
+    _Atomic int next_doc;
+} docvec_center_ctx_t;
+
+static void docvec_center_worker(int wid, void *ctx_ptr) {
+    (void)wid;
+    docvec_center_ctx_t *dc = ctx_ptr;
+    for (;;) {
+        int d = atomic_fetch_add_explicit(&dc->next_doc, 1, memory_order_relaxed);
+        if (d >= dc->doc_count) break;
+        fce_sem_vec_t *v = &dc->doc_vectors[d];
+        for (int i = 0; i < FCE_SEM_DIM; i++) v->v[i] -= dc->mean[i];
+        fce_sem_normalize(v);
+    }
+}
+
 /* Forward declarations for sparse vector functions. */
 static bool fce_sparsify_topk(uint16_t *out_idx, int8_t *out_val,
                               const int8_t *dense, int dim, int k);
@@ -2940,6 +2975,34 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
     atomic_init(&dctx.next_doc, 0);
     fce_parallel_for(worker_count, docvec_build_worker, &dctx, opts);
     free(doc_idf);
+
+    /* Mean-center the doc vectors. Co-occurrence enrichment blends every token
+     * toward a shared direction, so all doc vectors land in a narrow cone and
+     * cosine loses its discriminative power (every pair scores ~0.99). Subtracting
+     * the corpus mean μ removes that common component and spreads the cosines back
+     * out. μ is the mean of the unit doc vectors built above; we subtract it and
+     * renormalize, and the query path mirrors this via build_query_vector so both
+     * live in the same centered space. Skipped for doc_count < 2 (μ would equal the
+     * only doc and collapse it to zero). */
+    corpus->has_doc_mean = false;
+    if (corpus->doc_count >= 2) {
+        for (int i = 0; i < FCE_SEM_DIM; i++) corpus->doc_mean[i] = 0.0f;
+        for (int d = 0; d < corpus->doc_count; d++) {
+            const float *v = corpus->doc_vectors[d].v;
+            for (int i = 0; i < FCE_SEM_DIM; i++) corpus->doc_mean[i] += v[i];
+        }
+        const float inv_n = 1.0f / (float)corpus->doc_count;
+        for (int i = 0; i < FCE_SEM_DIM; i++) corpus->doc_mean[i] *= inv_n;
+        corpus->has_doc_mean = true;
+
+        docvec_center_ctx_t cctx = {
+            .doc_vectors = corpus->doc_vectors,
+            .mean = corpus->doc_mean,
+            .doc_count = corpus->doc_count,
+        };
+        atomic_init(&cctx.next_doc, 0);
+        fce_parallel_for(worker_count, docvec_center_worker, &cctx, opts);
+    }
 
     /* Quantize float32 doc vectors to int8 for brute-force bandwidth reduction.
      * 4 bytes/doc → 1 byte/doc; SIMD int8 dot is ~4x faster than float32.
@@ -3506,15 +3569,20 @@ void fce_sem_corpus_free(fce_sem_corpus_t *corpus) {
 
 /* v2: document/query vectors are IDF-weighted sums of token vectors. A v1
  * cache holds unweighted doc vectors, which would mismatch the now IDF-weighted
- * query vectors and score incorrectly — so v1 caches are rejected on load. */
-#define FCE_CACHE_VERSION 2u
+ * query vectors and score incorrectly — so v1 caches are rejected on load.
+ * v3: doc vectors are mean-centered (FCE_SEC_DOC_MEAN carries μ). A v2 cache
+ * holds un-centered vectors and no μ, so the query path (which centers when
+ * has_doc_mean) would mismatch — v2 caches are rejected on load and rebuilt. */
+#define FCE_CACHE_VERSION 3u
 #define FCE_CACHE_ENDIAN_MARKER 0x01020304u
 #define FCE_CACHE_FLAG_ENR_SPARSE 0x1u
 #define FCE_CACHE_FLAG_DOC_SPARSE 0x2u
+#define FCE_CACHE_FLAG_DOC_MEAN 0x4u
 /* All currently-defined flag bits. The loader rejects any file that sets a bit
  * outside this mask so an older binary cannot silently misinterpret a cache
  * written by a future version that gives those bits meaning. */
-#define FCE_CACHE_KNOWN_FLAGS (FCE_CACHE_FLAG_ENR_SPARSE | FCE_CACHE_FLAG_DOC_SPARSE)
+#define FCE_CACHE_KNOWN_FLAGS (FCE_CACHE_FLAG_ENR_SPARSE | FCE_CACHE_FLAG_DOC_SPARSE | \
+                               FCE_CACHE_FLAG_DOC_MEAN)
 
 enum {
     FCE_SEC_TOKEN_BLOB = 0, /* packed NUL-terminated token strings */
@@ -3531,6 +3599,7 @@ enum {
     FCE_SEC_INV_DOC_IDS,    /* int32[inv_offsets[entry_count]] */
     FCE_SEC_LABEL_OFFSETS,  /* uint32[doc_label_count+1] */
     FCE_SEC_LABEL_BLOB,     /* packed NUL-terminated doc labels */
+    FCE_SEC_DOC_MEAN,       /* float[DIM] corpus mean (mean-centering); absent if not centered */
     FCE_SEC_COUNT
 };
 
@@ -3709,6 +3778,9 @@ int fce_sem_corpus_save(const fce_sem_corpus_t *corpus, const char *path,
         sec[FCE_SEC_LABEL_OFFSETS] = (fce_sec_src_t){label_off, ((uint64_t)doc_label_count + 1) * sizeof(uint32_t)};
         sec[FCE_SEC_LABEL_BLOB] = (fce_sec_src_t){label_blob, label_off[doc_label_count]};
     }
+    if (corpus->has_doc_mean) {
+        sec[FCE_SEC_DOC_MEAN] = (fce_sec_src_t){corpus->doc_mean, (uint64_t)FCE_SEM_DIM * sizeof(float)};
+    }
 
     fce_cache_header_t hdr;
     memset(&hdr, 0, sizeof(hdr));
@@ -3717,7 +3789,8 @@ int fce_sem_corpus_save(const fce_sem_corpus_t *corpus, const char *path,
     hdr.endian_marker = FCE_CACHE_ENDIAN_MARKER;
     hdr.dim = (uint32_t)FCE_SEM_DIM;
     hdr.flags = (enr_sparse ? FCE_CACHE_FLAG_ENR_SPARSE : 0u) |
-                (doc_sparse ? FCE_CACHE_FLAG_DOC_SPARSE : 0u);
+                (doc_sparse ? FCE_CACHE_FLAG_DOC_SPARSE : 0u) |
+                (corpus->has_doc_mean ? FCE_CACHE_FLAG_DOC_MEAN : 0u);
     hdr.entry_count = entry_count;
     hdr.doc_count = doc_count;
     hdr.sparse_nnz = nnz;
@@ -3853,6 +3926,7 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
     const int label_count = hdr.doc_label_count;
     const bool enr_sparse = (hdr.flags & FCE_CACHE_FLAG_ENR_SPARSE) != 0;
     const bool doc_sparse = (hdr.flags & FCE_CACHE_FLAG_DOC_SPARSE) != 0;
+    const bool has_doc_mean = (hdr.flags & FCE_CACHE_FLAG_DOC_MEAN) != 0;
 
     if (entry_count < 0 || entry_count > FCE_SEM_MAX_ENTRY_COUNT ||
         doc_count < 0 || doc_count > FCE_SEM_MAX_DOC_COUNT ||
@@ -3927,6 +4001,15 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
             lab_off = (const uint32_t *)((const char *)base + hdr.sections[FCE_SEC_LABEL_OFFSETS].offset);
             ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_LABEL_BLOB, lab_off[label_count], size);
         }
+    }
+
+    /* Mean vector: present iff the flag is set, exactly DIM floats. Absent
+     * otherwise (length 0). The flag without a correctly-sized section is a
+     * corrupt/forged file. */
+    if (has_doc_mean) {
+        ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_MEAN, (uint64_t)FCE_SEM_DIM * sizeof(float), size);
+    } else {
+        ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_MEAN, 0, size);
     }
 
     if (!ok) {
@@ -4022,6 +4105,18 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
             }
         }
 
+        /* Mean components are subtracted from every query vector; a NaN/Inf would
+         * poison every score. Require each to be finite. */
+        if (has_doc_mean) {
+            const float *mu = (const float *)(vb + hdr.sections[FCE_SEC_DOC_MEAN].offset);
+            for (int i = 0; i < FCE_SEM_DIM; i++) {
+                if (!isfinite(mu[i])) {
+                    fce_munmap(base, size);
+                    return NULL;
+                }
+            }
+        }
+
         /* Inverted index: offsets must start at 0, be monotonic, and stay within
          * inv_doc_ids; every doc id must index a real document. The search path
          * uses these as [start,end) ranges and as doc/bitmap indices unchecked. */
@@ -4108,6 +4203,13 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
     }
     if (invmag_len != 0) {
         c->doc_vectors_q_inv_mag = (float *)(uintptr_t)(b + hdr.sections[FCE_SEC_DOC_INVMAG].offset);
+    }
+    /* Copy μ into the struct (tiny, fixed array) so the query path can center
+     * exactly as it did in memory. has_doc_mean stays false if absent. */
+    if (has_doc_mean) {
+        memcpy(c->doc_mean, b + hdr.sections[FCE_SEC_DOC_MEAN].offset,
+               (size_t)FCE_SEM_DIM * sizeof(float));
+        c->has_doc_mean = true;
     }
     if (inv_off) {
         c->inv_offsets = (int *)(uintptr_t)inv_off;
@@ -5865,6 +5967,33 @@ fallback_serial: {
 }
 }
 
+/* Build the float query vector shared by every search path: IDF-weighted sum of
+ * the per-token vectors, normalized, then mean-centered to match the document
+ * space (subtract corpus μ and renormalize) when the corpus was centered at
+ * finalize. Centralizing this guarantees queries and documents always use the
+ * exact same recipe — any divergence would silently distort cosine scores. */
+static void build_query_vector(const fce_sem_corpus_t *corpus,
+                               char *const *q_toks, int q_ntok,
+                               fce_sem_vec_t *out) {
+    memset(out, 0, sizeof(*out));
+    for (int t = 0; t < q_ntok; t++) {
+        const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
+        if (rv) fce_sem_vec_add_scaled(out, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
+    }
+    fce_sem_normalize(out);
+    if (corpus->has_doc_mean) {
+        /* A zero query (no in-vocab tokens resolved) must stay zero — centering it
+         * would fabricate a -μ direction and return spurious results for a query
+         * that carries no signal. Only center a non-zero query. */
+        float m = 0.0f;
+        for (int i = 0; i < FCE_SEM_DIM; i++) m += out->v[i] * out->v[i];
+        if (m > 0.0f) {
+            for (int i = 0; i < FCE_SEM_DIM; i++) out->v[i] -= corpus->doc_mean[i];
+            fce_sem_normalize(out);
+        }
+    }
+}
+
 /* Public API: tokenize query then delegate to internal brute-force. */
 void fce_sem_search_query_bruteforce(const fce_sem_corpus_t *corpus,
                                      const char *query,
@@ -5880,12 +6009,7 @@ void fce_sem_search_query_bruteforce(const fce_sem_corpus_t *corpus,
     if (q_ntok == 0) goto cleanup;
 
     fce_sem_vec_t qvec;
-    memset(&qvec, 0, sizeof(qvec));
-    for (int t = 0; t < q_ntok; t++) {
-        const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
-        if (rv) fce_sem_vec_add_scaled(&qvec, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
-    }
-    fce_sem_normalize(&qvec);
+    build_query_vector(corpus, q_toks, q_ntok, &qvec);
 
     /* check for zero query vector before scoring. */
     float qmag = 0.0f;
@@ -5918,12 +6042,7 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
         int q_ntok = fce_sem_tokenize(query, q_toks, FCE_SEM_MAX_TOKENS);
         if (q_ntok == 0) return;
         fce_sem_vec_t qvec;
-        memset(&qvec, 0, sizeof(qvec));
-        for (int t = 0; t < q_ntok; t++) {
-            const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
-            if (rv) fce_sem_vec_add_scaled(&qvec, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
-        }
-        fce_sem_normalize(&qvec);
+        build_query_vector(corpus, q_toks, q_ntok, &qvec);
         bruteforce_precomputed(corpus, &qvec, NULL, 0.0f, top_k, results_out, count_out);
         for (int t = 0; t < q_ntok; t++) free(q_toks[t]);
         return;
@@ -5962,14 +6081,7 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
 
     /* Build query vector for RI cosine. */
     fce_sem_vec_t qvec;
-    memset(&qvec, 0, sizeof(qvec));
-    for (int t = 0; t < q_ntok; t++) {
-        const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
-        if (rv) {
-            fce_sem_vec_add_scaled(&qvec, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
-        }
-    }
-    fce_sem_normalize(&qvec);
+    build_query_vector(corpus, q_toks, q_ntok, &qvec);
 
     /* Convert query tokens to token IDs for inverted index lookup. */
     int q_tok_ids[FCE_SEM_MAX_TOKENS];
@@ -6116,12 +6228,7 @@ void fce_sem_search_query_tfidf(const fce_sem_corpus_t *corpus,
         int q_ntok = fce_sem_tokenize(query, q_toks, FCE_SEM_MAX_TOKENS);
         if (q_ntok == 0) return;
         fce_sem_vec_t qvec;
-        memset(&qvec, 0, sizeof(qvec));
-        for (int t = 0; t < q_ntok; t++) {
-            const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
-            if (rv) fce_sem_vec_add_scaled(&qvec, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
-        }
-        fce_sem_normalize(&qvec);
+        build_query_vector(corpus, q_toks, q_ntok, &qvec);
         bruteforce_precomputed(corpus, &qvec, NULL, 0.0f, top_k, results_out, count_out);
         for (int t = 0; t < q_ntok; t++) free(q_toks[t]);
         return;
@@ -6150,12 +6257,7 @@ void fce_sem_search_query_tfidf(const fce_sem_corpus_t *corpus,
     if (q_ntok == 0) goto cleanup_tf;
 
     fce_sem_vec_t qvec;
-    memset(&qvec, 0, sizeof(qvec));
-    for (int t = 0; t < q_ntok; t++) {
-        const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
-        if (rv) fce_sem_vec_add_scaled(&qvec, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
-    }
-    fce_sem_normalize(&qvec);
+    build_query_vector(corpus, q_toks, q_ntok, &qvec);
 
     int q_tok_ids[FCE_SEM_MAX_TOKENS];
     int q_id_count = 0;

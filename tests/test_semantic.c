@@ -1795,6 +1795,35 @@ static void test_corpus_save_load_roundtrip(void) {
     PASS();
 }
 
+static void test_mean_centering_spreads_cosines(void) {
+    TEST(mean - centering spreads doc cosines out of the anisotropy cone);
+    /* Co-occurrence enrichment leaves every doc vector in a narrow ~0.99 cone,
+     * so without centering a brute query scores related and unrelated docs
+     * almost identically (spread < 0.02). Mean-centering subtracts the corpus
+     * mean, pulling unrelated docs far away. We query for one topic cluster and
+     * require a large top-to-bottom spread plus a bottom score well below the
+     * old cone — both impossible in the un-centered regime. */
+    fce_sem_corpus_t *corp = build_demo_corpus(0); /* dense */
+    ASSERT(corp != NULL);
+    int doc_n = fce_sem_corpus_doc_count(corp);
+    ASSERT(doc_n >= 2); /* centering only applies for >= 2 docs */
+
+    fce_sem_ranked_t res[16];
+    uint32_t cnt = 0;
+    fce_sem_search_query_bruteforce(corp, "open file read", (uint32_t)doc_n, res, &cnt);
+    ASSERT(cnt >= 2);
+
+    /* Results are sorted descending by cosine. */
+    float top = res[0].score;
+    float bottom = res[cnt - 1].score;
+    ASSERT(top > 0.5f);          /* the matching cluster is still a strong hit */
+    ASSERT(bottom < 0.6f);       /* unrelated docs dropped out of the ~0.99 cone */
+    ASSERT(top - bottom > 0.3f); /* substantial spread (≈0.01 without centering) */
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
 static unsigned char *read_file_bytes(const char *p, long *out_n) {
     FILE *f = fopen(p, "rb");
     if (!f) {
@@ -2093,7 +2122,7 @@ static void test_corpus_load_rejects_bad_content2(void) {
         memcpy(v, pristine, (size_t)n);
         uint32_t flags = 0;
         memcpy(&flags, pristine + HDR_FLAGS_OFF, sizeof(flags));
-        flags |= 0x4u; /* bit outside FCE_CACHE_KNOWN_FLAGS */
+        flags |= 0x8u; /* bit outside FCE_CACHE_KNOWN_FLAGS (0x1|0x2|0x4) */
         memcpy(v + HDR_FLAGS_OFF, &flags, sizeof(flags));
         ASSERT(write_file_bytes(bad, v, n) == 0);
         ASSERT(fce_sem_corpus_load(bad) == NULL);
@@ -2174,6 +2203,7 @@ int main(void) {
     test_corpus_token_at_null_out_idf();
     test_corpus_add_null_elements();
     test_corpus_save_load_roundtrip();
+    test_mean_centering_spreads_cosines();
     test_corpus_load_rejects_bad_files();
     test_corpus_load_rejects_bad_content();
     test_corpus_load_rejects_bad_content2();
