@@ -975,10 +975,13 @@ static void test_corpus_search_query(void) {
     fce_sem_corpus_add_doc(corp, t4, 2);
     fce_sem_corpus_finalize(corp);
 
-    /* Search for "handle" — should rank t1 and t2 highly. */
+    /* Search for "handle" — should rank t1 and t2 highly. AUTO mode runs the
+     * fast inverted-index path but falls back to brute so results are returned
+     * even when the inverted index yields too few candidates. */
+    fce_sem_config_t auto_cfg = {.query_mode = FCE_QUERY_AUTO};
     fce_sem_ranked_t results[4];
     uint32_t count = 0;
-    fce_sem_search_query_fast(corp, "handle", 4, results, &count);
+    fce_sem_search_query(corp, "handle", 4, results, &count, &auto_cfg);
     ASSERT(count > 0);
     ASSERT(count <= 4);
 
@@ -1037,20 +1040,23 @@ static void test_search_query_repeated_same_corpus(void) {
     }
     ASSERT(fce_sem_corpus_finalize(corp) == 0);
 
+    /* AUTO mode exercises the fast-path scratch buffer (the regression target)
+     * while falling back to brute so results are returned on all platforms. */
+    fce_sem_config_t auto_cfg = {.query_mode = FCE_QUERY_AUTO};
     fce_sem_ranked_t results[10];
     uint32_t count = 0;
 
     /* Query 1: broad — many token hits, large raw buffer allocated */
-    fce_sem_search_query_fast(corp, "handle request parse auth validate user", 10, results, &count);
+    fce_sem_search_query(corp, "handle request parse auth validate user", 10, results, &count, &auto_cfg);
     ASSERT(count > 0);
     float score1 = results[0].score;
 
     /* Query 2: narrow — fewer token hits; buffer should be reused, not shrunk */
-    fce_sem_search_query_fast(corp, "send", 10, results, &count);
+    fce_sem_search_query(corp, "send", 10, results, &count, &auto_cfg);
     ASSERT(count > 0);
 
     /* Query 3: broad again — verify result is stable (same as query 1) */
-    fce_sem_search_query_fast(corp, "handle request parse auth validate user", 10, results, &count);
+    fce_sem_search_query(corp, "handle request parse auth validate user", 10, results, &count, &auto_cfg);
     ASSERT(count > 0);
     ASSERT_NEAR(results[0].score, score1, 1e-6f);
 
