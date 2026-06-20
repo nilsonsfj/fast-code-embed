@@ -4,6 +4,10 @@
  * Exercises: tokenization, random indexing, cosine similarity,
  * TF-IDF, corpus building, RRI, combined scoring.
  */
+/* setenv/unsetenv are POSIX, not ISO C11; request them under strict -std=c11. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200112L
+#endif
 #include "semantic/semantic.h"
 #include "foundation/hash_table.h"
 #include "pipeline/worker_pool.h"
@@ -1409,6 +1413,47 @@ static void test_oov_query_returns_empty(void) {
     PASS();
 }
 
+/* FCE_QUERY_FAST must honor its contract: when the inverted index is unusable
+ * (here: none was built), it returns an empty result set rather than silently
+ * falling back to a brute-force scan. AUTO and BRUTE still return results. */
+static void test_fast_no_inv_index_returns_empty(void) {
+    TEST(FAST returns empty when no inverted index - AUTO/BRUTE do not);
+    setenv("FCE_SEM_SKIP_INV_INDEX", "1", 1);
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    ASSERT(corp != NULL);
+    const char *t1[] = {"handle", "request"};
+    const char *t2[] = {"handle", "response"};
+    const char *t3[] = {"process", "data"};
+    fce_sem_corpus_add_doc(corp, t1, 2);
+    fce_sem_corpus_add_doc(corp, t2, 2);
+    fce_sem_corpus_add_doc(corp, t3, 2);
+    int rc = fce_sem_corpus_finalize(corp);
+    unsetenv("FCE_SEM_SKIP_INV_INDEX");
+    ASSERT(rc == 0);
+
+    fce_sem_ranked_t results[4];
+
+    /* FAST: in-vocab query (non-zero query vector) but no inverted index ->
+     * empty, not a brute-force fallback. */
+    uint32_t fast_count = 99; /* sentinel */
+    fce_sem_search_query_fast(corp, "handle", 4, results, &fast_count);
+    ASSERT(fast_count == 0);
+
+    /* AUTO: same conditions, but AUTO is allowed to fall back -> results. */
+    fce_sem_config_t auto_cfg = {.query_mode = FCE_QUERY_AUTO};
+    uint32_t auto_count = 0;
+    fce_sem_search_query(corp, "handle", 4, results, &auto_count, &auto_cfg);
+    ASSERT(auto_count > 0);
+
+    /* BRUTE: reference path, always scans -> results. */
+    uint32_t brute_count = 0;
+    fce_sem_search_query_bruteforce(corp, "handle", 4, results, &brute_count);
+    ASSERT(brute_count > 0);
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
 /* fce_parallel_for_static must invoke the callback exactly once
  * per index regardless of worker count.  Before the fix, bruteforce_
  * precomputed passed max_workers = nworkers-1, giving nworkers-1 total
@@ -2302,6 +2347,7 @@ int main(void) {
     /* Concurrency */
     printf("\nConcurrency:\n");
     test_oov_query_returns_empty();
+    test_fast_no_inv_index_returns_empty();
     test_parallel_for_static_covers_all_chunks();
 
     /* Validation */

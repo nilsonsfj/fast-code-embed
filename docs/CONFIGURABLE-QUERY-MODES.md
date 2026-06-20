@@ -10,7 +10,7 @@ trade-offs.
 typedef enum {
     FCE_QUERY_AUTO   = 0,  /* use fast path, fall back to brute if no inv index */
     FCE_QUERY_BRUTE  = 1,  /* always brute-force scan all docs */
-    FCE_QUERY_FAST   = 2,  /* inverted index + rerank; does NOT fall back to brute-force */
+    FCE_QUERY_FAST   = 2,  /* inverted index + rerank; empty result if index unusable, no brute fallback (except OOM) */
     FCE_QUERY_TFIDF  = 3,  /* TF-IDF candidate retrieval + RI rerank */
 } fce_query_mode_t;
 ```
@@ -32,7 +32,7 @@ search function. This keeps the library generic.
   - `fce_sem_search_query_bruteforce()` — brute (same as the `NULL`-cfg default).
   - `fce_sem_search_query_fast()` — `FCE_QUERY_FAST`.
   - `fce_sem_search_query_tfidf()` — `FCE_QUERY_TFIDF`.
-- Redirect logic inside the dispatcher: BRUTE → direct brute-force; TFIDF → calls the tfidf implementation; FAST/AUTO → inverted index (AUTO falls back to brute).
+- Redirect logic inside the dispatcher: BRUTE → direct brute-force; TFIDF → calls the tfidf implementation; FAST/AUTO → inverted index. AUTO falls back to brute when the index is unusable or returns too few candidates; FAST does not — it returns an empty result set instead (the only exception is degrading to brute under an out-of-memory condition in the parallel rerank).
 
 ## Finalize-time skip (`FCE_BRUTE_ONLY`)
 

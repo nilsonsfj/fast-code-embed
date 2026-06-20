@@ -67,7 +67,7 @@ enum { FCE_SEM_AST_PROFILE_DIMS = 25 };
 typedef enum {
     FCE_QUERY_AUTO = 0,  /* use fast path, fall back to brute if no inv index */
     FCE_QUERY_BRUTE = 1, /* always brute-force scan all docs */
-    FCE_QUERY_FAST = 2,  /* inverted index + rerank; does NOT fall back to brute-force */
+    FCE_QUERY_FAST = 2,  /* inverted index + rerank; empty result if index unusable, no brute fallback (except OOM) */
     FCE_QUERY_TFIDF = 3, /* TF-IDF candidate retrieval + RI rerank */
 } fce_query_mode_t;
 
@@ -509,7 +509,8 @@ void fce_sem_simple_rank_flat(
  * This is the generic entry point; the strategy is chosen by cfg.query_mode:
  *   FCE_QUERY_BRUTE — scan ALL document vectors (the reference path).
  *   FCE_QUERY_AUTO  — fast inverted-index path, fall back to brute.
- *   FCE_QUERY_FAST  — inverted-index path; does NOT fall back to brute.
+ *   FCE_QUERY_FAST  — inverted-index path; empty result if the index is
+ *                     unusable, no brute fallback (except under OOM).
  *   FCE_QUERY_TFIDF — TF-IDF sparse-cosine candidates, then RI rerank.
  *
  * Pass cfg == NULL to use the brute-force reference (FCE_QUERY_BRUTE). The
@@ -536,7 +537,12 @@ void fce_sem_search_query_bruteforce(const fce_sem_corpus_t *corpus,
                                      uint32_t *count_out);
 
 /* Fast search: inverted-index candidate retrieval + RI rerank. Does NOT fall
- * back to brute-force. Preset of fce_sem_search_query with FCE_QUERY_FAST. */
+ * back to brute-force: if the inverted index is unusable (none was built, or no
+ * query token is in vocabulary) it returns an empty result set rather than a
+ * full scan, and it never pads a short candidate list with brute results. The
+ * sole exception is an out-of-memory condition in the parallel rerank, where it
+ * degrades to brute-force rather than fail. Preset of fce_sem_search_query with
+ * FCE_QUERY_FAST. */
 void fce_sem_search_query_fast(const fce_sem_corpus_t *corpus,
                                const char *query,
                                uint32_t top_k,

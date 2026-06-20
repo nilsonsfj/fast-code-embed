@@ -6118,9 +6118,18 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
         goto cleanup;
     }
 
-    /* FCE_QUERY_FAST: force inverted index path, skip fallback to brute if too few. */
+    /* FCE_QUERY_FAST: honor the inverted-index contract strictly — never pad
+     * results with a brute-force scan. If the index is unusable (none was built,
+     * or no query token is in vocabulary so it can return nothing), the honest
+     * answer is an empty result set, not a silent full scan that would hide the
+     * recall limit and incur the brute latency the caller chose FAST to avoid.
+     * The only brute fallback left for FAST is the OOM safety valve in the
+     * parallel rerank path below (degrade rather than fail under memory pressure). */
     if (mode == FCE_QUERY_FAST) {
-        if (!corpus->inv_offsets || q_id_count == 0) goto brute_force;
+        if (!corpus->inv_offsets || q_id_count == 0) {
+            if (count_out) *count_out = 0;
+            goto cleanup;
+        }
     }
 
     /* Try inverted index candidate retrieval. */
