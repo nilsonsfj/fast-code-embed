@@ -4770,6 +4770,21 @@ static inline float fce_clamp_unit(float s) {
     return s;
 }
 
+/* Map an int8 dot product to a unit-interval similarity score.
+ * cosine in [-1,1] maps to [0,1] via (cosine + 1) / 2, clamped for the float
+ * rounding slop documented on fce_clamp_unit.
+ *
+ * A zero query or document magnitude is NOT the same as an orthogonal match.
+ * An orthogonal vector has cosine 0 and legitimately maps to the neutral 0.5.
+ * A zero-magnitude vector carries no signal at all (e.g. a document whose
+ * mean-centered embedding collapsed to the origin), so there is nothing to
+ * match against — it must score 0 and rank below every real candidate, not
+ * land at the 0.5 midpoint where it would outrank genuinely dissimilar docs. */
+static inline float fce_cosine_unit_score(float dot, float q_inv_mag, float d_inv_mag) {
+    if (q_inv_mag <= 0.0f || d_inv_mag <= 0.0f) return 0.0f;
+    return fce_clamp_unit((dot * q_inv_mag * d_inv_mag + FCE_SEM_UNIT_POS) * 0.5f);
+}
+
 /* ── Sparse vector operations ──────────────────────────────────── */
 
 /* Sparsify a dense int8 vector to top-K non-zero entries.
@@ -4888,8 +4903,7 @@ static float sq_score(int i, void *ctx) {
         dot = (float)fce_dot768_i8(c->qvec_q, dq + (size_t)i * FCE_SEM_DIM);
     }
     float inv_d_mag = c->corpus->doc_vectors_q_inv_mag ? c->corpus->doc_vectors_q_inv_mag[i] : 0.0f;
-    float cosine = (inv_d_mag > 0.0f && c->qvec_q_inv_mag > 0.0f) ? dot * c->qvec_q_inv_mag * inv_d_mag : 0.0f;
-    return fce_clamp_unit((cosine + FCE_SEM_UNIT_POS) * 0.5f);
+    return fce_cosine_unit_score(dot, c->qvec_q_inv_mag, inv_d_mag);
 }
 
 typedef struct {
@@ -5575,10 +5589,7 @@ static void rerank_worker(int wid, void *uctx) {
                                        w->corpus->doc_vectors_q + (size_t)i * FCE_SEM_DIM);
         }
         float inv_d_mag = w->corpus->doc_vectors_q_inv_mag ? w->corpus->doc_vectors_q_inv_mag[i] : 0.0f;
-        float cosine = (inv_d_mag > 0.0f && w->qvec_q_inv_mag > 0.0f)
-                           ? dot * w->qvec_q_inv_mag * inv_d_mag
-                           : 0.0f;
-        float s = fce_clamp_unit((cosine + FCE_SEM_UNIT_POS) * 0.5f);
+        float s = fce_cosine_unit_score(dot, w->qvec_q_inv_mag, inv_d_mag);
         if (n < w->top_k) {
             local[n].index = (uint32_t)i;
             local[n].score = s;
@@ -5662,10 +5673,7 @@ static void rerank_serial(const fce_sem_corpus_t *corpus,
                                        corpus->doc_vectors_q + (size_t)i * FCE_SEM_DIM);
         }
         float inv_d_mag = corpus->doc_vectors_q_inv_mag ? corpus->doc_vectors_q_inv_mag[i] : 0.0f;
-        float cosine = (inv_d_mag > 0.0f && qvec_q_inv_mag > 0.0f)
-                           ? dot * qvec_q_inv_mag * inv_d_mag
-                           : 0.0f;
-        float s = fce_clamp_unit((cosine + FCE_SEM_UNIT_POS) * 0.5f);
+        float s = fce_cosine_unit_score(dot, qvec_q_inv_mag, inv_d_mag);
         if (hn < heap_cap) {
             heap[hn].index = (uint32_t)i;
             heap[hn].score = s;
@@ -5736,8 +5744,7 @@ static void bf_chunk_worker(int idx, void *ctx) {
             dot = (float)fce_dot768_i8(qvec_q, corpus->doc_vectors_q + (size_t)i * FCE_SEM_DIM);
         }
         float inv_d_mag = corpus->doc_vectors_q_inv_mag ? corpus->doc_vectors_q_inv_mag[i] : 0.0f;
-        float cosine = (inv_d_mag > 0.0f && qvec_q_inv_mag > 0.0f) ? dot * qvec_q_inv_mag * inv_d_mag : 0.0f;
-        float s = fce_clamp_unit((cosine + FCE_SEM_UNIT_POS) * 0.5f);
+        float s = fce_cosine_unit_score(dot, qvec_q_inv_mag, inv_d_mag);
 
         if (n < (int)top_k) {
             local[n].index = (uint32_t)i;
