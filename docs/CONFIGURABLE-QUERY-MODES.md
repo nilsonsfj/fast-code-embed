@@ -80,3 +80,9 @@ The `make bench` target builds `bench_mem_query`.
   `FCE_SEM_SKIP_INV_INDEX=1` (inverted index skipped).
 - In brute-only mode all three search paths reduce to a brute-force scan and
   therefore return identical results.
+
+## See also
+
+- [COMPARISON-VS-POTION-BASE-8M.md](COMPARISON-VS-POTION-BASE-8M.md) — retrieval
+  quality and per-path query latency (brute vs. fast) measured against a
+  general-purpose static embedding on Linux kernel source.

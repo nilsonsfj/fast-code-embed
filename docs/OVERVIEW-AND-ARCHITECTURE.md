@@ -70,6 +70,12 @@ For `V` vocabulary tokens, `D` documents (measured at 193 K docs, ~1 M vocab):
 ~4.9 GB (transient). After `malloc_trim`: converges to live set (~1.1 GB).
 Run with `make bench` to build the `bench_mem_query` benchmark tool.
 
+### Retrieval quality vs. a general static embedding
+
+For an end-to-end comparison of retrieval quality and indexing/query performance
+against potion-base-8M (a general-purpose model2vec static embedding) on Linux
+kernel source, see [COMPARISON-VS-POTION-BASE-8M.md](COMPARISON-VS-POTION-BASE-8M.md).
+
 ---
 
 ## Java / JNI layer

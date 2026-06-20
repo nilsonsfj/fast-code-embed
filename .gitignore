@@ -58,3 +58,6 @@ index_dir
 index_dir_c
 test_asan
 test_debug
+
+# Throwaway comparison harness (potion-base-8M benchmark; not committed)
+_cmp/
