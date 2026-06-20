@@ -503,22 +503,22 @@ void fce_sem_simple_rank_flat(
 
 /* ── Search query ──────────────────────────────────────────────── */
 
-/* High-level search: tokenize a query string, build query vector from
- * enriched token vectors, return top-k ranked results.
- * Fast path: uses inverted index for candidate retrieval, then reranks
- * with RI cosine similarity. Falls back to brute-force if the inverted
- * index is unavailable or yields too few candidates.
+/* High-level configurable search: tokenize a query string, build a query
+ * vector from enriched token vectors, return top-k ranked results.
  *
- * cfg controls the search path: FCE_QUERY_AUTO (default) tries the fast
- * path first; FCE_QUERY_BRUTE always scans all docs; FCE_QUERY_FAST
- * forces the inverted-index path; FCE_QUERY_TFIDF forces TF-IDF candidates.
- * Pass NULL to use AUTO (backward compatible).
+ * This is the generic entry point; the strategy is chosen by cfg.query_mode:
+ *   FCE_QUERY_BRUTE — scan ALL document vectors (the reference path).
+ *   FCE_QUERY_AUTO  — fast inverted-index path, fall back to brute.
+ *   FCE_QUERY_FAST  — inverted-index path; does NOT fall back to brute.
+ *   FCE_QUERY_TFIDF — TF-IDF sparse-cosine candidates, then RI rerank.
  *
- * NOTE: Documents that are semantically related through Random-Indexing
- * synonym bridging but share NO literal tokens with the query will NOT
- * appear in results (the inverted index only finds documents containing
- * at least one query token). Use fce_sem_search_query_bruteforce for
- * exhaustive search when this matters. */
+ * Pass cfg == NULL to use the brute-force reference (FCE_QUERY_BRUTE). The
+ * suffixed wrappers below are presets over this function for the common cases.
+ *
+ * NOTE: the inverted-index strategies (AUTO/FAST/TFIDF) only find documents
+ * sharing at least one literal token with the query; documents related solely
+ * through Random-Indexing synonym bridging will NOT appear. Use the default
+ * brute-force path for exhaustive search when this matters. */
 void fce_sem_search_query(const fce_sem_corpus_t *corpus,
                           const char *query,
                           uint32_t top_k,
@@ -526,26 +526,32 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
                           uint32_t *count_out,
                           const fce_sem_config_t *cfg);
 
-/* Brute-force search: scans ALL document vectors with cosine similarity.
- * Slower but guaranteed to find the global top-k. Use when the inverted
- * index is unavailable or when exhaustive search is required. */
+/* Brute-force reference search: scans ALL document vectors with cosine
+ * similarity. Slower but guaranteed to find the global top-k. Equivalent to
+ * fce_sem_search_query(..., NULL). */
 void fce_sem_search_query_bruteforce(const fce_sem_corpus_t *corpus,
                                      const char *query,
                                      uint32_t top_k,
                                      fce_sem_ranked_t *results_out,
                                      uint32_t *count_out);
 
-/* TF-IDF hybrid search: uses TF-IDF sparse cosine for candidate retrieval,
- * then reranks with RI cosine. Better candidate quality than the keyword
- * approach but slightly slower candidate scoring.
- * cfg controls the search path (same semantics as fce_sem_search_query).
- * Pass NULL to use AUTO (backward compatible). */
+/* Fast search: inverted-index candidate retrieval + RI rerank. Does NOT fall
+ * back to brute-force. Preset of fce_sem_search_query with FCE_QUERY_FAST. */
+void fce_sem_search_query_fast(const fce_sem_corpus_t *corpus,
+                               const char *query,
+                               uint32_t top_k,
+                               fce_sem_ranked_t *results_out,
+                               uint32_t *count_out);
+
+/* TF-IDF hybrid search: TF-IDF sparse cosine for candidate retrieval, then
+ * reranks with RI cosine. Better candidate quality than the keyword approach
+ * but slightly slower candidate scoring. Preset of fce_sem_search_query with
+ * FCE_QUERY_TFIDF. */
 void fce_sem_search_query_tfidf(const fce_sem_corpus_t *corpus,
                                 const char *query,
                                 uint32_t top_k,
                                 fce_sem_ranked_t *results_out,
-                                uint32_t *count_out,
-                                const fce_sem_config_t *cfg);
+                                uint32_t *count_out);
 
 /* Return the number of candidates the inverted index would retrieve
  * for a given query. Useful for understanding search selectivity. */

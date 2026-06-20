@@ -49,9 +49,10 @@ index candidates + RI rerank. Search path is configurable via
 |-----------|------------|-------|
 | `fce_sem_random_index` | O(768) lookup or O(8) sparse fallback | Pretrained int8 → float; good |
 | `fce_sem_corpus_finalize` | O(tokens × window × docs) parallelized | Dominates ingest; int8 pipeline complete |
-| `fce_sem_search_query` (AUTO/FAST) | O(N_inverted + k×768) | 1–3 ms; architectural recall limit (1.2/10 overlap) |
+| `fce_sem_search_query` (default; BRUTE) | O(N × 768) | 3–5 ms; RAM-bandwidth floor; exhaustive reference |
+| `fce_sem_search_query_fast` (inverted index) | O(N_inverted + k×768) | 1–3 ms; architectural recall limit (1.2/10 overlap) |
 | `fce_sem_search_query_tfidf` | O(N_inverted + k×768) | 1–2 ms; same recall limitation |
-| `fce_sem_search_query_bruteforce` | O(N × 768) | 3–5 ms; RAM-bandwidth floor |
+| `fce_sem_search_query_bruteforce` (alias of default) | O(N × 768) | 3–5 ms; RAM-bandwidth floor |
 | `fce_sem_simple_rank` | O(N × 768) | RI-only; no TF-IDF in simple/flat API |
 
 ### Memory model (large corpus)
@@ -81,7 +82,7 @@ Run with `make bench` to build the `bench_mem_query` benchmark tool.
 - Critical native arrays used where GC pressure is a concern.
 - `fce_log` is emitted on allocation failures (e.g. pass2 OOM).
 - `addFiles` for reading source files, chunking by `}` boundaries, and tokenizing entirely in C.
-- High-level search API: `searchQuery`, `searchQueryTfidf`, `searchQueryBruteforce`,
+- High-level search API: `searchQuery` (brute-force reference), `searchQueryFast`, `searchQueryTfidf`, `searchQueryBruteforce`,
   `searchCandidateCount` — each delegates to the corresponding C function with
   AUTO/BRUTE/FAST/TFIDF mode dispatch.
 - Memory measurement: `getPeakRssBytes()`, `getCurrentRssBytes()`.

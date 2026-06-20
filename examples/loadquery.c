@@ -46,7 +46,7 @@ static void dump_query_results(const fce_sem_corpus_t *corp) {
         uint32_t fn = 0, bn = 0;
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
-        fce_sem_search_query(corp, q, 15, fr, &fn, NULL);
+        fce_sem_search_query_fast(corp, q, 15, fr, &fn);
         double fast_ms = ms_since(ts);
         clock_gettime(CLOCK_MONOTONIC, &ts);
         fce_sem_search_query_bruteforce(corp, q, 15, br, &bn);

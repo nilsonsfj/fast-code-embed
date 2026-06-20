@@ -85,9 +85,10 @@ public class Example {
 | `simpleRank(query, corpus, topK)` | `SearchResult[]` | Rank corpus by score descending |
 | `simpleSearch(query, corpus, topK, minScore)` | `SearchResult[]` | Rank with minimum threshold |
 | `simpleRankBatch(...)` | `SearchResult[]` | Rank using pre-extracted flat arrays (fast path) |
-| `searchQuery(corpus, query, topK)` | `SearchResult[]` | Tokenize query, retrieve via inverted index, rerank with RI |
+| `searchQuery(corpus, query, topK)` | `SearchResult[]` | Default reference: brute-force scan of all documents (exhaustive) |
+| `searchQueryFast(corpus, query, topK)` | `SearchResult[]` | Tokenize query, retrieve via inverted index, rerank with RI |
 | `searchQueryTfidf(corpus, query, topK)` | `SearchResult[]` | TF-IDF candidate retrieval + RI rerank |
-| `searchQueryBruteforce(corpus, query, topK)` | `SearchResult[]` | Brute-force scan all documents |
+| `searchQueryBruteforce(corpus, query, topK)` | `SearchResult[]` | Brute-force scan all documents (alias of `searchQuery`) |
 | `searchCandidateCount(corpus, query)` | `int` | Number of inverted index candidates for a query |
 | `getPeakRssBytes()` | `long` | Peak RSS via getrusage() |
 | `getCurrentRssBytes()` | `long` | Current RSS (macOS: task_info, Linux: /proc/self/status) |

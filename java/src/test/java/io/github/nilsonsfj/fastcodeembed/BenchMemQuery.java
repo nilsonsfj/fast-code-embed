@@ -224,7 +224,7 @@ public class BenchMemQuery {
 
             for (String qstr : queries) {
                 /* Warm up */
-                SearchResult[] fastResults = FastCodeEmbed.searchQuery(corp, qstr, topK);
+                SearchResult[] fastResults = FastCodeEmbed.searchQueryFast(corp, qstr, topK);
                 SearchResult[] tfidfResults = FastCodeEmbed.searchQueryTfidf(corp, qstr, topK);
                 SearchResult[] bruteResults = FastCodeEmbed.searchQueryBruteforce(corp, qstr, topK);
 
@@ -235,7 +235,7 @@ public class BenchMemQuery {
                 /* Benchmark fast path */
                 long t1 = System.nanoTime();
                 for (int i = 0; i < iters; i++)
-                    fastResults = FastCodeEmbed.searchQuery(corp, qstr, topK);
+                    fastResults = FastCodeEmbed.searchQueryFast(corp, qstr, topK);
                 double fastMs = (System.nanoTime() - t1) / 1e6 / iters;
                 totalFastMs += fastMs;
 

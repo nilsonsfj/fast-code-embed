@@ -5994,32 +5994,26 @@ static void build_query_vector(const fce_sem_corpus_t *corpus,
     }
 }
 
-/* Public API: tokenize query then delegate to internal brute-force. */
+/* Internal TF-IDF candidate-retrieval implementation (cfg-driven). The public
+ * fce_sem_search_query_tfidf wrapper and the generic dispatcher both route here
+ * for the TF-IDF path. Forward-declared so the generic dispatcher (defined
+ * below) can call it. */
+static void tfidf_search_impl(const fce_sem_corpus_t *corpus,
+                              const char *query,
+                              uint32_t top_k,
+                              fce_sem_ranked_t *results_out,
+                              uint32_t *count_out,
+                              const fce_sem_config_t *cfg);
+
+/* Public API: brute-force reference search. Thin preset over the generic
+ * dispatcher with FCE_QUERY_BRUTE (which is also the dispatcher's NULL-cfg
+ * default), so all strategies share one implementation. */
 void fce_sem_search_query_bruteforce(const fce_sem_corpus_t *corpus,
                                      const char *query,
                                      uint32_t top_k,
                                      fce_sem_ranked_t *results_out,
                                      uint32_t *count_out) {
-    if (count_out) *count_out = 0;
-    if (!corpus || !query || top_k == 0 || !results_out) return;
-    if (!corpus->doc_vectors_q && !corpus->doc_sparse_idx) return;
-
-    char *q_toks[FCE_SEM_MAX_TOKENS];
-    int q_ntok = fce_sem_tokenize(query, q_toks, FCE_SEM_MAX_TOKENS);
-    if (q_ntok == 0) goto cleanup;
-
-    fce_sem_vec_t qvec;
-    build_query_vector(corpus, q_toks, q_ntok, &qvec);
-
-    /* check for zero query vector before scoring. */
-    float qmag = 0.0f;
-    for (int i = 0; i < FCE_SEM_DIM; i++) qmag += qvec.v[i] * qvec.v[i];
-    if (qmag == 0.0f) goto cleanup;
-
-    bruteforce_precomputed(corpus, &qvec, NULL, 0.0f, top_k, results_out, count_out);
-
-cleanup:
-    for (int t = 0; t < q_ntok; t++) free(q_toks[t]);
+    fce_sem_search_query(corpus, query, top_k, results_out, count_out, NULL);
 }
 
 /* ── Fast search: inverted index candidate retrieval + rerank ─── */
@@ -6034,7 +6028,9 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
     if (!corpus || !query || top_k == 0 || !results_out) return;
     if (!corpus->doc_vectors_q && !corpus->doc_sparse_idx) return;
 
-    fce_query_mode_t mode = cfg ? cfg->query_mode : FCE_QUERY_AUTO;
+    /* NULL cfg defaults to the brute-force reference path. Callers opt into the
+     * fast/auto/tfidf strategies via cfg.query_mode or the named wrappers. */
+    fce_query_mode_t mode = cfg ? cfg->query_mode : FCE_QUERY_BRUTE;
 
     /* FCE_QUERY_BRUTE: skip inverted index, go straight to brute-force. */
     if (mode == FCE_QUERY_BRUTE) {
@@ -6053,7 +6049,7 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
     if (mode == FCE_QUERY_TFIDF) {
         fce_sem_config_t auto_cfg = cfg ? *cfg : (fce_sem_config_t){.query_mode = FCE_QUERY_AUTO};
         auto_cfg.query_mode = FCE_QUERY_AUTO;
-        fce_sem_search_query_tfidf(corpus, query, top_k, results_out, count_out, &auto_cfg);
+        tfidf_search_impl(corpus, query, top_k, results_out, count_out, &auto_cfg);
         return;
     }
 
@@ -6210,12 +6206,12 @@ cleanup:
 
 /* ── TF-IDF hybrid search: TF-IDF cosine candidates + RI rerank ── */
 
-void fce_sem_search_query_tfidf(const fce_sem_corpus_t *corpus,
-                                const char *query,
-                                uint32_t top_k,
-                                fce_sem_ranked_t *results_out,
-                                uint32_t *count_out,
-                                const fce_sem_config_t *cfg) {
+static void tfidf_search_impl(const fce_sem_corpus_t *corpus,
+                              const char *query,
+                              uint32_t top_k,
+                              fce_sem_ranked_t *results_out,
+                              uint32_t *count_out,
+                              const fce_sem_config_t *cfg) {
     if (count_out) *count_out = 0;
     if (!corpus || !query || top_k == 0 || !results_out) return;
     if (!corpus->doc_vectors_q && !corpus->doc_sparse_idx) return;
@@ -6336,6 +6332,28 @@ brute_tf:
 cleanup_tf:
     free(candidates_tf);
     for (int t = 0; t < q_ntok; t++) free(q_toks[t]);
+}
+
+/* Public API: fast inverted-index search. Preset over the generic dispatcher
+ * with FCE_QUERY_FAST. */
+void fce_sem_search_query_fast(const fce_sem_corpus_t *corpus,
+                               const char *query,
+                               uint32_t top_k,
+                               fce_sem_ranked_t *results_out,
+                               uint32_t *count_out) {
+    fce_sem_config_t cfg = {.query_mode = FCE_QUERY_FAST};
+    fce_sem_search_query(corpus, query, top_k, results_out, count_out, &cfg);
+}
+
+/* Public API: TF-IDF hybrid search. Preset over the generic dispatcher with
+ * FCE_QUERY_TFIDF (which routes to tfidf_search_impl). */
+void fce_sem_search_query_tfidf(const fce_sem_corpus_t *corpus,
+                                const char *query,
+                                uint32_t top_k,
+                                fce_sem_ranked_t *results_out,
+                                uint32_t *count_out) {
+    fce_sem_config_t cfg = {.query_mode = FCE_QUERY_TFIDF};
+    fce_sem_search_query(corpus, query, top_k, results_out, count_out, &cfg);
 }
 
 int fce_sem_search_candidate_count(const fce_sem_corpus_t *corpus,

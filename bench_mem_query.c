@@ -208,7 +208,7 @@ static void dump_query_results(const fce_sem_corpus_t *corp) {
         uint32_t fn = 0, bn = 0;
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
-        fce_sem_search_query(corp, q, 15, fr, &fn, NULL);
+        fce_sem_search_query_fast(corp, q, 15, fr, &fn);
         double fast_ms = ms_since(ts);
         clock_gettime(CLOCK_MONOTONIC, &ts);
         fce_sem_search_query_bruteforce(corp, q, 15, br, &bn);
@@ -516,8 +516,8 @@ int main(int argc, char **argv) {
                 for (int i = 0; i < npq; i++) {
                     fce_sem_ranked_t a[10], b[10];
                     uint32_t na = 0, nb = 0;
-                    fce_sem_search_query(corp, pq[i], 10, a, &na, NULL);
-                    fce_sem_search_query(ldc, pq[i], 10, b, &nb, NULL);
+                    fce_sem_search_query_fast(corp, pq[i], 10, a, &na);
+                    fce_sem_search_query_fast(ldc, pq[i], 10, b, &nb);
                     int same = (na == nb);
                     for (uint32_t j = 0; same && j < na; j++) {
                         if (a[j].index != b[j].index || fabsf(a[j].score - b[j].score) > 1e-6f) same = 0;
@@ -555,6 +555,8 @@ int main(int argc, char **argv) {
 
     fce_sem_config_t fast_cfg = fce_sem_get_config();
     fce_sem_config_t tfidf_cfg = fce_sem_get_config();
+    fast_cfg.query_mode = FCE_QUERY_AUTO;
+    tfidf_cfg.query_mode = FCE_QUERY_TFIDF;
     if (brute_only) {
         fast_cfg.query_mode = FCE_QUERY_BRUTE;
         tfidf_cfg.query_mode = FCE_QUERY_BRUTE;
@@ -598,7 +600,7 @@ int main(int argc, char **argv) {
 
             /* Warm up all paths */
             fce_sem_search_query(corp, qstr, top_k, fast_results, &fast_count, &fast_cfg);
-            fce_sem_search_query_tfidf(corp, qstr, top_k, tfidf_results, &tfidf_count, &tfidf_cfg);
+            fce_sem_search_query(corp, qstr, top_k, tfidf_results, &tfidf_count, &tfidf_cfg);
             fce_sem_search_query_bruteforce(corp, qstr, top_k, brute_results, &brute_count);
 
             int ncand = fce_sem_search_candidate_count(corp, qstr);
@@ -615,7 +617,7 @@ int main(int argc, char **argv) {
             /* Benchmark TF-IDF hybrid path */
             clock_gettime(CLOCK_MONOTONIC, &t1);
             for (int iter = 0; iter < iters; iter++)
-                fce_sem_search_query_tfidf(corp, qstr, top_k, tfidf_results, &tfidf_count, &tfidf_cfg);
+                fce_sem_search_query(corp, qstr, top_k, tfidf_results, &tfidf_count, &tfidf_cfg);
             double tfidf_ms = ms_since(t1) / iters;
             total_tfidf_ms += tfidf_ms;
 

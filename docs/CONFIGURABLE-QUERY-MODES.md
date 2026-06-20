@@ -15,16 +15,24 @@ typedef enum {
 } fce_query_mode_t;
 ```
 
-`fce_sem_config_t` carries a `fce_query_mode_t query_mode` field. The default is `FCE_QUERY_AUTO`.
+`fce_sem_config_t` carries a `fce_query_mode_t query_mode` field. `FCE_QUERY_AUTO`
+is the zero value, but the generic dispatcher treats a `NULL` cfg as
+`FCE_QUERY_BRUTE` (the reference path) — see below.
 
 ## Selecting the mode (no env var reading)
 
-The library does NOT read env vars for query mode. The caller sets `cfg.query_mode` on
-the config struct before calling search functions. This keeps the library generic.
+The library does NOT read env vars for query mode. The caller either picks a named
+wrapper or sets `cfg.query_mode` on the config struct before calling the generic
+search function. This keeps the library generic.
 
-- `fce_sem_search_query()` and `fce_sem_search_query_tfidf()` take a `const fce_sem_config_t *cfg`
-- Pass `NULL` for backward-compatible AUTO behavior
-- Redirect logic: BRUTE → direct brute-force; TFIDF → calls the tfidf function; FAST → forces the inverted index
+- The generic `fce_sem_search_query(corpus, query, top_k, results, count, cfg)`
+  dispatches on `cfg.query_mode`. Pass `cfg == NULL` to use the **brute-force
+  reference** (`FCE_QUERY_BRUTE`).
+- Named presets (no cfg) cover the common cases:
+  - `fce_sem_search_query_bruteforce()` — brute (same as the `NULL`-cfg default).
+  - `fce_sem_search_query_fast()` — `FCE_QUERY_FAST`.
+  - `fce_sem_search_query_tfidf()` — `FCE_QUERY_TFIDF`.
+- Redirect logic inside the dispatcher: BRUTE → direct brute-force; TFIDF → calls the tfidf implementation; FAST/AUTO → inverted index (AUTO falls back to brute).
 
 ## Finalize-time skip (`FCE_BRUTE_ONLY`)
 

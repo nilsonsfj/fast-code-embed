@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING:** The unsuffixed search entry point is now the brute-force
+  reference. `fce_sem_search_query` is the generic dispatcher; when `cfg == NULL`
+  it defaults to `FCE_QUERY_BRUTE` (was `FCE_QUERY_AUTO`). The inverted-index
+  path moved to the new `fce_sem_search_query_fast()`, and
+  `fce_sem_search_query_tfidf()` lost its `cfg` parameter (it is now a preset of
+  the generic dispatcher). In Java, `FastCodeEmbed.searchQuery` now performs the
+  brute-force reference search, and the new `searchQueryFast` exposes the
+  inverted-index path. `searchQueryBruteforce` remains as an alias of the
+  default.
+
 ## [0.0.12] — 2026-06-19
 
 - Automate changelog generation from commit history

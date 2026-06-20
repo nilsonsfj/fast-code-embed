@@ -870,7 +870,7 @@ static void test_search_query_null_doc_vectors(void) {
     /* Don't add docs or finalize — doc_vectors_q is NULL. */
     fce_sem_ranked_t results[4];
     uint32_t count = 0;
-    fce_sem_search_query(corp, "test", 4, results, &count, NULL);
+    fce_sem_search_query_fast(corp, "test", 4, results, &count);
     ASSERT(count == 0);
     fce_sem_corpus_free(corp);
     PASS();
@@ -978,7 +978,7 @@ static void test_corpus_search_query(void) {
     /* Search for "handle" — should rank t1 and t2 highly. */
     fce_sem_ranked_t results[4];
     uint32_t count = 0;
-    fce_sem_search_query(corp, "handle", 4, results, &count, NULL);
+    fce_sem_search_query_fast(corp, "handle", 4, results, &count);
     ASSERT(count > 0);
     ASSERT(count <= 4);
 
@@ -1041,16 +1041,16 @@ static void test_search_query_repeated_same_corpus(void) {
     uint32_t count = 0;
 
     /* Query 1: broad — many token hits, large raw buffer allocated */
-    fce_sem_search_query(corp, "handle request parse auth validate user", 10, results, &count, NULL);
+    fce_sem_search_query_fast(corp, "handle request parse auth validate user", 10, results, &count);
     ASSERT(count > 0);
     float score1 = results[0].score;
 
     /* Query 2: narrow — fewer token hits; buffer should be reused, not shrunk */
-    fce_sem_search_query(corp, "send", 10, results, &count, NULL);
+    fce_sem_search_query_fast(corp, "send", 10, results, &count);
     ASSERT(count > 0);
 
     /* Query 3: broad again — verify result is stable (same as query 1) */
-    fce_sem_search_query(corp, "handle request parse auth validate user", 10, results, &count, NULL);
+    fce_sem_search_query_fast(corp, "handle request parse auth validate user", 10, results, &count);
     ASSERT(count > 0);
     ASSERT_NEAR(results[0].score, score1, 1e-6f);
 
@@ -1371,7 +1371,7 @@ static void test_oov_query_returns_empty(void) {
      * zero → qvec_q_inv_mag == 0 → goto cleanup path exercised. */
     fce_sem_ranked_t results[4];
     uint32_t count = 99; /* sentinel */
-    fce_sem_search_query(corp, "zqxjvw_utterly_unknown_xkcd", 4, results, &count, NULL);
+    fce_sem_search_query_fast(corp, "zqxjvw_utterly_unknown_xkcd", 4, results, &count);
     ASSERT(count == 0);
 
     fce_sem_corpus_free(corp);
@@ -1741,7 +1741,7 @@ static void test_corpus_save_load_roundtrip(void) {
         /* Reference query results from the in-memory corpus. */
         fce_sem_ranked_t r0[8], b0[8];
         uint32_t c0 = 0, bc0 = 0;
-        fce_sem_search_query(corp, query, 8, r0, &c0, NULL);
+        fce_sem_search_query_fast(corp, query, 8, r0, &c0);
         fce_sem_search_query_bruteforce(corp, query, 8, b0, &bc0);
 
         /* Doc labels. */
@@ -1782,7 +1782,7 @@ static void test_corpus_save_load_roundtrip(void) {
         /* Query results must match exactly on the reloaded corpus. */
         fce_sem_ranked_t r1[8], b1[8];
         uint32_t c1 = 0, bc1 = 0;
-        fce_sem_search_query(ld, query, 8, r1, &c1, NULL);
+        fce_sem_search_query_fast(ld, query, 8, r1, &c1);
         fce_sem_search_query_bruteforce(ld, query, 8, b1, &bc1);
         ASSERT(ranked_equal(r0, c0, r1, c1));
         ASSERT(ranked_equal(b0, bc0, b1, bc1));

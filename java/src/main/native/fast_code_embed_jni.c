@@ -2230,7 +2230,7 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
         return NULL;
     }
     uint32_t count = 0;
-    fce_sem_search_query_tfidf(corp, query, topK, results, &count, NULL);
+    fce_sem_search_query_tfidf(corp, query, topK, results, &count);
     (*env)->ReleaseStringUTFChars(env, jquery, query);
 
     jobjectArray jresults = build_search_results(env, results, count);
@@ -2283,6 +2283,58 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
     }
     uint32_t count = 0;
     fce_sem_search_query_bruteforce(corp, query, topK, results, &count);
+    (*env)->ReleaseStringUTFChars(env, jquery, query);
+
+    jobjectArray jresults = build_search_results(env, results, count);
+    free(results);
+    release_handle(handle);
+    return jresults;
+}
+
+JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSearchQueryFast(
+    JNIEnv *env, jclass cls, jlong handle,
+    jstring jquery, jint topK) {
+    (void)cls;
+    /* use acquire_handle / release_handle. */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
+    if (topK <= 0) {
+        release_handle(handle);
+        return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
+    }
+    /* clamp topK to corpus size.
+     * early-return on empty corpus — avoids malloc
+     * amplification when doc_count == 0 and topK is large. */
+    int doc_count = fce_sem_corpus_doc_count(corp);
+    if (doc_count <= 0) {
+        release_handle(handle);
+        return (*env)->NewObjectArray(env, 0, cls_search_result, NULL);
+    }
+    if (topK > doc_count) topK = doc_count;
+    /* null jstring → GetStringUTFChars(env, NULL, …) is UB
+     * and crashes the JVM on HotSpot. Throw NPE before reaching the JNI call.
+     * return NULL (not empty array) for
+     * consistency with other methods. */
+    if (!jquery) {
+        if (cls_npe) (*env)->ThrowNew(env, cls_npe, "query is null");
+        release_handle(handle);
+        return NULL;
+    }
+    const char *query = (*env)->GetStringUTFChars(env, jquery, NULL);
+    if (!query || (*env)->ExceptionCheck(env)) {
+        if (query) (*env)->ReleaseStringUTFChars(env, jquery, query);
+        release_handle(handle);
+        return NULL;
+    }
+
+    fce_sem_ranked_t *results = (fce_sem_ranked_t *)malloc(sizeof(fce_sem_ranked_t) * topK);
+    if (!results) {
+        (*env)->ReleaseStringUTFChars(env, jquery, query);
+        release_handle(handle);
+        return NULL;
+    }
+    uint32_t count = 0;
+    fce_sem_search_query_fast(corp, query, topK, results, &count);
     (*env)->ReleaseStringUTFChars(env, jquery, query);
 
     jobjectArray jresults = build_search_results(env, results, count);

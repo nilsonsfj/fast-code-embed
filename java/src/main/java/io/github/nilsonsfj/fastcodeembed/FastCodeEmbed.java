@@ -184,15 +184,11 @@ public final class FastCodeEmbed {
     // ── Corpus search (high-level query API) ─────────────────────
 
     /**
-     * High-level search: tokenize a query string, build query vector from
-     * enriched token vectors, return top-k ranked results.
-     * Fast path: uses inverted index for candidate retrieval, then reranks
-     * with RI cosine similarity.
-     * <p><b>NOTE:</b> Uses AUTO mode: falls back to brute-force scan when the
-     * inverted index yields fewer than {@code topK} candidates, ensuring up to
-     * {@code topK} results are returned.  Use {@link #searchQueryBruteforce} for
-     * guaranteed exhaustive search, or {@link #searchQueryTfidf} for TF-IDF-based
-     * candidate retrieval.
+     * High-level search (brute-force reference): scans ALL document vectors with
+     * cosine similarity and returns the global top-k. This is the default,
+     * unsuffixed entry point — slower but guaranteed exhaustive.
+     * <p>For the faster inverted-index strategies use {@link #searchQueryFast}
+     * or {@link #searchQueryTfidf}.
      *
      * @param corpus finalized corpus to search
      * @param query  natural language query string
@@ -204,6 +200,23 @@ public final class FastCodeEmbed {
     public static SearchResult[] searchQuery(Corpus corpus,
                                              String query, int topK) {
         return nSearchQuery(requireCorpusHandle(corpus), query, topK);
+    }
+
+    /**
+     * Fast search: uses the inverted index for candidate retrieval, then reranks
+     * with RI cosine similarity. Does NOT fall back to brute-force, so documents
+     * sharing no literal token with the query will not appear.
+     *
+     * @param corpus finalized corpus to search
+     * @param query  natural language query string
+     * @param topK   maximum results
+     * @return ranked results sorted by score descending (may be fewer than topK)
+     * @throws NullPointerException if {@code corpus} is null
+     * @throws IllegalStateException if {@code corpus} is closed
+     */
+    public static SearchResult[] searchQueryFast(Corpus corpus,
+                                                 String query, int topK) {
+        return nSearchQueryFast(requireCorpusHandle(corpus), query, topK);
     }
 
     /**
@@ -224,7 +237,8 @@ public final class FastCodeEmbed {
 
     /**
      * Brute-force search: scans ALL document vectors with cosine similarity.
-     * Slower but guaranteed to find the global top-k.
+     * Slower but guaranteed to find the global top-k. Equivalent to
+     * {@link #searchQuery}.
      *
      * @param corpus finalized corpus to search
      * @param query  natural language query string
@@ -335,6 +349,9 @@ public final class FastCodeEmbed {
             float[] allRiVecs, String[] filePaths, int maxTokens,
             int[] qIndices, float[] qWeights, float[] qRiVec, int topK);
     private static native SearchResult[] nSearchQuery(long handle,
+        String query, int topK);
+
+    private static native SearchResult[] nSearchQueryFast(long handle,
         String query, int topK);
 
     private static native SearchResult[] nSearchQueryTfidf(long handle,
