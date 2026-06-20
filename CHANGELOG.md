@@ -7,6 +7,41 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.13] — 2026-06-20
+
+- Use AUTO mode in result-asserting search tests for cross-platform stability
+- Make brute-force the default (unsuffixed) search; add _fast/Fast variant
+- Mean-center document and query vectors to fix score anisotropy
+- Weight document and query vectors by IDF
+- Remove dead random-vector (RI) fallback
+- Add subword-decomposition guard tests
+- get rid of stray utf-8 character
+- explicit encoding when opening file
+- Regenerate nomic vectors with single-char base layer (NF4 distill)
+- Emit forward-slash incbin path in generated blob.S
+- Replace random-vector OOV fallback with subword decomposition
+- Build Linux release artifacts on manylinux_2_34 for glibc 2.34 floor
+- Automate changelog generation from commit history
+- Finalize changelog, drop test-count figures, and scrub internal IDs
+- Harden against review findings: crash guards, OOM hygiene, JNI safety, label validation; release 0.0.11
+- Add corpus cache (zero-copy mmap save/load) and cache PCA projection
+- Release polish: changelog notes, NOTICE/SECURITY, install target
+- Portable build under Clang/Linux with a warning-clean tree
+- Add version management tooling and read version from source files
+- Build aarch64 release for ARMv8.2-a with DotProd
+- Add version validation pipeline
+- Improve public docs and strip internal review IDs
+- Release-readiness tidying
+- Harden JNI/Java edge cases and make dimension runtime-configurable
+- Clean public docs and remove internal references
+- Add CI, cross-compiled release workflow, and Maven Central publishing
+- Add regression tests and documentation
+- Fix tokenizer correctness and finalize error handling
+- Harden JNI and core correctness
+- Add reduced-dimension (256) mode and sparse vector storage
+- Add configurable query modes
+- Initial project setup
+
 ### Changed
 - **BREAKING:** The unsuffixed search entry point is now the brute-force
   reference. `fce_sem_search_query` is the generic dispatcher; when `cfg == NULL`

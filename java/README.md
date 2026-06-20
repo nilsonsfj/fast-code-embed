@@ -1,6 +1,6 @@
 # fast-code-embed — Java JNI Binding
 
-**Version: 0.0.12**
+**Version: 0.0.13**
 
 Java binding for the [fast-code-embed](../) C library. Provides
 batch corpus operations and the zero-config simple scoring API via JNI.
@@ -18,7 +18,7 @@ batch corpus operations and the zero-config simple scoring API via JNI.
 <dependency>
     <groupId>io.github.nilsonsfj</groupId>
     <artifactId>fast-code-embed</artifactId>
-    <version>0.0.12</version>
+    <version>0.0.13</version>
 </dependency>
 ```
 
