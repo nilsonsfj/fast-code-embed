@@ -993,6 +993,31 @@ static void test_corpus_search_query(void) {
     PASS();
 }
 
+static void test_search_query_degenerate_doc_scores_zero(void) {
+    TEST(zero - magnitude doc scores 0 not the 0.5 midpoint);
+    /* Regression anchor: a doc whose mean-centered vector collapses to the
+     * origin has zero magnitude and carries no signal. It must score 0, not the
+     * neutral (cosine 0 -> (0+1)/2) midpoint of 0.5, otherwise a content-free
+     * doc outranks genuinely dissimilar real docs. A corpus of identical docs
+     * forces this: the corpus mean equals every doc, so centering zeros them. */
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    const char *toks[] = {"handle", "request", "parse"};
+    for (int i = 0; i < 50; i++) fce_sem_corpus_add_doc(corp, toks, 3);
+    ASSERT(fce_sem_corpus_finalize(corp) == 0);
+
+    fce_sem_ranked_t results[10];
+    uint32_t count = 0;
+    fce_sem_search_query_bruteforce(corp, "handle request parse", 5, results, &count);
+    ASSERT(count > 0);
+    /* Every returned doc is degenerate -> all must score exactly 0. */
+    for (uint32_t i = 0; i < count; i++) {
+        ASSERT_NEAR(results[i].score, 0.0f, 1e-6f);
+    }
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
 /* Corpus lifecycle */
 
 static void test_corpus_free_after_finalize(void) {
@@ -2254,6 +2279,7 @@ int main(void) {
     test_shutdown_and_reinit();
     test_hash_table_null_guard();
     test_corpus_search_query();
+    test_search_query_degenerate_doc_scores_zero();
 
     /* Robustness & memory limits */
     printf("\nRobustness & Memory Limits:\n");
