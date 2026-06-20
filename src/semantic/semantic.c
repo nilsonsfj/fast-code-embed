@@ -2688,6 +2688,7 @@ typedef struct {
     fce_sem_vec_t *doc_vectors;
     const fce_sem_vec_t *enriched_vecs; /* float32 fallback (NULL in R4 path) */
     const int8_t *enriched_vecs_q;      /* int8 path */
+    const float *idf;                   /* per-token IDF weight (entry_count); NULL = uniform */
     int **doc_token_ids;
     int *doc_token_counts;
     int doc_count;
@@ -2708,15 +2709,19 @@ static void docvec_build_worker(int wid, void *ctx_ptr) {
         for (int t = 0; t < ntok; t++) {
             int tid = ids[t];
             if (tid >= 0 && tid < dc->entry_count) {
+                /* IDF weight: down-weight ubiquitous tokens so they stop
+                 * dominating the sum (the anisotropy that flattens cosine). */
+                const float w = dc->idf ? dc->idf[tid] : 1.0f;
                 if (dc->enriched_vecs_q) {
                     /* dequantize int8 on the fly — ~5 tokens × 768 dims
                      * per doc, negligible vs the normalize at the end. */
                     const int8_t *src = &dc->enriched_vecs_q[(size_t)tid * FCE_SEM_DIM];
+                    const float mul = w / FCE_SEM_INT8_MAX;
                     for (int i = 0; i < FCE_SEM_DIM; i++) {
-                        dv.v[i] += (float)src[i] / FCE_SEM_INT8_MAX;
+                        dv.v[i] += mul * (float)src[i];
                     }
                 } else {
-                    fce_sem_vec_add_scaled(&dv, &dc->enriched_vecs[tid], 1.0f);
+                    fce_sem_vec_add_scaled(&dv, &dc->enriched_vecs[tid], w);
                 }
             }
         }
@@ -2910,10 +2915,23 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
         corpus->finalize_failed = true;
         return -1;
     }
+    /* Precompute per-token IDF = log(N/df) for the doc-vector sum. Down-weighting
+     * ubiquitous tokens keeps them from dominating every doc vector (the
+     * anisotropy that collapses cosine discrimination). NULL on OOM → the worker
+     * falls back to uniform weighting. The query side mirrors this weighting via
+     * fce_sem_corpus_idf so queries and docs live in the same weighted space. */
+    float *doc_idf = malloc((size_t)corpus->entry_count * sizeof(float));
+    if (doc_idf) {
+        for (int i = 0; i < corpus->entry_count; i++) {
+            int df = corpus->entries[i].doc_freq;
+            doc_idf[i] = df > 0 ? logf((float)corpus->doc_count / (float)df) : 0.0f;
+        }
+    }
     docvec_ctx_t dctx = {
         .doc_vectors = corpus->doc_vectors,
         .enriched_vecs = corpus->enriched_vecs,
         .enriched_vecs_q = corpus->enriched_vecs_q,
+        .idf = doc_idf,
         .doc_token_ids = corpus->doc_token_ids,
         .doc_token_counts = corpus->doc_token_counts,
         .doc_count = corpus->doc_count,
@@ -2921,6 +2939,7 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
     };
     atomic_init(&dctx.next_doc, 0);
     fce_parallel_for(worker_count, docvec_build_worker, &dctx, opts);
+    free(doc_idf);
 
     /* Quantize float32 doc vectors to int8 for brute-force bandwidth reduction.
      * 4 bytes/doc → 1 byte/doc; SIMD int8 dot is ~4x faster than float32.
@@ -3485,7 +3504,10 @@ void fce_sem_corpus_free(fce_sem_corpus_t *corpus) {
  * token_map hash table and the entries[] index array are rebuilt on the heap.
  * The matching teardown is the mmap_base branch in fce_sem_corpus_free. */
 
-#define FCE_CACHE_VERSION 1u
+/* v2: document/query vectors are IDF-weighted sums of token vectors. A v1
+ * cache holds unweighted doc vectors, which would mismatch the now IDF-weighted
+ * query vectors and score incorrectly — so v1 caches are rejected on load. */
+#define FCE_CACHE_VERSION 2u
 #define FCE_CACHE_ENDIAN_MARKER 0x01020304u
 #define FCE_CACHE_FLAG_ENR_SPARSE 0x1u
 #define FCE_CACHE_FLAG_DOC_SPARSE 0x2u
@@ -5861,7 +5883,7 @@ void fce_sem_search_query_bruteforce(const fce_sem_corpus_t *corpus,
     memset(&qvec, 0, sizeof(qvec));
     for (int t = 0; t < q_ntok; t++) {
         const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
-        if (rv) fce_sem_vec_add_scaled(&qvec, rv, 1.0f);
+        if (rv) fce_sem_vec_add_scaled(&qvec, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
     }
     fce_sem_normalize(&qvec);
 
@@ -5899,7 +5921,7 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
         memset(&qvec, 0, sizeof(qvec));
         for (int t = 0; t < q_ntok; t++) {
             const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
-            if (rv) fce_sem_vec_add_scaled(&qvec, rv, 1.0f);
+            if (rv) fce_sem_vec_add_scaled(&qvec, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
         }
         fce_sem_normalize(&qvec);
         bruteforce_precomputed(corpus, &qvec, NULL, 0.0f, top_k, results_out, count_out);
@@ -5944,7 +5966,7 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
     for (int t = 0; t < q_ntok; t++) {
         const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
         if (rv) {
-            fce_sem_vec_add_scaled(&qvec, rv, 1.0f);
+            fce_sem_vec_add_scaled(&qvec, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
         }
     }
     fce_sem_normalize(&qvec);
@@ -6097,7 +6119,7 @@ void fce_sem_search_query_tfidf(const fce_sem_corpus_t *corpus,
         memset(&qvec, 0, sizeof(qvec));
         for (int t = 0; t < q_ntok; t++) {
             const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
-            if (rv) fce_sem_vec_add_scaled(&qvec, rv, 1.0f);
+            if (rv) fce_sem_vec_add_scaled(&qvec, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
         }
         fce_sem_normalize(&qvec);
         bruteforce_precomputed(corpus, &qvec, NULL, 0.0f, top_k, results_out, count_out);
@@ -6131,7 +6153,7 @@ void fce_sem_search_query_tfidf(const fce_sem_corpus_t *corpus,
     memset(&qvec, 0, sizeof(qvec));
     for (int t = 0; t < q_ntok; t++) {
         const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
-        if (rv) fce_sem_vec_add_scaled(&qvec, rv, 1.0f);
+        if (rv) fce_sem_vec_add_scaled(&qvec, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
     }
     fce_sem_normalize(&qvec);
 
