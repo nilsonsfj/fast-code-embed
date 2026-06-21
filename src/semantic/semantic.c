@@ -5326,6 +5326,14 @@ typedef struct {
  * struct. No _Thread_local is used. */
 #ifndef _WIN32
 static pthread_key_t tls_cand_key;
+/* Whether tls_cand_key holds a successfully created key. This MUST be tracked
+ * separately from the key value: pthread_key_create may legitimately return 0
+ * as a valid key (glibc hands out key 0 for the first key created in a
+ * process), so the key value itself cannot distinguish "not created" from
+ * "created as key 0". Treating 0 as failure made the inverted-index candidate
+ * scratch unavailable on platforms where our key is the first one — silently
+ * disabling the FAST and TF-IDF search paths. */
+static atomic_bool tls_cand_key_ok = false;
 static void tls_cand_scratch_destructor(void *ptr) {
     cand_scratch_t *sc = (cand_scratch_t *)ptr;
     if (sc) {
@@ -5336,14 +5344,14 @@ static void tls_cand_scratch_destructor(void *ptr) {
     }
 }
 static void tls_cand_key_init(void) {
-    /* pthread_key_create can fail if the system
-     * runs out of TLS keys. On failure tls_cand_key is 0 (zero-init) and
-     * subsequent pthread_getspecific/setspecific on slot 0 is UB. The
-     * documented maximum is PTHREAD_KEYS_MAX (typically 128-512); in practice
-     * a JVM already uses ~50 keys. We cannot recover gracefully, so log and
-     * leave tls_cand_key as 0 — tls_cand_scratch_get will return NULL which
-     * callers already handle (collect_candidates checks for NULL). */
-    if (pthread_key_create(&tls_cand_key, tls_cand_scratch_destructor) != 0) {
+    /* pthread_key_create can fail if the system runs out of TLS keys (the
+     * documented maximum is PTHREAD_KEYS_MAX, typically 128-512; a JVM already
+     * uses ~50). We cannot recover gracefully, so log and leave tls_cand_key_ok
+     * false — tls_cand_scratch_get then returns NULL, which callers already
+     * handle (collect_candidates checks for NULL and falls back to brute). */
+    if (pthread_key_create(&tls_cand_key, tls_cand_scratch_destructor) == 0) {
+        atomic_store_explicit(&tls_cand_key_ok, true, memory_order_release);
+    } else {
         fce_log_warn("tls_cand_key_init",
                      "detail", "pthread_key_create failed (TLS key exhaustion)");
     }
@@ -5351,7 +5359,9 @@ static void tls_cand_key_init(void) {
 static cand_scratch_t *tls_cand_scratch_get(void) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     pthread_once(&once, tls_cand_key_init);
-    if (!tls_cand_key) return NULL; /* key creation failed */
+    if (!atomic_load_explicit(&tls_cand_key_ok, memory_order_acquire)) {
+        return NULL; /* key creation failed */
+    }
     cand_scratch_t *sc = (cand_scratch_t *)pthread_getspecific(tls_cand_key);
     if (!sc) {
         sc = (cand_scratch_t *)calloc(1, sizeof(cand_scratch_t));

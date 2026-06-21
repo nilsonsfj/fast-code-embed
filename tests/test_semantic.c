@@ -1454,23 +1454,24 @@ static void test_fast_no_inv_index_returns_empty(void) {
     PASS();
 }
 
-/* Drive many candidates through the FAST rerank so the parallel per-worker
- * heap merge runs (worker_count > 1 && ncand/2 > top_k on multi-core hosts),
- * and assert the merged output stays within top_k, is finite, and is sorted
- * descending. Guards the merge against producing more results than requested
- * or reading past a worker's top_k-sized slot. */
+/* The FAST (inverted-index) search path must actually return candidates on an
+ * indexed corpus, and its parallel per-worker heap merge must stay within top_k,
+ * finite, and sorted descending.
+ *
+ * Regression guard for two distinct bugs:
+ *  - The candidate-scratch thread-local key used pthread_key value 0 as a
+ *    "not created" sentinel. Since pthread_key_create may legitimately return
+ *    key 0 (glibc gives it to the first key created), the scratch was reported
+ *    unavailable and FAST/TF-IDF silently returned zero results on affected
+ *    platforms. Asserting count > 0 here catches that.
+ *  - The merge bound (count <= top_k) guards the per-worker heap clamp. */
 static void test_fast_parallel_merge_bounded(void) {
-    TEST(FAST parallel rerank merge stays bounded and ordered);
+    TEST(FAST search returns candidates and merge stays bounded);
     fce_sem_corpus_t *corp = fce_sem_corpus_new();
     ASSERT(corp != NULL);
-    /* Mirror the small real vocabulary of the basic search test (which queries
-     * "handle" reliably on every CI platform), just scaled up: repeat four
-     * fixed token patterns so ~half the docs contain "handle". This yields well
-     * above 2*top_k candidates from the inverted index (so the parallel rerank +
-     * heap merge runs) while keeping the query vector robustly non-zero across
-     * platforms. A large pool of unique tokens, by contrast, dominates the
-     * corpus mean and makes the centered query vector quantize to all-zero int8
-     * on some platforms, short-circuiting before the rerank. */
+    /* Repeat four fixed token patterns so ~half the docs contain "handle",
+     * yielding well above 2*top_k inverted-index candidates so the parallel
+     * rerank + heap merge runs. */
     const char *patterns[][2] = {
         {"handle", "request"},
         {"handle", "response"},
@@ -1488,14 +1489,9 @@ static void test_fast_parallel_merge_bounded(void) {
     uint32_t count = 99; /* sentinel */
     fce_sem_search_query_fast(corp, "handle", top_k, results, &count);
 
-    /* The clamp's contract: the merged result count never exceeds top_k, and
-     * every returned entry is finite and in descending score order. We assert
-     * those properties on whatever the rerank returns rather than requiring a
-     * fixed count — how many inverted-index candidates the FAST path yields can
-     * vary by build/platform, but the merge bound must hold unconditionally.
-     * The ASan job, where this corpus does drive candidates through the parallel
-     * merge, is what exercises the out-of-bounds guard. */
-    ASSERT(count != 99); /* the call must set the count */
+    /* FAST must find the indexed "handle" docs — empty here means the
+     * candidate path is broken (e.g. unavailable scratch), not a recall limit. */
+    ASSERT(count > 0);
     ASSERT(count <= top_k);
     for (uint32_t i = 0; i < count; i++) {
         ASSERT(isfinite(results[i].score));
