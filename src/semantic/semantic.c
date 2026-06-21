@@ -3301,20 +3301,36 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
                                     }
                                 }
                                 corpus->inv_offsets[ntok] = (int)w;
-                                /* debug-only assertion that
-                                 * inv_doc_ids is sorted ascending and deduplicated.
+                                /* inv_doc_ids must be strictly ascending (sorted +
+                                 * deduplicated) within each token's [start,end) slice.
                                  * The binary search in idf_score_fn / tfidf_mass_score_fn
-                                 * assumes this; violation produces silently-missed
-                                 * candidates. Checked once at build time, not per query. */
-#ifndef NDEBUG
-                                for (int t = 0; t < ntok; t++) {
+                                 * assumes this; a violation silently misses candidates
+                                 * and ranks inconsistently. The cache loader enforces the
+                                 * same invariant on load (see FCE_SEC_INV_DOC_IDS
+                                 * validation), but an in-memory build relies solely on
+                                 * this check — so validate unconditionally (not behind
+                                 * NDEBUG) and disable the inverted index on violation so
+                                 * queries fall back to brute force rather than returning
+                                 * wrong results. Checked once at build time, not per query. */
+                                bool inv_sorted = true;
+                                for (int t = 0; t < ntok && inv_sorted; t++) {
                                     int s = corpus->inv_offsets[t];
                                     int e = corpus->inv_offsets[t + 1];
                                     for (int j = s + 1; j < e; j++) {
-                                        assert(corpus->inv_doc_ids[j] > corpus->inv_doc_ids[j - 1]);
+                                        if (corpus->inv_doc_ids[j] <= corpus->inv_doc_ids[j - 1]) {
+                                            inv_sorted = false;
+                                            break;
+                                        }
                                     }
                                 }
-#endif
+                                if (!inv_sorted) {
+                                    fce_log_error("inv_index.unsorted",
+                                                  "detail", "inverted index not strictly ascending; disabling fast path");
+                                    free(corpus->inv_offsets);
+                                    corpus->inv_offsets = NULL;
+                                    free(corpus->inv_doc_ids);
+                                    corpus->inv_doc_ids = NULL;
+                                }
                             } else {
                                 free(corpus->inv_offsets);
                                 corpus->inv_offsets = NULL;
