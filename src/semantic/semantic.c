@@ -701,12 +701,19 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
         /* ferror must be checked BEFORE fclose, since
          * fclose invalidates the FILE handle. A short read with ferror set
          * means an I/O error (not EOF); skip this file rather than indexing
-         * truncated data. a short read WITHOUT
-         * ferror (file truncated between fstat and fread) yields nread <
-         * file_len but read_err == 0 — the partial buffer is indexed as
-         * if complete. This is benign for offline indexing of trusted input
-         * but worth noting: truncation mid-read produces a partially-indexed
-         * file with no diagnostic. */
+         * truncated data.
+         *
+         * A short read WITHOUT ferror (the file shrank between fstat and fread,
+         * e.g. it was being edited while indexing) yields nread < file_len but
+         * read_err == 0. The partial buffer is indexed as-is — by deliberate
+         * choice, not oversight: content is chunked on '}' boundaries (below),
+         * so every chunk before the truncation point is a complete, valid
+         * function; only the tail is lost. Keeping those good chunks is more
+         * useful than discarding the whole file, and indexing is best-effort,
+         * not a system of record. Files in motion are an edge case outside the
+         * intended offline/static-tree workflow and resolve on the next reindex.
+         * Reading only [0,nread) keeps this memory-safe. The case is surfaced
+         * via the WARN below for operators who do point at live filesystems. */
         int read_err = (nread != file_len && ferror(f));
         fclose(f);
         if (read_err) {
@@ -714,9 +721,8 @@ int fce_sem_corpus_add_files(fce_sem_corpus_t *corpus,
             free(file_buf);
             continue;
         }
-        /* short read without ferror (file truncated
-         * between fstat and fread) yields partial content indexed as if complete.
-         * Warn once so batch indexers can detect corruption. */
+        /* Surface the partial read (see rationale above) so operators indexing
+         * live filesystems can spot a file that shrank mid-read. */
         if (nread != file_len) {
             fce_log_warn("add_files.truncated",
                          "path", paths[fi]);
@@ -3854,6 +3860,11 @@ int fce_sem_corpus_save(const fce_sem_corpus_t *corpus, const char *path,
         }
         cur += sec[i].len;
     }
+    /* fflush pushes stdio buffers to the OS page cache only; this is atomic
+     * (via the rename below) but not crash-durable — there is no fsync of the
+     * file or the parent directory. That is deliberate: the cache is rebuildable
+     * and the loader rejects malformed files. See fce_sem_corpus_save in the
+     * header for the full contract. */
     if (fflush(f) != 0 || ferror(f)) goto write_err;
     if (fclose(f) != 0) {
         f = NULL;

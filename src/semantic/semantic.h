@@ -321,8 +321,16 @@ const char *fce_sem_corpus_token_at(const fce_sem_corpus_t *corpus, int index,
  * through the Java binding the bytes must be valid modified UTF-8 (Java strings
  * already are), since the JNI layer hands them to NewStringUTF unchanged.
  *
- * The write is atomic: data goes to a sibling temporary file that is renamed
- * over `path` on success, so a concurrent reader never observes a torn file. */
+ * The write is atomic but NOT crash-durable. Data goes to a sibling temporary
+ * file that is renamed over `path` on success, so a concurrent reader never
+ * observes a torn file. However, the bytes are only flushed to the OS page cache
+ * (fflush + fclose), not fsync'd to stable storage, and the directory entry from
+ * the rename is not fsync'd either. A power loss or kernel panic in the window
+ * after this call returns can therefore leave `path` absent or zero-length even
+ * though it returned 0. This is intentional: the cache is a rebuildable artifact
+ * and fce_sem_corpus_load validates+rejects any malformed file, so a lost or
+ * partially-persisted cache simply triggers a rebuild from source on next load.
+ * Do not treat a successful return as a guarantee the cache survives a crash. */
 int fce_sem_corpus_save(const fce_sem_corpus_t *corpus, const char *path,
                         const char *const *doc_labels, int doc_label_count);
 
