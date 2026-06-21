@@ -10,11 +10,24 @@
 #   make extract    — Regenerate nomic vectors (requires Python + torch)
 #
 CC      ?= cc
+# -mtune controls instruction scheduling for a target microarchitecture (it does
+# NOT change the instruction set — the AVX2 path is selected at runtime via
+# __builtin_cpu_supports, so correctness is independent of this flag). Default to
+# -mtune=generic so redistributed artifacts (manylinux wheel / Maven JAR) are not
+# tuned for whatever CI runner happened to build them, which can pessimize on
+# unrelated deployment CPUs. Source builders targeting their own machine can pass
+# NATIVE=1 to recover -mtune=native scheduling.
+NATIVE ?= 0
+ifeq ($(NATIVE),1)
+TUNE ?= -mtune=native
+else
+TUNE ?= -mtune=generic
+endif
 # -fPIC ensures the static library objects can be linked into a shared library
 # (e.g., the JNI dylib) on all platforms, including macOS ARM64 where the linker
 # requires PIC for dylib content. The tree builds warning-clean under
 # -Wall -Wextra -Wpedantic on both GCC and Clang (-std=c11, no C23 features).
-CFLAGS       ?= -O2 -Wall -Wextra -Wpedantic -std=c11 -mtune=native -DNDEBUG -fPIC
+CFLAGS       ?= -O2 -Wall -Wextra -Wpedantic -std=c11 $(TUNE) -DNDEBUG -fPIC
 CFLAGS_DEBUG ?= -O0 -Wall -Wextra -Wpedantic -std=c11 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 AR      ?= ar
 ARFLAGS ?= rcs
