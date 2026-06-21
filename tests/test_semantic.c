@@ -1454,6 +1454,58 @@ static void test_fast_no_inv_index_returns_empty(void) {
     PASS();
 }
 
+/* Drive many candidates through the FAST rerank so the parallel per-worker
+ * heap merge runs (worker_count > 1 && ncand/2 > top_k on multi-core hosts),
+ * and assert the merged output stays within top_k, is finite, and is sorted
+ * descending. Guards the merge against producing more results than requested
+ * or reading past a worker's top_k-sized slot. */
+static void test_fast_parallel_merge_bounded(void) {
+    TEST(FAST parallel rerank merge stays bounded and ordered);
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    ASSERT(corp != NULL);
+    /* Mirror the small real vocabulary of the basic search test (which queries
+     * "handle" reliably on every CI platform), just scaled up: repeat four
+     * fixed token patterns so ~half the docs contain "handle". This yields well
+     * above 2*top_k candidates from the inverted index (so the parallel rerank +
+     * heap merge runs) while keeping the query vector robustly non-zero across
+     * platforms. A large pool of unique tokens, by contrast, dominates the
+     * corpus mean and makes the centered query vector quantize to all-zero int8
+     * on some platforms, short-circuiting before the rerank. */
+    const char *patterns[][2] = {
+        {"handle", "request"},
+        {"handle", "response"},
+        {"process", "data"},
+        {"process", "input"},
+    };
+    for (int i = 0; i < 40; i++) {
+        const char **toks = patterns[i % 4];
+        fce_sem_corpus_add_doc(corp, toks, 2);
+    }
+    ASSERT(fce_sem_corpus_finalize(corp) == 0);
+
+    const uint32_t top_k = 5;
+    fce_sem_ranked_t results[5];
+    uint32_t count = 99; /* sentinel */
+    fce_sem_search_query_fast(corp, "handle", top_k, results, &count);
+
+    /* The clamp's contract: the merged result count never exceeds top_k, and
+     * every returned entry is finite and in descending score order. We assert
+     * those properties on whatever the rerank returns rather than requiring a
+     * fixed count — how many inverted-index candidates the FAST path yields can
+     * vary by build/platform, but the merge bound must hold unconditionally.
+     * The ASan job, where this corpus does drive candidates through the parallel
+     * merge, is what exercises the out-of-bounds guard. */
+    ASSERT(count != 99); /* the call must set the count */
+    ASSERT(count <= top_k);
+    for (uint32_t i = 0; i < count; i++) {
+        ASSERT(isfinite(results[i].score));
+        if (i > 0) ASSERT(results[i - 1].score >= results[i].score);
+    }
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
 /* fce_parallel_for_static must invoke the callback exactly once
  * per index regardless of worker count.  Before the fix, bruteforce_
  * precomputed passed max_workers = nworkers-1, giving nworkers-1 total
@@ -2348,6 +2400,7 @@ int main(void) {
     printf("\nConcurrency:\n");
     test_oov_query_returns_empty();
     test_fast_no_inv_index_returns_empty();
+    test_fast_parallel_merge_bounded();
     test_parallel_for_static_covers_all_chunks();
 
     /* Validation */

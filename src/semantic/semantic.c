@@ -4994,11 +4994,16 @@ static uint32_t merge_worker_heaps(
     fce_sem_ranked_t *results_out) {
     uint32_t k = 0;
     for (int w = 0; w < worker_count; w++) {
-        /* assert worker_counts[w] <= top_k.
-         * The heap logic guarantees each worker produces at most top_k results,
-         * but a bug in the heap could cause OOB reads on worker_results. */
-        assert(worker_counts[w] <= (int)top_k);
-        for (int i = 0; i < worker_counts[w]; i++) {
+        /* Each worker slot holds at most top_k results (its local heap is sized
+         * top_k), so worker_counts[w] is guaranteed in-bounds. The assert catches
+         * a violation loudly in debug builds; the clamp is the release-build
+         * backstop — without it a too-large count would read past the worker's
+         * top_k-sized slot in worker_results. Clamp rather than abort: dropping
+         * the overflow tail degrades gracefully instead of crashing. */
+        int wc = worker_counts[w];
+        assert(wc <= (int)top_k);
+        if (wc > (int)top_k) wc = (int)top_k;
+        for (int i = 0; i < wc; i++) {
             fce_sem_ranked_t r = worker_results[(size_t)w * top_k + i];
             if (!isfinite(r.score)) continue;
             if (k < top_k) {
