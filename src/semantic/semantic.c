@@ -991,11 +991,15 @@ static void init_brute_workers(void) {
     }
 }
 
-/* one-shot log gate. Score functions are
+/* one-shot log gates for non-finite scores. Score functions are
  * hot — emitting a warning per NaN/Inf item would flood the log when
  * a caller passes a fully-NaN corpus. atomic_exchange gives us a
- * single edge transition (0→1) per process lifetime. */
-static _Atomic int g_nonfinite_warned = 0;
+ * single edge transition (0→1) per process lifetime. The combined and
+ * simple scorers are distinct code paths a caller may debug independently,
+ * so each owns its own gate — otherwise whichever trips first would
+ * permanently suppress the other's first-non-finite diagnostic. */
+static _Atomic int g_nonfinite_warned_combined = 0;
+static _Atomic int g_nonfinite_warned_simple = 0;
 
 /* one-shot gate for the vocabulary-cap warning.
  * On a hostile corpus the per-token fce_log_warn would flood the log;
@@ -4547,7 +4551,7 @@ static float score_combined_internal(const fce_sem_func_t *a, const fce_sem_func
         /* surface a one-shot warning instead of
          * silently returning 0. Repeated NaN/Inf inputs would otherwise
          * produce repeated silent zero scores with no diagnostic. */
-        if (atomic_exchange_explicit(&g_nonfinite_warned, 1, memory_order_acq_rel) == 0) {
+        if (atomic_exchange_explicit(&g_nonfinite_warned_combined, 1, memory_order_acq_rel) == 0) {
             fce_log_warn("combined_score.nonfinite_input", NULL);
         }
         return 0.0f;
@@ -6662,9 +6666,10 @@ static float fce_score_simple_internal(fce_sem_func_t *a, fce_sem_func_t *b, flo
 
     ri *= prox;
     if (!isfinite(ri)) {
-        /* one-shot warning, same gate as
-         * score_combined_internal. */
-        if (atomic_exchange_explicit(&g_nonfinite_warned, 1, memory_order_acq_rel) == 0) {
+        /* one-shot warning on its own gate (independent of
+         * score_combined_internal) so this path's first non-finite input is
+         * always surfaced. */
+        if (atomic_exchange_explicit(&g_nonfinite_warned_simple, 1, memory_order_acq_rel) == 0) {
             fce_log_warn("simple_score.nonfinite_input", NULL);
         }
         return 0.0f;
