@@ -7,6 +7,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.14] — 2026-06-21
+
+- Give combined and simple scorers independent non-finite warn gates
+- Document add_files partial-read and cache-save durability semantics
+- Default to -mtune=generic; add NATIVE=1 opt-in for native tuning
+- Validate inverted-index sort invariant in release builds
+- Fix inverted-index search returning no results when pthread key is 0
+- Clamp per-worker result count in parallel heap merge
+- Make FCE_QUERY_FAST honor its no-fallback contract
+- Score zero-magnitude docs as 0 instead of the 0.5 midpoint
+- docs: add potion-base-8M comparison and cross-reference it
+
 ## [0.0.13] — 2026-06-20
 
 - Use AUTO mode in result-asserting search tests for cross-platform stability
