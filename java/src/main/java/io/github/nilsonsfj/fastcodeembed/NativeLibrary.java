@@ -23,6 +23,9 @@ public final class NativeLibrary {
      *
      * @throws UnsatisfiedLinkError if the library cannot be found or loaded
      */
+    /* System.loadLibrary is a JDK "restricted" method (native access); loading
+     * our own JNI library is the intended use, so the warning is suppressed. */
+    @SuppressWarnings("restricted")
     public static synchronized void load() {
         if (loaded) return;
         try {
@@ -33,6 +36,9 @@ public final class NativeLibrary {
         }
     }
 
+    /* System.load is "restricted" (native access); loading the JNI library we
+     * just extracted from our own JAR is the intended use. */
+    @SuppressWarnings("restricted")
     private static void loadFromJar() {
         String os = System.getProperty("os.name", "").toLowerCase();
         String osKey;

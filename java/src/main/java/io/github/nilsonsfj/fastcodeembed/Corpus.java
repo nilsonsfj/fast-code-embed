@@ -79,6 +79,11 @@ public class Corpus implements AutoCloseable {
      *         "Corpus is closed" IllegalStateException on the first call).
      * @throws UnsatisfiedLinkError if native library is not loaded
      */
+    /* this-escape: registering with the Cleaner publishes `this` before the
+     * constructor returns, but the registered CloseAction holds its own private
+     * copy of the handle and close() clears both, so a partially-constructed
+     * subclass can never cause a double-free or use-after-free here. */
+    @SuppressWarnings("this-escape")
     public Corpus() {
         this.handle = FastCodeEmbed.createCorpus();
         if (this.handle == FastCodeEmbed.CORPUS_OOM) {

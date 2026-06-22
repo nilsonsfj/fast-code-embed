@@ -34,16 +34,6 @@
 #include <dlfcn.h>
 #endif
 
-/* Portable: convert uint32_t to canonical little-endian for deterministic
- * hashing across architectures. On LE platforms (x86, ARM64) compiles to a
- * no-op. On BE, performs a byte swap. */
-static inline uint32_t fce_htole32(uint32_t v) {
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    return __builtin_bswap32(v);
-#else
-    return v;
-#endif
-}
 #include <assert.h>
 #include "embed/code_vectors.h"
 
