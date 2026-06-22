@@ -6,7 +6,7 @@
 flowchart LR
   subgraph ingest
     A[Tokenize] --> B[Corpus / IDF]
-    B --> C[Finalize RRI]
+    B --> C["Finalize (RRI enrichment optional)"]
     C --> D[enriched_vecs_q int8]
     C --> E[doc_vectors_q int8]
     C --> F[inverted index]
@@ -30,6 +30,13 @@ flowchart LR
 static-chunked parallel (default `total_cores / 4`, ~3 ms; configurable via `FCE_BRUTE_WORKERS`). Fast/tfidf paths use inverted
 index candidates + RI rerank. Search path is configurable via
 `fce_query_mode_t` in `fce_sem_config_t` (AUTO, BRUTE, FAST, TFIDF).
+
+**RRI enrichment is optional and off by default.** Finalize normally writes the
+normalized pretrained nomic vectors straight into `enriched_vecs_q`; IDF
+weighting and mean-centering still apply. The two Reflective Random Indexing
+passes (co-occurrence blending) run only when enabled via
+`fce_sem_corpus_set_ri_enrichment(corpus, true)` (Java: `Corpus.setRiEnrichment` /
+`complete(true)`) or `FCE_SEM_SKIP_RI=0`. Skipping them finalizes ~3–4× faster.
 
 | Layer | Role | Notes |
 |-------|------|-------|

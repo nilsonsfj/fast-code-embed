@@ -1031,6 +1031,19 @@ JNIEXPORT jboolean JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_
     return rc == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSetRiEnrichment(
+    JNIEnv *env, jclass cls, jlong handle, jboolean enabled) {
+    (void)env;
+    (void)cls;
+    /* Must be called before finalize; the native setter is a no-op on an
+     * already-finalized corpus. acquire/release brackets the call so it is safe
+     * against a concurrent close(). */
+    fce_sem_corpus_t *corp = acquire_handle(handle);
+    if (!corp) return;
+    fce_sem_corpus_set_ri_enrichment(corp, enabled == JNI_TRUE);
+    release_handle(handle);
+}
+
 JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAddDocsTokenized(
     JNIEnv *env, jclass cls, jlong handle, jobjectArray jnames) {
     (void)cls;

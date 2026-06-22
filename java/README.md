@@ -105,9 +105,11 @@ public class Example {
 | `addDocsTokenized(names)` | `void` | Batch-add by raw names (tokenization in C) |
 | `addDocsTokenized(names, paths)` | `void` | Batch-add by raw names with file paths |
 | `addFiles(paths, chunkSize, maxTokens)` | `int` | Read source files, chunk at `}` boundaries, tokenize in C |
-| `complete()` | `void` | Compute IDF + enriched vectors (required before querying) |
+| `setRiEnrichment(enabled)` | `void` | Enable/disable RI co-occurrence enrichment (off by default; call before `complete()`) |
+| `complete()` | `void` | Compute IDF + token vectors using the current RI setting (required before querying) |
+| `complete(enableRi)` | `void` | Convenience: `setRiEnrichment(enableRi)` then `complete()` |
 | `getIdf(token)` | `float` | IDF weight for a token |
-| `getRiVec(token)` | `float[SEM_DIM]` | Enriched RI vector (null if unknown) |
+| `getRiVec(token)` | `float[SEM_DIM]` | Token vector (null if unknown); co-occurrence-enriched only if enabled |
 | `getDocCount()` | `int` | Number of documents |
 | `getTokenCount()` | `int` | Vocabulary size |
 | `getDocPath(index)` | `String` | File path for a document by corpus index |
@@ -182,6 +184,13 @@ java/
   token that fails to insert falls back to a deterministic sparse random vector.
   The library logs a warning in that case, but embedding quality may degrade
   slightly.
+
+- RI co-occurrence enrichment is **off by default**: the pretrained nomic
+  vectors are used directly (with IDF weighting and mean-centering). This
+  finalizes ~3–4× faster and matches or beats the enriched ranking on most
+  queries. Enable it with `corp.setRiEnrichment(true)` (or `corp.complete(true)`)
+  before finalizing, or globally with the `FCE_SEM_SKIP_RI=0` environment
+  variable. See the top-level README for the quality/speed comparison.
 
 - Sparse vector storage (configured from the C side with
   `fce_sem_corpus_set_sparse`) saves memory but changes ranking: the query

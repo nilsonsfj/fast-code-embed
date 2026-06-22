@@ -23,7 +23,7 @@ change between minor versions; pin a specific version in production and check th
 
 - ⚡ **Sub-millisecond scoring** — Lookup-based. No transformers, no GPU, no latency spikes.
 - 📦 **30 MB total footprint** — Pretrained nomic-embed-code token vectors embedded as a binary blob.
-- 🧠 **Meaningful signals** — Combines TF-IDF, Random Indexing (enriched with co-occurrence context), and module proximity into a single [0, 1] score.
+- 🧠 **Meaningful signals** — Combines TF-IDF, pretrained nomic-embed-code vectors, and module proximity into a single [0, 1] score. Optional co-occurrence (Random Indexing) enrichment can be toggled on per corpus.
 - 🔌 **Drop-in C API** — Link `build/libfast_code_embed.a`, include a header, score functions.
 - ☕ **Java JNI binding** — Works from JVM environments via `FastCodeEmbed`.
 - ✅ **Sanitizer-clean** — ASan and UBSan pass (run in CI on every push).
@@ -169,8 +169,36 @@ the library builds two complementary representations:
 | Signal | Weight | What it captures |
 |--------|--------|-----------------|
 | TF-IDF cosine | 0.20 | Token-level overlap, downweighted by frequency |
-| Random Indexing cosine | 0.25 | Semantic proximity via pretrained + enriched vectors |
+| Vector cosine | 0.25 | Semantic proximity via pretrained nomic-embed-code vectors (with optional co-occurrence enrichment) |
 | Module Proximity | ×1.10 | Same-directory boost (files near each other are related) |
+
+### RI co-occurrence enrichment (optional, off by default)
+
+At `finalize` time the library can blend each token vector with its
+co-occurring neighbors via two Reflective Random Indexing (RRI) passes. **This
+is disabled by default**: the pretrained nomic vectors are used directly, with
+IDF weighting suppressing ubiquitous tokens and mean-centering removing the
+anisotropic common direction. Skipping enrichment finalizes ~3–4× faster and,
+because the pretrained vectors are already high quality, matches or beats the
+enriched ranking on most queries (on Linux-kernel reference queries, no-RI won
+3/5; enrichment helped queries whose terms are highly distributed/polysemous,
+e.g. *memory allocation pages*).
+
+Enable enrichment when you want it:
+
+```c
+fce_sem_corpus_set_ri_enrichment(corpus, true);   /* before finalize */
+```
+
+```java
+corpus.setRiEnrichment(true);   // before complete()
+corpus.complete();
+// or in one call:
+corpus.complete(true);
+```
+
+The environment variable `FCE_SEM_SKIP_RI` overrides the per-corpus setting
+globally: `=1` forces enrichment off, `=0` forces it on.
 
 For advanced use, you can also wire in your own call graph, type system, or AST
 via the `api_vec`, `type_vec`, `decorator_vec`, and `struct_profile[25]` fields

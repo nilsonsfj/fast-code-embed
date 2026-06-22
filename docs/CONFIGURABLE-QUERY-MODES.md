@@ -70,6 +70,19 @@ The tool accepts the following flags:
 
 Shows finalize time, memory, and query benchmarks for comparison.
 
+### Toggling RI enrichment in the benchmark
+
+Co-occurrence (RRI) enrichment is off by default. Set the `FCE_SEM_SKIP_RI`
+environment variable to compare both modes on the same corpus:
+
+```bash
+FCE_SEMANTIC_ENABLED=1 ./build/bench_mem_query <dir>                 # default: RI off
+FCE_SEMANTIC_ENABLED=1 FCE_SEM_SKIP_RI=0 ./build/bench_mem_query <dir>  # RI on
+```
+
+`=1` forces enrichment off, `=0` forces it on; the variable overrides any
+per-corpus `fce_sem_corpus_set_ri_enrichment()` setting.
+
 ## Building the benchmark
 
 The `make bench` target builds `bench_mem_query`.

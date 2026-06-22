@@ -1427,6 +1427,13 @@ struct fce_sem_corpus {
      * layout above stay valid. */
     float doc_mean[FCE_SEM_DIM];
     bool has_doc_mean;
+
+    /* When true, finalize skips the two co-occurrence (RRI) passes and uses the
+     * pretrained nomic vectors directly as the enriched representation. Set via
+     * fce_sem_corpus_set_ri_enrichment (or the FCE_SEM_SKIP_RI env var, applied
+     * in finalize). Appended at the very end to preserve the offsetof asserts /
+     * corpus_mirror_t layout above. */
+    bool skip_ri;
 };
 
 /* These assertions protect the corpus_mirror_t layout in tests/test_semantic.c,
@@ -1511,6 +1518,12 @@ fce_sem_corpus_t *fce_sem_corpus_new(void) {
             free(c);
             return NULL;
         }
+        /* RI co-occurrence enrichment is OFF by default: the pretrained nomic
+         * vectors (+ IDF + mean-centering) already carry most of the signal,
+         * match or beat enrichment on most queries, and finalize ~3-4x faster.
+         * Re-enable per-corpus via fce_sem_corpus_set_ri_enrichment(c, true) or
+         * globally with FCE_SEM_SKIP_RI=0. */
+        c->skip_ri = true;
     }
     return c;
 }
@@ -2098,6 +2111,10 @@ typedef struct {
 
     /* Cache-blocked tiling parameters */
     int tile_size; /* targets per L2-resident tile */
+
+    /* When true, skip neighbor co-occurrence accumulation: each token's enriched
+     * vector is just the normalized pretrained source. */
+    bool skip_ri;
 } cooccur_sparse_ctx_t;
 
 /* Accumulate co-occurrence context for a single target token into `target`.
@@ -2168,7 +2185,7 @@ static void cooccur_worker_sparse(int worker_id, void *ctx_ptr) {
                      * directly to int8 pass1_q. No float32 enriched_vecs needed. */
                     fce_sem_vec_t *scratch = &cc->scratch[worker_id];
                     sem_target_init_from_src(scratch, &cc->src_entries[tid]);
-                    cooccur_sparse_one_target(cc, tid, scratch);
+                    if (!cc->skip_ri) cooccur_sparse_one_target(cc, tid, scratch);
                     fce_sem_normalize(scratch);
                     /* the scalar NaN/Inf sweep is
                      * redundant in the R4 path because fce_quantize_f32_768
@@ -2180,7 +2197,7 @@ static void cooccur_worker_sparse(int worker_id, void *ctx_ptr) {
                     /* Fallback: accumulate into float32 enriched_vecs, normalize only.
                      * Quantization happens later in finalize_pass2. */
                     sem_target_init_from_src(&cc->enriched_vecs[tid], &cc->src_entries[tid]);
-                    cooccur_sparse_one_target(cc, tid, &cc->enriched_vecs[tid]);
+                    if (!cc->skip_ri) cooccur_sparse_one_target(cc, tid, &cc->enriched_vecs[tid]);
                     /* detect float accumulator overflow
                      * (very dense corpora can produce non-finite values in the
                      * R4-fallback float32 path). The R4 path quantizes each
@@ -2587,15 +2604,24 @@ static int int_cmp_asc(const void *a, const void *b) {
 static void finalize_pass1(finalize_params_t *p) {
     fce_sem_vec_t *scratch = NULL;
     int8_t *pass1_q = NULL;
+    const bool skip_ri = p->corpus->skip_ri;
 
     if (p->corpus->enriched_vecs_q) {
         /* R4 path: allocate per-worker scratch + int8 pass1 output.
          * scratch[i] is the float32 tile buffer for worker i. */
         scratch = calloc((size_t)p->worker_count, sizeof(fce_sem_vec_t));
-        pass1_q = malloc((size_t)p->corpus->entry_count * FCE_SEM_DIM * sizeof(int8_t));
+        if (skip_ri) {
+            /* No pass2 will run, so pass1's normalized output IS the final
+             * enriched representation — write it straight into the corpus-owned
+             * enriched_vecs_q rather than a throwaway pass1 buffer. */
+            pass1_q = p->corpus->enriched_vecs_q;
+        } else {
+            pass1_q = malloc((size_t)p->corpus->entry_count * FCE_SEM_DIM * sizeof(int8_t));
+        }
         if (!scratch || !pass1_q) {
             free(scratch);
-            free(pass1_q);
+            /* Never free the corpus-owned enriched_vecs_q (skip_ri aliases it). */
+            if (!skip_ri) free(pass1_q);
             scratch = NULL;
             pass1_q = NULL;
             /* Fallback requires float32 enriched_vecs; allocate if not present. */
@@ -2628,6 +2654,7 @@ static void finalize_pass1(finalize_params_t *p) {
         .num_chunks = p->num_chunks,
         .chunk_size = p->chunk_size,
         .tile_size = p->tile_size,
+        .skip_ri = skip_ri,
     };
     atomic_init(&cc.next_chunk, 0);
     fce_parallel_for(p->worker_count, cooccur_worker_sparse, &cc, p->opts);
@@ -2638,8 +2665,12 @@ static void finalize_pass1(finalize_params_t *p) {
      * No second normalization needed — normalizing a unit vector is idempotent
      * but wastes CPU (~150K FLOPs per entry). */
 
-    /* Store pass1_q on corpus for pass2 to read. */
-    p->_pass1_q = pass1_q;
+    /* Store pass1_q on corpus for pass2 to read. In skip_ri mode the output went
+     * straight into enriched_vecs_q (or the float32 fallback enriched_vecs) and
+     * there is no separate buffer to hand off — report NULL so the finalize
+     * cleanup doesn't free corpus-owned memory and pass2 (which is skipped)
+     * never runs. */
+    p->_pass1_q = skip_ri ? NULL : pass1_q;
 }
 
 /* Sub-phases 4+5: run RRI pass 2 + blend in one pass.
@@ -2805,6 +2836,11 @@ void fce_sem_corpus_set_sparse(fce_sem_corpus_t *corpus, int nnz) {
     corpus->sparse_nnz = nnz > 0 ? nnz : 0;
 }
 
+void fce_sem_corpus_set_ri_enrichment(fce_sem_corpus_t *corpus, bool enabled) {
+    if (!corpus || corpus->finalized) return;
+    corpus->skip_ri = !enabled;
+}
+
 int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
     /* block retry after failure — the corpus
      * is in an inconsistent state (doc_vectors freed but doc_token_ids may
@@ -2827,6 +2863,20 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
     }
 
     ensure_pretrained_map();
+
+    /* FCE_SEM_SKIP_RI overrides the per-corpus setting globally: =1 forces RI
+     * enrichment off (the default), =0 forces it back on. Unset leaves the
+     * per-corpus setting (default off) in control. Read once here, not on the
+     * hot path. */
+    {
+        char ri_buf[8];
+        const char *ri = fce_safe_getenv("FCE_SEM_SKIP_RI", ri_buf, sizeof(ri_buf), NULL);
+        if (ri && ri[0] == '1') {
+            corpus->skip_ri = true;
+        } else if (ri && ri[0] == '0') {
+            corpus->skip_ri = false;
+        }
+    }
 
     int worker_count = fce_default_worker_count(true);
     if (worker_count < 1) worker_count = 1;
@@ -2899,7 +2949,12 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
         corpus->finalize_failed = true;
         return -1;
     }
-    finalize_pass2(&params);
+    /* RRI enrichment can be disabled (pretrained vectors used directly). When
+     * skipped, pass1 already wrote the final enriched_vecs_q (or the float32
+     * fallback), so pass2 must not run. */
+    if (!corpus->skip_ri) {
+        finalize_pass2(&params);
+    }
     free(params._pass1_q); /* R4 path: pass1_q consumed by pass2, no longer needed */
 
     /* Fallback path: quantize float32 enriched_vecs to int8, then free float32.

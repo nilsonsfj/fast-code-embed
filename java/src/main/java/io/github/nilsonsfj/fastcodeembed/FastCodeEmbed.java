@@ -317,6 +317,7 @@ public final class FastCodeEmbed {
         return nAddDocsBatch(handle, docs, maxTokensPerDoc);
     }
     static boolean finalizeCorpus(long handle) { return nFinalizeCorpus(handle); }
+    static void setRiEnrichment(long handle, boolean enabled) { nSetRiEnrichment(handle, enabled); }
     static void addDocsTokenized(long handle, String[] names) { nAddDocsTokenized(handle, names); }
     static int addFiles(long handle, String[] paths, int chunkSize, int[] fileDocCounts, int maxTokensPerChunk) {
         return nAddFiles(handle, paths, chunkSize, fileDocCounts, maxTokensPerChunk);
@@ -334,6 +335,7 @@ public final class FastCodeEmbed {
     private static native void nAddDoc(long handle, String[] tokens);
     private static native int[] nAddDocsBatch(long handle, String[][] docs, int maxTokensPerDoc);
     private static native boolean nFinalizeCorpus(long handle);
+    private static native void nSetRiEnrichment(long handle, boolean enabled);
     private static native void nAddDocsTokenized(long handle, String[] names);
     private static native int nAddFiles(long handle, String[] paths, int chunkSize, int[] fileDocCounts, int maxTokensPerChunk);
     private static native float nGetIdf(long handle, String token);

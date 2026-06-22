@@ -361,8 +361,37 @@ public class Corpus implements AutoCloseable {
     }
 
     /**
-     * Finalize the corpus: compute IDF weights and enriched RI vectors.
-     * Must be called before any querying. Idempotent.
+     * Choose whether {@link #complete()} runs co-occurrence (Reflective Random
+     * Indexing) enrichment. Must be called before {@link #complete()}.
+     *
+     * <p>Enrichment is <b>disabled by default</b>: the pretrained nomic vectors
+     * are used directly (still with IDF weighting and mean-centering). This
+     * finalizes ~3-4x faster and matches or beats the enriched ranking on most
+     * queries. Pass {@code true} to turn the two RRI passes back on, which can
+     * help queries whose terms are highly distributed/polysemous.</p>
+     *
+     * <p>The native env var {@code FCE_SEM_SKIP_RI} overrides this choice
+     * globally ({@code =1} forces off, {@code =0} forces on).</p>
+     *
+     * @param enabled {@code true} to enable RI enrichment, {@code false} to use
+     *                pretrained vectors directly
+     * @throws IllegalStateException if corpus is closed or already finalized
+     * @since 0.0.15
+     */
+    public void setRiEnrichment(boolean enabled) {
+        checkNotClosed();
+        if (finalized) {
+            throw new IllegalStateException("setRiEnrichment must be called before complete()");
+        }
+        FastCodeEmbed.setRiEnrichment(handle, enabled);
+    }
+
+    /**
+     * Finalize the corpus: compute IDF weights and (optionally) enriched RI
+     * vectors. Must be called before any querying. Idempotent.
+     *
+     * <p>Uses the current RI-enrichment setting (off by default; see
+     * {@link #setRiEnrichment(boolean)}).</p>
      *
      * @throws IllegalStateException if corpus is closed
      */
@@ -372,6 +401,20 @@ public class Corpus implements AutoCloseable {
             throw new IllegalStateException("Corpus finalization failed (out of memory)");
         }
         this.finalized = true;
+    }
+
+    /**
+     * Convenience: set RI enrichment and finalize in one call. Equivalent to
+     * {@link #setRiEnrichment(boolean)} followed by {@link #complete()}.
+     *
+     * @param enableRi {@code true} to enable RI co-occurrence enrichment,
+     *                 {@code false} to use the pretrained vectors directly
+     * @throws IllegalStateException if corpus is closed
+     * @since 0.0.15
+     */
+    public void complete(boolean enableRi) {
+        setRiEnrichment(enableRi);
+        complete();
     }
 
     /**

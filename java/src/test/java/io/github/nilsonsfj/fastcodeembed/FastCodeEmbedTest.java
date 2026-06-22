@@ -125,6 +125,41 @@ public class FastCodeEmbedTest {
             }
         });
 
+        test("RI enrichment toggle (default off, opt-in on)", () -> {
+            // Default path: enrichment off — pretrained vectors used directly.
+            try (Corpus corp = new Corpus()) {
+                corp.addDocsBatch(new String[][]{{"foo", "bar"}, {"baz", "bar"}});
+                corp.complete(); // default: RI off
+                float[] vec = corp.getRiVec("bar");
+                assertNotNull(vec, "no-RI vec not null");
+                boolean nonZero = false;
+                for (float v : vec) if (v != 0.0f) { nonZero = true; break; }
+                assertTrue(nonZero, "no-RI vec should be non-zero");
+            }
+            // Opt-in: enrichment on via the convenience overload.
+            try (Corpus corp = new Corpus()) {
+                corp.addDocsBatch(new String[][]{{"foo", "bar"}, {"baz", "bar"}});
+                corp.complete(true); // RI on
+                float[] vec = corp.getRiVec("bar");
+                assertNotNull(vec, "RI-on vec not null");
+                boolean nonZero = false;
+                for (float v : vec) if (v != 0.0f) { nonZero = true; break; }
+                assertTrue(nonZero, "RI-on vec should be non-zero");
+            }
+            // setRiEnrichment after complete() must throw.
+            try (Corpus corp = new Corpus()) {
+                corp.addDoc(new String[]{"alpha", "beta"});
+                corp.complete();
+                boolean threw = false;
+                try {
+                    corp.setRiEnrichment(true);
+                } catch (IllegalStateException e) {
+                    threw = true;
+                }
+                assertTrue(threw, "setRiEnrichment after complete should throw");
+            }
+        });
+
         test("buildFunc convenience", () -> {
             try (Corpus corp = new Corpus()) {
                 corp.addDocsBatch(new String[][]{{"handle", "request"}, {"validate", "user"}});

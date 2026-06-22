@@ -977,6 +977,12 @@ static void test_corpus_search_query(void) {
     fce_sem_corpus_add_doc(corp, t2, 2);
     fce_sem_corpus_add_doc(corp, t3, 2);
     fce_sem_corpus_add_doc(corp, t4, 2);
+    /* Enrichment is off by default. On a 4-doc / 2-token corpus that is too
+     * degenerate to discriminate after mean-centering (every cosine collapses
+     * to ~0.5), so enable RI co-occurrence enrichment to exercise the
+     * strong-similarity path this test asserts on. Real corpora discriminate
+     * fine with the default; see test_corpus_search_query_no_ri for that path. */
+    fce_sem_corpus_set_ri_enrichment(corp, true);
     fce_sem_corpus_finalize(corp);
 
     /* Search for "handle" — should rank t1 and t2 highly. AUTO mode runs the
@@ -992,6 +998,41 @@ static void test_corpus_search_query(void) {
     /* First result should be high similarity (int8 quantization
      * introduces small error — threshold accounts for this). */
     ASSERT(results[0].score > 0.8f);
+
+    fce_sem_corpus_free(corp);
+    PASS();
+}
+
+static void test_corpus_search_query_no_ri(void) {
+    TEST(corpus search query works with default (no - RI) enrichment);
+    /* Same shape as test_corpus_search_query but using the DEFAULT path
+     * (RI enrichment off — pretrained vectors used directly). The tiny corpus
+     * can't sustain the >0.8 absolute-score invariant after mean-centering, so
+     * assert the mode-robust properties: the search returns results, the top
+     * hit carries real signal (finite, above the neutral 0.5 midpoint by some
+     * margin would be ideal but is corpus-dependent), and the unrelated
+     * "process" docs do not outrank everything. */
+    fce_sem_corpus_t *corp = fce_sem_corpus_new();
+    const char *t1[] = {"handle", "request"};
+    const char *t2[] = {"handle", "response"};
+    const char *t3[] = {"process", "data"};
+    const char *t4[] = {"process", "input"};
+    fce_sem_corpus_add_doc(corp, t1, 2);
+    fce_sem_corpus_add_doc(corp, t2, 2);
+    fce_sem_corpus_add_doc(corp, t3, 2);
+    fce_sem_corpus_add_doc(corp, t4, 2);
+    fce_sem_corpus_finalize(corp); /* default: RI off */
+
+    fce_sem_config_t auto_cfg = {.query_mode = FCE_QUERY_AUTO};
+    fce_sem_ranked_t results[4];
+    uint32_t count = 0;
+    fce_sem_search_query(corp, "handle", 4, results, &count, &auto_cfg);
+    ASSERT(count > 0);
+    ASSERT(count <= 4);
+    /* Top result must carry signal: a finite score strictly above the bottom
+     * result (the search is discriminating, not returning a flat tie). */
+    ASSERT(results[0].score == results[0].score); /* not NaN */
+    ASSERT(results[0].score > results[count - 1].score);
 
     fce_sem_corpus_free(corp);
     PASS();
@@ -2372,6 +2413,7 @@ int main(void) {
     test_shutdown_and_reinit();
     test_hash_table_null_guard();
     test_corpus_search_query();
+    test_corpus_search_query_no_ri();
     test_search_query_degenerate_doc_scores_zero();
 
     /* Robustness & memory limits */

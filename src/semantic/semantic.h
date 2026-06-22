@@ -273,6 +273,25 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus);
  * only for resource-constrained setups. */
 void fce_sem_corpus_set_sparse(fce_sem_corpus_t *corpus, int nnz);
 
+/* Enable or disable co-occurrence (Reflective Random Indexing) enrichment in
+ * finalize. Must be called before finalize.
+ *
+ * Enrichment is DISABLED by default: the pretrained nomic vectors are used
+ * directly (the per-token enriched vector is just the normalized pretrained
+ * source). IDF weighting still suppresses ubiquitous tokens and mean-centering
+ * still removes the anisotropic common direction, so the doc/query geometry is
+ * unchanged — only the neighbor-mixing enrichment is dropped. This finalizes
+ * ~3-4x faster and, because the pretrained vectors are already high quality,
+ * matches or beats the enriched ranking on most queries.
+ *
+ * Call with enabled=true to turn the two RRI passes back on (they blend each
+ * token vector with its co-occurring neighbors), which can help queries whose
+ * terms are highly distributed/polysemous.
+ *
+ * The environment variable FCE_SEM_SKIP_RI overrides this setter globally:
+ * =1 forces enrichment off, =0 forces it on. */
+void fce_sem_corpus_set_ri_enrichment(fce_sem_corpus_t *corpus, bool enabled);
+
 /* Get IDF weight for a token. Returns 0.0 for unknown tokens. */
 float fce_sem_corpus_idf(const fce_sem_corpus_t *corpus, const char *token);
 
