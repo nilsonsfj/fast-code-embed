@@ -8,8 +8,8 @@
 #define FCE_VERSION_H
 
 #define FCE_VERSION_MAJOR 0
-#define FCE_VERSION_MINOR 0
-#define FCE_VERSION_PATCH 15
+#define FCE_VERSION_MINOR 1
+#define FCE_VERSION_PATCH 0
 
 /* stringify helpers */
 #define FCE_VERSION_STR_(major, minor, patch) #major "." #minor "." #patch

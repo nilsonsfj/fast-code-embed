@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-06-23
+
+- Use _POSIX_C_SOURCE 200809L plus _DEFAULT_SOURCE so glibc declares mkstemp
+- Declare POSIX feature macro in fuzz harness for glibc -std=c11 build
+- Add libFuzzer harness for the untrusted cache loader
+- Docs: flag Windows support as alpha/best-effort and update seed/MSVC notes
+- Surface stack-size failures in POSIX thread creation
+- Fix Windows build paths and add mingw-w64 cross-compile validation
+- Harden boundary contracts and drop dead fixed-dimension SIMD helpers
+- Doc: getRiVec returns active-dimension vector, not fixed SEM_DIM
+
 ## [0.0.15] — 2026-06-23
 
 - Docs: reflect runtime dimension selection in Java/comparison docs

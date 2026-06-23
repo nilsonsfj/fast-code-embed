@@ -1,6 +1,6 @@
 # 🚀 fast-code-embed
 
-**Version 0.0.15** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
+**Version 0.1.0** — Algorithmic code embeddings. No GPU. No API keys. No nonsense.
 
 ✨ fast-code-embed is a standalone C library that scores code function pairs by
 semantic similarity — using a 30 MB lookup table, TF-IDF, and Random Indexing.
@@ -111,7 +111,7 @@ A first-class Java binding is available under `java/`. Full details in
 <dependency>
     <groupId>io.github.nilsonsfj</groupId>
     <artifactId>fast-code-embed</artifactId>
-    <version>0.0.15</version>
+    <version>0.1.0</version>
 </dependency>
 ```
 
