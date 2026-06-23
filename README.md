@@ -15,7 +15,7 @@ scoring defaults, and a cleaner API.
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.nilsonsfj/fast-code-embed.svg)](https://central.sonatype.com/artifact/io.github.nilsonsfj/fast-code-embed)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Status:** Early `0.0.x` release. The API and on-disk corpus cache format may
+**Status:** Early `0.x` release. The API and on-disk corpus cache format may
 change between minor versions; pin a specific version in production and check the
 [changelog](CHANGELOG.md) before upgrading.
 
