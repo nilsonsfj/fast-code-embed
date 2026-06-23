@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.15] — 2026-06-23
+
+- Docs: reflect runtime dimension selection in Java/comparison docs
+- Make embedding dimension (256/768) selectable at runtime
+- Make pretrained-direct (no-RI) the default; add RI enrichment toggle
+- Eliminate all build and -Xlint warnings
+
 ## [0.0.14] — 2026-06-21
 
 - Give combined and simple scorers independent non-finite warn gates
