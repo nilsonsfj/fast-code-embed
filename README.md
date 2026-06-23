@@ -209,6 +209,33 @@ Sparse vector storage is available via `fce_sem_corpus_set_sparse()`; it saves
 memory but is a rank-changing trade-off, not a lossless optimization. See the
 docs for details.
 
+### Embedding dimension: 256 or 768 (runtime selectable)
+
+The embedding dimension can be chosen **at runtime** — no recompile, so the
+prebuilt JNI/Maven artifact can serve either:
+
+```c
+fce_sem_set_dim(256);   /* before building/loading/querying a corpus */
+```
+
+```java
+FastCodeEmbed.setDim(256);   // before any Corpus work
+```
+
+768 (full nomic-embed-code) is the default. 256 stores each int8 vector ~3×
+smaller — a large resident-memory saving on big corpora (e.g. ~1.2 GB → ~0.8 GB
+total RSS indexing the Linux kernel) — using a baked PCA projection that
+preserves ~84% of the variance (vs naive truncation). The main trade-off is
+slightly lower ranking quality; finalize is only modestly slower than 768 (the
+projection is precomputed once over the pretrained table, then applied per token
+as a cheap linear combine). The environment variable `FCE_SEM_DIM` overrides the
+choice for the bundled benchmark tool.
+
+A cache file records its own dimension; `fce_sem_corpus_load` / `Corpus.load`
+adopt it automatically. The legacy compile-time `-DFCE_SEM_DIM_256` build still
+exists (it locks the binary to 256 and shrinks the in-memory vector struct), but
+runtime selection is now preferred.
+
 For a quality/performance comparison against a general-purpose static embedding
 (potion-base-8M) on Linux kernel source, see
 [COMPARISON-VS-POTION-BASE-8M.md](docs/COMPARISON-VS-POTION-BASE-8M.md).
@@ -264,8 +291,10 @@ python3 scripts/extract_nomic_vectors.py
 
 Expect ~2–3 h on GPU, ~6–10 h on Apple Silicon CPU.
 
-To build the 256-dim reduced-dimension mode (`-DFCE_SEM_DIM_256`), also generate
-the PCA projection matrix:
+The 256-dim PCA projection matrix (`src/embed/pca_projection.h`) is checked in
+and compiled into every build, powering runtime 256-dim mode (see
+[Embedding dimension](#embedding-dimension-256-or-768-runtime-selectable)). To
+regenerate it after re-extracting the vectors:
 
 ```bash
 python3 scripts/compute_pca_matrix.py src/embed/code_vectors.bin > src/embed/pca_projection.h

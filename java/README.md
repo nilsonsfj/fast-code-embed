@@ -109,7 +109,7 @@ public class Example {
 | `complete()` | `void` | Compute IDF + token vectors using the current RI setting (required before querying) |
 | `complete(enableRi)` | `void` | Convenience: `setRiEnrichment(enableRi)` then `complete()` |
 | `getIdf(token)` | `float` | IDF weight for a token |
-| `getRiVec(token)` | `float[SEM_DIM]` | Token vector (null if unknown); co-occurrence-enriched only if enabled |
+| `getRiVec(token)` | `float[activeDim()]` | Token vector (null if unknown); co-occurrence-enriched only if enabled |
 | `getDocCount()` | `int` | Number of documents |
 | `getTokenCount()` | `int` | Vocabulary size |
 | `getDocPath(index)` | `String` | File path for a document by corpus index |
@@ -125,7 +125,7 @@ public class Example {
 |--------|---------|-------------|
 | `new FuncDescriptor(filePath)` | | Create with file path |
 | `setTfidf(indices, weights)` | `void` | Set sparse TF-IDF vector |
-| `setRiVec(vec)` | `void` | Set `FastCodeEmbed.SEM_DIM`-dimensional RI vector |
+| `setRiVec(vec)` | `void` | Set `FastCodeEmbed.activeDim()`-dimensional RI vector |
 | `getFilePath()` | `String` | Source file path |
 | `getTfidfIndices()` | `int[]` | Token indices |
 | `getTfidfWeights()` | `float[]` | IDF weights |
@@ -147,7 +147,7 @@ Returned by `Corpus.extractFlat()`. Reusable across multiple queries.
 | `allWeights` | `float[]` | Flat IDF weights: [func × maxTokens + token] |
 | `allIndices` | `int[]` | Flat token indices: [func × maxTokens + token] |
 | `tfidfLens` | `int[]` | Per-function token count |
-| `allRiVecs` | `float[]` | Flat RI vectors: [func × SEM_DIM + dim] |
+| `allRiVecs` | `float[]` | Flat RI vectors: [func × activeDim() + dim] |
 | `filePaths` | `String[]` | Per-function file paths |
 | `maxTokens` | `int` | Stride for flat arrays |
 | `size()` | `int` | Number of functions |
@@ -175,9 +175,16 @@ java/
 
 ## Notes
 
-- `FastCodeEmbed.SEM_DIM` is the runtime embedding dimension (usually 768, or
-  256 if the native library was built with `-DFCE_SEM_DIM_256`). All RI vectors
-  passed to the JNI API must match this dimension.
+- **Embedding dimension is runtime-selectable.** `FastCodeEmbed.setDim(256)` (or
+  `setDim(768)`, the default) chooses the active dimension; call it once at
+  startup before any `Corpus` work. 256 stores ~3× less per vector — a large
+  memory saving on big corpora — via a baked PCA projection, at some quality cost
+  and a slower 256 finalize. `FastCodeEmbed.activeDim()` returns the current
+  value and is the length of RI vectors to/from the API (`getRiVec`, `setRiVec`,
+  the flat `allRiVecs` layout). `FastCodeEmbed.SEM_DIM` is the compile-time
+  maximum (768 unless the lib was built with `-DFCE_SEM_DIM_256`) — a safe upper
+  bound for buffers; the active dimension may be smaller. `Corpus.load` adopts
+  the dimension stored in the cache file automatically.
 
 - `FastCodeEmbed.init()` eagerly loads the pretrained token lookup map. If the
   JVM is under memory pressure, the map may be only partially populated; any

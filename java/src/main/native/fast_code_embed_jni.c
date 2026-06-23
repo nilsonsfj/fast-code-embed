@@ -446,14 +446,15 @@ static fce_sem_func_t marshal_func(JNIEnv *env, jobject obj, char **path_out,
             if (jweights_out) *jweights_out = NULL;
             return (fce_sem_func_t){0};
         }
-        /* Validate array length — must be >= FCE_SEM_DIM. */
+        /* Validate array length — must be >= the active embedding dimension. */
+        const int sdim = fce_sem_active_dim();
         jint ri_len = (*env)->GetArrayLength(env, jri);
-        if (ri_len < FCE_SEM_DIM) {
+        if (ri_len < sdim) {
             (*env)->ReleaseFloatArrayElements(env, jri, elems, JNI_ABORT);
             (*env)->DeleteLocalRef(env, jri);
             jclass iae = cls_illegal_arg ? cls_illegal_arg : (*env)->FindClass(env, "java/lang/IllegalArgumentException");
             char ri_len_msg[64];
-            snprintf(ri_len_msg, sizeof(ri_len_msg), "riVec length must be >= %d", FCE_SEM_DIM);
+            snprintf(ri_len_msg, sizeof(ri_len_msg), "riVec length must be >= %d", sdim);
             (*env)->ThrowNew(env, iae, ri_len_msg);
             if (f.tfidf_indices) (*env)->ReleaseIntArrayElements(env, jindices, (jint *)f.tfidf_indices, JNI_ABORT);
             if (f.tfidf_weights) (*env)->ReleaseFloatArrayElements(env, jweights, f.tfidf_weights, JNI_ABORT);
@@ -465,7 +466,7 @@ static fce_sem_func_t marshal_func(JNIEnv *env, jobject obj, char **path_out,
             if (jweights_out) *jweights_out = NULL;
             return (fce_sem_func_t){0};
         }
-        memcpy(f.ri_vec.v, elems, sizeof(float) * FCE_SEM_DIM);
+        memcpy(f.ri_vec.v, elems, sizeof(float) * (size_t)sdim);
         (*env)->ReleaseFloatArrayElements(env, jri, elems, JNI_ABORT);
     }
     (*env)->DeleteLocalRef(env, jri);
@@ -1291,7 +1292,8 @@ JNIEXPORT jfloatArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmb
         release_handle(handle);
         return NULL;
     }
-    jfloatArray result = (*env)->NewFloatArray(env, FCE_SEM_DIM);
+    const int sdim = fce_sem_active_dim();
+    jfloatArray result = (*env)->NewFloatArray(env, sdim);
     /* NewFloatArray can fail with pending OOM.
      * release_handle MUST be called on every path after acquire_handle.
      * J-01: NewFloatArray may return NULL without
@@ -1300,7 +1302,7 @@ JNIEXPORT jfloatArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmb
         release_handle(handle);
         return NULL;
     }
-    (*env)->SetFloatArrayRegion(env, result, 0, FCE_SEM_DIM, vec->v);
+    (*env)->SetFloatArrayRegion(env, result, 0, sdim, vec->v);
     release_handle(handle);
     return result;
 }
@@ -1333,10 +1335,27 @@ JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nGet
     JNIEnv *env, jclass cls) {
     (void)env;
     (void)cls;
-    /* Expose the compile-time dimension to Java so the bindings work for
-     * both the default 768-dim build and 256-dim builds compiled with
-     * -DFCE_SEM_DIM_256. */
+    /* Compile-time MAXIMUM dimension (768 by default; 256 if built with
+     * -DFCE_SEM_DIM_256). Java uses this as a safe upper bound for buffer
+     * sizing; the active dimension (see nActiveDim) may be smaller. */
     return (jint)FCE_SEM_DIM;
+}
+
+JNIEXPORT jint JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nActiveDim(
+    JNIEnv *env, jclass cls) {
+    (void)env;
+    (void)cls;
+    return (jint)fce_sem_active_dim();
+}
+
+JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSetDim(
+    JNIEnv *env, jclass cls, jint dim) {
+    (void)env;
+    (void)cls;
+    /* Process-global; set once at startup before building/loading a corpus.
+     * Invalid values (anything but 256/768, or above the compile-time max) are
+     * ignored by the native setter. */
+    fce_sem_set_dim((int)dim);
 }
 
 /* ── Static Nomic Search JNI ────────────────────────────────────── */
@@ -1950,13 +1969,14 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
     int w_len = j_all_weights ? (*env)->GetArrayLength(env, j_all_weights) : 0;
     int i_len = j_all_indices ? (*env)->GetArrayLength(env, j_all_indices) : 0;
     int tl_len = j_tfidf_lens ? (*env)->GetArrayLength(env, j_tfidf_lens) : 0;
+    const int sdim = fce_sem_active_dim();
     int rv_len = (*env)->GetArrayLength(env, j_all_ri_vecs);
-    size_t needed_ri = (size_t)corpusSize * (size_t)FCE_SEM_DIM;
+    size_t needed_ri = (size_t)corpusSize * (size_t)sdim;
     if ((size_t)rv_len < needed_ri) {
         if (cls_illegal_arg) {
             char ri_size_msg[80];
             snprintf(ri_size_msg, sizeof(ri_size_msg),
-                     "array size mismatch: all_ri_vecs too small for corpusSize * %d", FCE_SEM_DIM);
+                     "array size mismatch: all_ri_vecs too small for corpusSize * %d", sdim);
             (*env)->ThrowNew(env, cls_illegal_arg, ri_size_msg);
         }
         goto flat_cleanup_query;
@@ -2045,12 +2065,12 @@ JNIEXPORT jobjectArray JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEm
      * for `i < c->tfidf_len`, and tfidf_len is constructed from
      * `tfidf_lens[f]` for the corpus side. So a longer q_weights array
      * does not cause out-of-bounds reads and is silently tolerated. */
-    if ((j_q_ri_vec && q_ri_len < FCE_SEM_DIM) ||
+    if ((j_q_ri_vec && q_ri_len < sdim) ||
         (j_q_indices && j_q_weights && q_w_len < q_len)) {
         if (cls_illegal_arg) {
             char q_size_msg[96];
             snprintf(q_size_msg, sizeof(q_size_msg),
-                     "query array size mismatch: q_ri_vec < %d or q_weights < q_indices", FCE_SEM_DIM);
+                     "query array size mismatch: q_ri_vec < %d or q_weights < q_indices", sdim);
             (*env)->ThrowNew(env, cls_illegal_arg, q_size_msg);
         }
         goto flat_cleanup_query;

@@ -43,6 +43,22 @@ enum { FCE_SEM_DIM = 256 };
 enum { FCE_SEM_DIM = 768 };
 #endif
 
+/* Active embedding dimension, selectable at RUNTIME (default FCE_SEM_DIM).
+ *
+ * A single binary can serve both 768 (full nomic-embed-code) and 256
+ * (PCA-reduced) corpora — particularly useful for the precompiled JNI/Maven
+ * artifact, which can pick the dimension without a recompile. 256 stores ~3x
+ * less per int8 vector (~640 MB saved on a large corpus) at some quality cost.
+ *
+ * FCE_SEM_DIM is the compile-time MAXIMUM (768 by default; 256 if built with
+ * -DFCE_SEM_DIM_256). fce_sem_set_dim accepts 256 or 768 but never a value
+ * larger than FCE_SEM_DIM. Set it ONCE at startup, before creating/finalizing
+ * any corpus or running queries; it is global process state and is not safe to
+ * change concurrently with, or after, vector construction. A loaded cache file
+ * carries its own dimension and fce_sem_corpus_load adopts it automatically. */
+void fce_sem_set_dim(int dim);
+int fce_sem_active_dim(void);
+
 /* Random Indexing: non-zero entries per sparse random vector. */
 enum { FCE_SEM_SPARSE_NNZE = 8 };
 

@@ -536,16 +536,17 @@ public class Corpus implements AutoCloseable {
      */
     public FuncDescriptor buildFunc(String filePath, String[] tokens) {
         checkFinalized();
+        int dim = FastCodeEmbed.activeDim();
         int[] indices = new int[tokens.length];
         float[] weights = new float[tokens.length];
-        float[] riVec = new float[FastCodeEmbed.SEM_DIM];
+        float[] riVec = new float[dim];
 
         for (int i = 0; i < tokens.length; i++) {
             indices[i] = i;
             weights[i] = getIdf(tokens[i]);
             float[] rv = getRiVec(tokens[i]);
             if (rv != null) {
-                for (int d = 0; d < FastCodeEmbed.SEM_DIM; d++) {
+                for (int d = 0; d < dim; d++) {
                     riVec[d] += rv[d];
                 }
             }
@@ -576,12 +577,13 @@ public class Corpus implements AutoCloseable {
          * arithmetic so very large query-side corpora fail loudly with an
          * IllegalArgumentException instead of silently corrupting the flat
          * layout via 32-bit overflow. */
+        int dim = FastCodeEmbed.activeDim();
         long tfidfTotalLong = (long) n * (long) maxTokens;
-        long riTotalLong = (long) n * (long) FastCodeEmbed.SEM_DIM;
+        long riTotalLong = (long) n * (long) dim;
         if (tfidfTotalLong > Integer.MAX_VALUE || riTotalLong > Integer.MAX_VALUE) {
             throw new IllegalArgumentException(
                 "flat corpus too large: n=" + n + ", maxTokens=" + maxTokens +
-                ", dim=" + FastCodeEmbed.SEM_DIM);
+                ", dim=" + dim);
         }
         int tfidfTotal = (int) tfidfTotalLong;
         int riTotal = (int) riTotalLong;
@@ -606,7 +608,7 @@ public class Corpus implements AutoCloseable {
 
             float[] ri = fd.getRiVec();
             if (ri != null) {
-                System.arraycopy(ri, 0, allRiVecs, f * FastCodeEmbed.SEM_DIM, FastCodeEmbed.SEM_DIM);
+                System.arraycopy(ri, 0, allRiVecs, f * dim, Math.min(ri.length, dim));
             }
         }
 

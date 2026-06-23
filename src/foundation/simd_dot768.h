@@ -2,18 +2,26 @@
  *
  * Variants:
  * fce_dot768(a, b) — pure dot product (float32)
- * fce_dot768_mags3(a, b, &dot, &ma, &mb) — dot + both magnitudes (for cosine)
- * fce_dot768_add_mag_b(a, b, &dot, &mb) — dot + b magnitude (for precomputed a mag)
- * fce_dot768_i8(a, b) — int8 dot product (for P0 quantized scan)
- * fce_quantize_f32_768(out, src) — float32 → int8 quantization
+ * fce_dot768_mags3(a, b, dim, &dot, &ma, &mb) — dot + both magnitudes (cosine)
+ * fce_dot768_add_mag_b(a, b, dim, &dot, &mb) — dot + b magnitude (precomputed a mag)
+ * fce_dot768_i8(a, b, dim) — int8 dot product (for P0 quantized scan)
+ * fce_quantize_f32_768(out, src, dim) — float32 → int8 quantization
  *
  * AVX2 on x86_64 (runtime dispatch via __builtin_cpu_supports).
  * NEON on ARM64 (always available, compile-time #ifdef).
  * Scalar fallback for everything else.
  *
- * FCE_SIMD_DIM is 768 by default (nomic-embed-code). Compile with
- * -DFCE_SEM_DIM_256 to use 256 dims (saves ~640 MB memory).
- * Both 768 and 256 are divisible by 8 (AVX2) and 4 (NEON). */
+ * The active dimension (`dim`) is a RUNTIME argument so a single binary can
+ * serve both 768 (nomic-embed-code) and 256 (PCA-reduced) corpora — see
+ * fce_sem_set_dim(). Both 768 and 256 are divisible by 32 (AVX2 stride) and 16
+ * (NEON stride); callers MUST pass a multiple of 32. The unrolled kernel bodies
+ * read 32 (AVX2) / 16 (NEON) lanes per iteration, so a non-multiple would walk
+ * off the buffer.
+ *
+ * FCE_SIMD_DIM remains the compile-time MAXIMUM dimension (768 by default, 256
+ * if built with -DFCE_SEM_DIM_256), used only for fixed-size buffers; the hot
+ * loops iterate over the runtime `dim`. The unused float/axpy helpers below are
+ * still compiled against FCE_SIMD_DIM but are not on any active code path. */
 
 #ifndef FCE_SIMD_DOT768_H
 #define FCE_SIMD_DOT768_H
@@ -89,6 +97,7 @@ __attribute__((target("avx2,fma"))) static inline float fce_dot768_avx2(const fl
 
 __attribute__((target("avx2,fma"))) static inline void fce_dot768_mags3_avx2(const float *restrict a,
                                                                              const float *restrict b,
+                                                                             int dim,
                                                                              float *out_dot, float *out_ma,
                                                                              float *out_mb) {
     __m256 d0 = _mm256_setzero_ps(), d1 = _mm256_setzero_ps();
@@ -97,7 +106,7 @@ __attribute__((target("avx2,fma"))) static inline void fce_dot768_mags3_avx2(con
     __m256 ma2 = _mm256_setzero_ps(), ma3 = _mm256_setzero_ps();
     __m256 mb0 = _mm256_setzero_ps(), mb1 = _mm256_setzero_ps();
     __m256 mb2 = _mm256_setzero_ps(), mb3 = _mm256_setzero_ps();
-    for (int i = 0; i < FCE_SIMD_DIM; i += 32) {
+    for (int i = 0; i < dim; i += 32) {
         __m256 ai0 = _mm256_loadu_ps(a + i), bi0 = _mm256_loadu_ps(b + i);
         __m256 ai1 = _mm256_loadu_ps(a + i + 8), bi1 = _mm256_loadu_ps(b + i + 8);
         __m256 ai2 = _mm256_loadu_ps(a + i + 16), bi2 = _mm256_loadu_ps(b + i + 16);
@@ -135,12 +144,13 @@ __attribute__((target("avx2,fma"))) static inline void fce_dot768_mags3_avx2(con
 
 __attribute__((target("avx2,fma"))) static inline void fce_dot768_add_mag_b_avx2(const float *restrict a,
                                                                                  const float *restrict b,
+                                                                                 int dim,
                                                                                  float *out_dot, float *out_mb) {
     __m256 d0 = _mm256_setzero_ps(), d1 = _mm256_setzero_ps();
     __m256 d2 = _mm256_setzero_ps(), d3 = _mm256_setzero_ps();
     __m256 m0 = _mm256_setzero_ps(), m1 = _mm256_setzero_ps();
     __m256 m2 = _mm256_setzero_ps(), m3 = _mm256_setzero_ps();
-    for (int i = 0; i < FCE_SIMD_DIM; i += 32) {
+    for (int i = 0; i < dim; i += 32) {
         __m256 ai0 = _mm256_loadu_ps(a + i), bi0 = _mm256_loadu_ps(b + i);
         __m256 ai1 = _mm256_loadu_ps(a + i + 8), bi1 = _mm256_loadu_ps(b + i + 8);
         __m256 ai2 = _mm256_loadu_ps(a + i + 16), bi2 = _mm256_loadu_ps(b + i + 16);
@@ -214,9 +224,10 @@ __attribute__((target("avx2,fma"))) static inline void fce_init_f32_from_i8_768_
 /* ── int8 dot product + quantization ───────────────────────── */
 
 __attribute__((target("avx2,fma"))) static inline int32_t fce_dot768_i8_avx2(const int8_t *restrict a,
-                                                                             const int8_t *restrict b) {
+                                                                             const int8_t *restrict b,
+                                                                             int dim) {
     __m256i acc = _mm256_setzero_si256();
-    for (int i = 0; i < FCE_SIMD_DIM; i += 32) {
+    for (int i = 0; i < dim; i += 32) {
         __m256i ai = _mm256_loadu_si256((const __m256i *)(a + i));
         __m256i bi = _mm256_loadu_si256((const __m256i *)(b + i));
         /* Sign-extend int8 → int16, multiply-accumulate adjacent pairs → int32. */
@@ -241,7 +252,8 @@ __attribute__((target("avx2,fma"))) static inline int32_t fce_dot768_i8_avx2(con
 }
 
 __attribute__((target("avx2,fma"))) static inline void fce_quantize_f32_768_avx2(int8_t *restrict out,
-                                                                                 const float *restrict src) {
+                                                                                 const float *restrict src,
+                                                                                 int dim) {
     /* pin FP rounding mode to FE_TONEAREST so the AVX2
      * path (via _mm256_cvtps_epi32) agrees with the scalar path regardless of
      * the ambient MXCSR. fesetround sets both x87 and SSE rounding on x86.
@@ -256,7 +268,7 @@ __attribute__((target("avx2,fma"))) static inline void fce_quantize_f32_768_avx2
     __m256 lo = _mm256_set1_ps(-127.0f);
     __m256 hi = _mm256_set1_ps(127.0f);
     __m256 zero = _mm256_setzero_ps();
-    for (int i = 0; i < FCE_SIMD_DIM; i += 32) {
+    for (int i = 0; i < dim; i += 32) {
         __m256 v0 = _mm256_mul_ps(_mm256_loadu_ps(src + i), scale);
         __m256 v1 = _mm256_mul_ps(_mm256_loadu_ps(src + i + 8), scale);
         __m256 v2 = _mm256_mul_ps(_mm256_loadu_ps(src + i + 16), scale);
@@ -343,6 +355,7 @@ static inline float fce_dot768_neon(const float *restrict a,
 
 static inline void fce_dot768_mags3_neon(const float *restrict a,
                                          const float *restrict b,
+                                         int dim,
                                          float *out_dot, float *out_ma,
                                          float *out_mb) {
     float32x4_t d0 = vdupq_n_f32(0), d1 = vdupq_n_f32(0);
@@ -351,7 +364,7 @@ static inline void fce_dot768_mags3_neon(const float *restrict a,
     float32x4_t a2 = vdupq_n_f32(0), a3 = vdupq_n_f32(0);
     float32x4_t b0 = vdupq_n_f32(0), b1 = vdupq_n_f32(0);
     float32x4_t b2 = vdupq_n_f32(0), b3 = vdupq_n_f32(0);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 16) {
+    for (int i = 0; i < dim; i += 16) {
         float32x4_t ai0 = vld1q_f32(a + i), bi0 = vld1q_f32(b + i);
         float32x4_t ai1 = vld1q_f32(a + i + 4), bi1 = vld1q_f32(b + i + 4);
         float32x4_t ai2 = vld1q_f32(a + i + 8), bi2 = vld1q_f32(b + i + 8);
@@ -385,12 +398,13 @@ static inline void fce_dot768_mags3_neon(const float *restrict a,
 
 static inline void fce_dot768_add_mag_b_neon(const float *restrict a,
                                              const float *restrict b,
+                                             int dim,
                                              float *out_dot, float *out_mb) {
     float32x4_t d0 = vdupq_n_f32(0), d1 = vdupq_n_f32(0);
     float32x4_t d2 = vdupq_n_f32(0), d3 = vdupq_n_f32(0);
     float32x4_t m0 = vdupq_n_f32(0), m1 = vdupq_n_f32(0);
     float32x4_t m2 = vdupq_n_f32(0), m3 = vdupq_n_f32(0);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 16) {
+    for (int i = 0; i < dim; i += 16) {
         float32x4_t ai0 = vld1q_f32(a + i), bi0 = vld1q_f32(b + i);
         float32x4_t ai1 = vld1q_f32(a + i + 4), bi1 = vld1q_f32(b + i + 4);
         float32x4_t ai2 = vld1q_f32(a + i + 8), bi2 = vld1q_f32(b + i + 8);
@@ -441,9 +455,10 @@ static inline void fce_axpy_i8_768_neon(float *dst, const int8_t *src, float sca
 /* ── int8 dot product + quantization ───────────────────────── */
 
 static inline int32_t fce_dot768_i8_neon(const int8_t *restrict a,
-                                         const int8_t *restrict b) {
+                                         const int8_t *restrict b,
+                                         int dim) {
     int32x4_t acc = vdupq_n_s32(0);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 16) {
+    for (int i = 0; i < dim; i += 16) {
         int8x16_t ai = vld1q_s8(a + i);
         int8x16_t bi = vld1q_s8(b + i);
 #ifdef __ARM_FEATURE_DOTPROD
@@ -462,12 +477,13 @@ static inline int32_t fce_dot768_i8_neon(const int8_t *restrict a,
 }
 
 static inline void fce_quantize_f32_768_neon(int8_t *restrict out,
-                                             const float *restrict src) {
+                                             const float *restrict src,
+                                             int dim) {
     float32x4_t scale = vdupq_n_f32(127.0f);
     float32x4_t lo = vdupq_n_f32(-127.0f);
     float32x4_t hi = vdupq_n_f32(127.0f);
     float32x4_t zero = vdupq_n_f32(0.0f);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 16) {
+    for (int i = 0; i < dim; i += 16) {
         float32x4_t v0 = vmulq_f32(vld1q_f32(src + i), scale);
         float32x4_t v1 = vmulq_f32(vld1q_f32(src + i + 4), scale);
         float32x4_t v2 = vmulq_f32(vld1q_f32(src + i + 8), scale);
@@ -563,10 +579,11 @@ static inline float fce_dot768_scalar(const float *restrict a,
 
 static inline void fce_dot768_mags3_scalar(const float *restrict a,
                                            const float *restrict b,
+                                           int dim,
                                            float *out_dot, float *out_ma,
                                            float *out_mb) {
     float dot = 0.0f, ma = 0.0f, mb = 0.0f;
-    for (int i = 0; i < FCE_SIMD_DIM; i++) {
+    for (int i = 0; i < dim; i++) {
         dot += a[i] * b[i];
         ma += a[i] * a[i];
         mb += b[i] * b[i];
@@ -578,9 +595,10 @@ static inline void fce_dot768_mags3_scalar(const float *restrict a,
 
 static inline void fce_dot768_add_mag_b_scalar(const float *restrict a,
                                                const float *restrict b,
+                                               int dim,
                                                float *out_dot, float *out_mb) {
     float dot = 0.0f, mb = 0.0f;
-    for (int i = 0; i < FCE_SIMD_DIM; i++) {
+    for (int i = 0; i < dim; i++) {
         dot += a[i] * b[i];
         mb += b[i] * b[i];
     }
@@ -601,14 +619,16 @@ static inline void fce_init_f32_from_i8_768_scalar(float *dst, const int8_t *src
 }
 
 static inline int32_t fce_dot768_i8_scalar(const int8_t *restrict a,
-                                           const int8_t *restrict b) {
+                                           const int8_t *restrict b,
+                                           int dim) {
     int32_t acc = 0;
-    for (int i = 0; i < FCE_SIMD_DIM; i++) acc += (int32_t)a[i] * (int32_t)b[i];
+    for (int i = 0; i < dim; i++) acc += (int32_t)a[i] * (int32_t)b[i];
     return acc;
 }
 
 static inline void fce_quantize_f32_768_scalar(int8_t *restrict out,
-                                               const float *restrict src) {
+                                               const float *restrict src,
+                                               int dim) {
     /* pin rounding mode to FE_TONEAREST for the
      * duration of quantization so scalar and SIMD paths agree regardless
      * of the ambient fenv. FENV_ACCESS pragma ensures the compiler does not
@@ -618,7 +638,7 @@ static inline void fce_quantize_f32_768_scalar(int8_t *restrict out,
 #endif
     int saved_round = fegetround();
     if (saved_round != FE_TONEAREST) fesetround(FE_TONEAREST);
-    for (int i = 0; i < FCE_SIMD_DIM; i++) {
+    for (int i = 0; i < dim; i++) {
         float v = src[i] * 127.0f;
         /* sanitize NaN/Inf before clamp.
          * NaN comparisons are always false, so the clamp does not catch NaN,
@@ -654,33 +674,35 @@ static inline float fce_dot768(const float *restrict a,
 
 static inline void fce_dot768_mags3(const float *restrict a,
                                     const float *restrict b,
+                                    int dim,
                                     float *out_dot, float *out_ma,
                                     float *out_mb) {
 #if FCE_HAS_AVX2
     if (fce_has_avx2()) {
-        fce_dot768_mags3_avx2(a, b, out_dot, out_ma, out_mb);
+        fce_dot768_mags3_avx2(a, b, dim, out_dot, out_ma, out_mb);
         return;
     }
 #elif FCE_HAS_NEON
-    fce_dot768_mags3_neon(a, b, out_dot, out_ma, out_mb);
+    fce_dot768_mags3_neon(a, b, dim, out_dot, out_ma, out_mb);
     return;
 #endif
-    fce_dot768_mags3_scalar(a, b, out_dot, out_ma, out_mb);
+    fce_dot768_mags3_scalar(a, b, dim, out_dot, out_ma, out_mb);
 }
 
 static inline void fce_dot768_add_mag_b(const float *restrict a,
                                         const float *restrict b,
+                                        int dim,
                                         float *out_dot, float *out_mb) {
 #if FCE_HAS_AVX2
     if (fce_has_avx2()) {
-        fce_dot768_add_mag_b_avx2(a, b, out_dot, out_mb);
+        fce_dot768_add_mag_b_avx2(a, b, dim, out_dot, out_mb);
         return;
     }
 #elif FCE_HAS_NEON
-    fce_dot768_add_mag_b_neon(a, b, out_dot, out_mb);
+    fce_dot768_add_mag_b_neon(a, b, dim, out_dot, out_mb);
     return;
 #endif
-    fce_dot768_add_mag_b_scalar(a, b, out_dot, out_mb);
+    fce_dot768_add_mag_b_scalar(a, b, dim, out_dot, out_mb);
 }
 
 static inline void fce_axpy_f32_768(float *dst, const float *src, float scale) {
@@ -723,27 +745,29 @@ static inline void fce_init_f32_from_i8_768(float *dst, const int8_t *src, float
 }
 
 static inline int32_t fce_dot768_i8(const int8_t *restrict a,
-                                    const int8_t *restrict b) {
+                                    const int8_t *restrict b,
+                                    int dim) {
 #if FCE_HAS_AVX2
-    if (fce_has_avx2()) return fce_dot768_i8_avx2(a, b);
+    if (fce_has_avx2()) return fce_dot768_i8_avx2(a, b, dim);
 #elif FCE_HAS_NEON
-    return fce_dot768_i8_neon(a, b);
+    return fce_dot768_i8_neon(a, b, dim);
 #endif
-    return fce_dot768_i8_scalar(a, b);
+    return fce_dot768_i8_scalar(a, b, dim);
 }
 
 static inline void fce_quantize_f32_768(int8_t *restrict out,
-                                        const float *restrict src) {
+                                        const float *restrict src,
+                                        int dim) {
 #if FCE_HAS_AVX2
     if (fce_has_avx2()) {
-        fce_quantize_f32_768_avx2(out, src);
+        fce_quantize_f32_768_avx2(out, src, dim);
         return;
     }
 #elif FCE_HAS_NEON
-    fce_quantize_f32_768_neon(out, src);
+    fce_quantize_f32_768_neon(out, src, dim);
     return;
 #endif
-    fce_quantize_f32_768_scalar(out, src);
+    fce_quantize_f32_768_scalar(out, src, dim);
 }
 
 #endif /* FCE_SIMD_DOT768_H */

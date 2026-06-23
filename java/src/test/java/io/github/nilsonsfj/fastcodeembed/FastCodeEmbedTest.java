@@ -603,6 +603,39 @@ public class FastCodeEmbedTest {
             assertTrue(FastCodeEmbed.SEM_DIM > 0, "SEM_DIM must be positive");
         });
 
+        test("runtime dimension selection (256 vs 768)", () -> {
+            // Only meaningful when the native lib supports widening to 768
+            // (the default build). Restore the default dim afterward so this
+            // global setting does not leak into later runs.
+            int original = FastCodeEmbed.activeDim();
+            try {
+                if (FastCodeEmbed.SEM_DIM >= 768) {
+                    FastCodeEmbed.setDim(256);
+                    assertEquals(256, FastCodeEmbed.activeDim(), "activeDim after setDim(256)");
+                    try (Corpus corp = new Corpus()) {
+                        corp.addDocsBatch(new String[][]{
+                            {"handle", "request"}, {"validate", "user"}, {"handle", "response"}});
+                        corp.complete();
+                        float[] vec = corp.getRiVec("handle");
+                        assertNotNull(vec, "256-dim RI vec not null");
+                        assertEquals(256, vec.length, "RI vec length equals active dim");
+                        SearchResult[] hits = FastCodeEmbed.simpleRank(
+                            corp.buildFunc("a.c", new String[]{"handle", "request"}),
+                            new FuncDescriptor[]{
+                                corp.buildFunc("a.c", new String[]{"handle", "request"}),
+                                corp.buildFunc("b.c", new String[]{"compute", "matrix"})},
+                            2);
+                        assertTrue(hits.length > 0, "256-dim simpleRank returns results");
+                    }
+                }
+                FastCodeEmbed.setDim(768);
+                assertEquals(Math.min(768, FastCodeEmbed.SEM_DIM), FastCodeEmbed.activeDim(),
+                    "activeDim after setDim(768)");
+            } finally {
+                FastCodeEmbed.setDim(original);
+            }
+        });
+
         System.out.println("\n=========================");
         System.out.printf("%d/%d tests passed%n", passed, passed + failed);
         System.exit(failed > 0 ? 1 : 0);

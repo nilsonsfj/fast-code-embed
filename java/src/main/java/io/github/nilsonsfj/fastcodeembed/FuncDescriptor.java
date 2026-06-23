@@ -80,24 +80,24 @@ public class FuncDescriptor {
     }
 
     /**
-     * Set the {@link FastCodeEmbed#SEM_DIM}-dimensional Random Indexing vector.
-     * <p>
-     * The dimension is taken from the loaded native library at runtime, so
-     * Java bindings work for both the default 768-dim build and a 256-dim build
-     * compiled with {@code -DFCE_SEM_DIM_256}. The vector is typically built by
-     * summing enriched token vectors from a finalized corpus.
+     * Set the Random Indexing vector. Its length must equal the active
+     * embedding dimension ({@link FastCodeEmbed#activeDim()}) — 768 by default,
+     * or 256 when {@link FastCodeEmbed#setDim(int)} has selected the reduced
+     * dimension. The vector is typically built by summing enriched token
+     * vectors from a finalized corpus (see {@link Corpus#buildFunc}).
      *
-     * @param vec float array of length {@link FastCodeEmbed#SEM_DIM}
+     * @param vec float array of length {@link FastCodeEmbed#activeDim()}
      * @throws NullPointerException with named arg if vec is null
      * @throws IllegalArgumentException if vec.length does not match
-     *         {@link FastCodeEmbed#SEM_DIM}
+     *         {@link FastCodeEmbed#activeDim()}
      */
     public void setRiVec(float[] vec) {
         /* Same as setTfidf. */
         Objects.requireNonNull(vec, "vec");
-        if (vec.length != FastCodeEmbed.SEM_DIM) {
+        int dim = FastCodeEmbed.activeDim();
+        if (vec.length != dim) {
             throw new IllegalArgumentException(
-                "RI vector must be " + FastCodeEmbed.SEM_DIM + " dimensions, got " + vec.length);
+                "RI vector must be " + dim + " dimensions, got " + vec.length);
         }
         this.riVec = vec;
     }

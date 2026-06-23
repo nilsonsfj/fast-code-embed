@@ -15,9 +15,10 @@
 #include "foundation/compat_thread.h"
 #include "pipeline/worker_pool.h"
 #include "foundation/simd_dot768.h"
-#ifdef FCE_SEM_DIM_256
+/* PCA projection (768→256) is always compiled in so the runtime 256-dim mode
+ * works from the default 768 build — see fce_sem_set_dim. ~1.5 MB of const
+ * data; negligible next to the 30 MB pretrained blob. */
 #include "embed/pca_projection.h"
-#endif
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -75,6 +76,7 @@ enum {
 
 /* Default signal weights for fce_sem_combined_score.
  * Applied weights sum to ~0.85; proximity multiplier is applied on top. */
+/* Default (768-dim) signal weights. */
 #define FCE_SEM_W_TFIDF 0.20F
 #define FCE_SEM_W_RI 0.25F
 #define FCE_SEM_W_API 0.15F
@@ -82,25 +84,18 @@ enum {
 #define FCE_SEM_W_DECORATOR 0.05F
 #define FCE_SEM_W_STRUCT_PROFILE 0.10F
 
-/* 256-dim mode: boost dimension-independent signals, reduce RI weight.
- * The truncated pretrained vectors and compressed enriched vectors produce
+/* 256-dim weights: boost dimension-independent signals, reduce RI weight.
+ * The PCA-reduced pretrained vectors and compressed enriched vectors produce
  * less reliable RI cosine similarity at 256 dims. Compensate by leaning
  * harder on TF-IDF (token overlap), API/type/decorator signatures, and
- * structural profile — none of which depend on embedding dimensionality. */
-#ifdef FCE_SEM_DIM_256
-#undef FCE_SEM_W_TFIDF
-#define FCE_SEM_W_TFIDF 0.25F
-#undef FCE_SEM_W_RI
-#define FCE_SEM_W_RI 0.15F
-#undef FCE_SEM_W_API
-#define FCE_SEM_W_API 0.18F
-#undef FCE_SEM_W_TYPE
-#define FCE_SEM_W_TYPE 0.12F
-#undef FCE_SEM_W_DECORATOR
-#define FCE_SEM_W_DECORATOR 0.07F
-#undef FCE_SEM_W_STRUCT_PROFILE
-#define FCE_SEM_W_STRUCT_PROFILE 0.10F
-#endif
+ * structural profile — none of which depend on embedding dimensionality.
+ * Selected at runtime in fce_sem_get_config based on the active dimension. */
+#define FCE_SEM_W_TFIDF_256 0.25F
+#define FCE_SEM_W_RI_256 0.15F
+#define FCE_SEM_W_API_256 0.18F
+#define FCE_SEM_W_TYPE_256 0.12F
+#define FCE_SEM_W_DECORATOR_256 0.07F
+#define FCE_SEM_W_STRUCT_PROFILE_256 0.10F
 
 /* Threshold bounds for FCE_SEMANTIC_THRESHOLD env override. */
 #define FCE_SEM_THRESHOLD_MIN 0.0F
@@ -158,16 +153,38 @@ enum { BASE_DECIMAL = 10 };
 static void heap_siftdown(fce_sem_ranked_t *arr, int root, int len);
 static int fce_ranked_cmp_desc(const void *a, const void *b);
 
+/* ── Runtime embedding dimension ─────────────────────────────────── */
+
+/* Active dimension, default to the compile-time maximum (768 unless built
+ * -DFCE_SEM_DIM_256). Relaxed atomics: it is set once at startup, before any
+ * concurrent corpus work, so no ordering guarantees are required — the atomic
+ * only prevents torn reads/writes. */
+static _Atomic int g_sem_dim = FCE_SEM_DIM;
+
+void fce_sem_set_dim(int dim) {
+    /* Only 256 or 768 are supported, and never above the compile-time max
+     * (a -DFCE_SEM_DIM_256 build cannot widen to 768). Invalid values are
+     * ignored so callers get the previous/default dimension. */
+    if (dim != 256 && dim != 768) return;
+    if (dim > FCE_SEM_DIM) return;
+    atomic_store_explicit(&g_sem_dim, dim, memory_order_relaxed);
+}
+
+int fce_sem_active_dim(void) {
+    return atomic_load_explicit(&g_sem_dim, memory_order_relaxed);
+}
+
 /* ── Configuration ───────────────────────────────────────────────── */
 
 fce_sem_config_t fce_sem_get_config(void) {
+    const bool dim256 = (fce_sem_active_dim() == 256);
     fce_sem_config_t cfg = {
-        .w_tfidf = FCE_SEM_W_TFIDF,
-        .w_ri = FCE_SEM_W_RI,
-        .w_api = FCE_SEM_W_API,
-        .w_type = FCE_SEM_W_TYPE,
-        .w_decorator = FCE_SEM_W_DECORATOR,
-        .w_struct_profile = FCE_SEM_W_STRUCT_PROFILE,
+        .w_tfidf = dim256 ? FCE_SEM_W_TFIDF_256 : FCE_SEM_W_TFIDF,
+        .w_ri = dim256 ? FCE_SEM_W_RI_256 : FCE_SEM_W_RI,
+        .w_api = dim256 ? FCE_SEM_W_API_256 : FCE_SEM_W_API,
+        .w_type = dim256 ? FCE_SEM_W_TYPE_256 : FCE_SEM_W_TYPE,
+        .w_decorator = dim256 ? FCE_SEM_W_DECORATOR_256 : FCE_SEM_W_DECORATOR,
+        .w_struct_profile = dim256 ? FCE_SEM_W_STRUCT_PROFILE_256 : FCE_SEM_W_STRUCT_PROFILE,
         .threshold = (float)FCE_SEM_EDGE_THRESHOLD,
         .max_edges = FCE_SEM_MAX_EDGES,
         .query_mode = FCE_QUERY_AUTO,
@@ -848,7 +865,7 @@ float fce_sem_cosine(const fce_sem_vec_t *a, const fce_sem_vec_t *b) {
         return 0.0F;
     }
     float dot, mag_a, mag_b;
-    fce_dot768_mags3(a->v, b->v, &dot, &mag_a, &mag_b);
+    fce_dot768_mags3(a->v, b->v, fce_sem_active_dim(), &dot, &mag_a, &mag_b);
     float denom = sqrtf(mag_a) * sqrtf(mag_b);
     if (denom < FCE_SEM_DENOM_EPS) {
         return 0.0F;
@@ -862,7 +879,7 @@ float fce_sem_cosine(const fce_sem_vec_t *a, const fce_sem_vec_t *b) {
 static float fce_sem_cosine_aliased_with_mag(const float *restrict a, const float *restrict b, float mag_a) {
     if (!a || !b) return 0.0F;
     float dot, mag_b;
-    fce_dot768_add_mag_b(a, b, &dot, &mag_b);
+    fce_dot768_add_mag_b(a, b, fce_sem_active_dim(), &dot, &mag_b);
     float denom = sqrtf(mag_a) * sqrtf(mag_b);
     if (denom < FCE_SEM_DENOM_EPS) return 0.0F;
     return dot / denom;
@@ -1244,6 +1261,112 @@ static bool fce_subword_combine_f768(const uint16_t *idx, int count,
     return true;
 }
 
+/* ── PCA projection (768 → reduced dim) ──────────────────────────── */
+
+/* fce_pca_proj is stored row-major [768][256], so projecting with the natural
+ * loop order (k varying, d fixed) strides the matrix by 256 floats per step —
+ * a cache miss per multiply. We transpose it once to [256][768] so the inner
+ * loop reads each row contiguously. The summation order over k is unchanged, so
+ * the projected output is bit-identical to the naive loop. Built lazily and
+ * idempotently; the fce_once fast path is a single relaxed load. */
+enum { FCE_PCA_OUT_DIM = 256 };
+static float g_pca_proj_t[FCE_PCA_OUT_DIM][FCE_PRETRAINED_DIM];
+static fce_once_t g_pca_t_once = FCE_ONCE_INIT;
+static void init_pca_proj_t(void) {
+    for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
+        for (int d = 0; d < FCE_PCA_OUT_DIM; d++) {
+            g_pca_proj_t[d][k] = fce_pca_proj[k][d];
+        }
+    }
+}
+
+/* Project a full 768-dim float vector to `dim` dims (dim <= FCE_PCA_OUT_DIM)
+ * using the centered PCA basis. Matches the construction in build_src_entry and
+ * the corpus side so query and corpus vectors live in the same space. This is
+ * the fallback path; the precomputed-blob helpers below are used when available. */
+static inline void fce_pca_project(const float *restrict full, float *restrict out, int dim) {
+    fce_once(&g_pca_t_once, init_pca_proj_t);
+    float xc[FCE_PRETRAINED_DIM];
+    for (int k = 0; k < FCE_PRETRAINED_DIM; k++) xc[k] = full[k] - fce_pca_mean[k];
+    for (int d = 0; d < dim; d++) {
+        const float *restrict row = g_pca_proj_t[d];
+        float sum = 0.0f;
+        for (int k = 0; k < FCE_PRETRAINED_DIM; k++) sum += xc[k] * row[k];
+        out[d] = sum;
+    }
+}
+
+/* Precomputed projected pretrained blob: g_pca_blob_proj[idx] = (raw int8 row of
+ * token idx) · P, WITHOUT the /127 scale or mean subtraction. g_pca_pmean = mean·P.
+ * Because the projection is linear, the projection of any token (dense or a
+ * subword sum) reduces to a weighted sum of these rows minus g_pca_pmean — so the
+ * O(768×256) per-token matmul becomes a cheap O(pieces×256) combine. Built once
+ * (~8B MACs); ~42 MB resident, only in reduced-dim mode. On OOM, g_pca_blob_ok
+ * stays false and callers fall back to fce_pca_project. */
+static float (*g_pca_blob_proj)[FCE_PCA_OUT_DIM] = NULL;
+static float g_pca_pmean[FCE_PCA_OUT_DIM];
+static bool g_pca_blob_ok = false;
+static fce_once_t g_pca_blob_once = FCE_ONCE_INIT;
+static void init_pca_blob(void) {
+    init_pca_proj_t();
+    for (int d = 0; d < FCE_PCA_OUT_DIM; d++) {
+        const float *restrict row = g_pca_proj_t[d];
+        float s = 0.0f;
+        for (int k = 0; k < FCE_PRETRAINED_DIM; k++) s += fce_pca_mean[k] * row[k];
+        g_pca_pmean[d] = s;
+    }
+    size_t n = (size_t)FCE_PRETRAINED_TOKEN_COUNT;
+    g_pca_blob_proj = malloc(n * sizeof(*g_pca_blob_proj));
+    if (!g_pca_blob_proj) return; /* leave g_pca_blob_ok=false → matmul fallback */
+    for (size_t i = 0; i < n; i++) {
+        const int8_t *pv = fce_pretrained_vec_at((int)i);
+        float raw[FCE_PRETRAINED_DIM];
+        for (int k = 0; k < FCE_PRETRAINED_DIM; k++) raw[k] = (float)pv[k];
+        for (int d = 0; d < FCE_PCA_OUT_DIM; d++) {
+            const float *restrict row = g_pca_proj_t[d];
+            float s = 0.0f;
+            for (int k = 0; k < FCE_PRETRAINED_DIM; k++) s += raw[k] * row[k];
+            g_pca_blob_proj[i][d] = s;
+        }
+    }
+    g_pca_blob_ok = true;
+}
+
+/* Map a blob row pointer back to its token index (rows are 768 int8 at
+ * BLOB+8+idx*768). */
+static inline int fce_pretrained_idx_of(const int8_t *p) {
+    return (int)(((size_t)(p - (const int8_t *)(FCE_PRETRAINED_VECTOR_BLOB + 8)))
+                 / (size_t)FCE_PRETRAINED_DIM);
+}
+
+/* Project a single pretrained token (by blob index) using the precomputed table.
+ * Returns false if the table is unavailable (caller falls back). The /127 scale
+ * matches the corpus dense path (inv127 multiply). */
+static inline bool fce_pca_project_dense_idx(int idx, float *restrict out, int dim) {
+    fce_once(&g_pca_blob_once, init_pca_blob);
+    if (!g_pca_blob_ok || idx < 0 || idx >= FCE_PRETRAINED_TOKEN_COUNT) return false;
+    const float inv127 = FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX;
+    const float *restrict bp = g_pca_blob_proj[idx];
+    for (int d = 0; d < dim; d++) out[d] = inv127 * bp[d] - g_pca_pmean[d];
+    return true;
+}
+
+/* Project a subword combination (blob indices + per-piece weights) using the
+ * precomputed table: out = (Σ w_i · blobproj[idx_i]) − Pmean. Returns false if
+ * the table is unavailable. */
+static inline bool fce_pca_project_subword(const uint16_t *idx, const float *w,
+                                           int nsw, float *restrict out, int dim) {
+    fce_once(&g_pca_blob_once, init_pca_blob);
+    if (!g_pca_blob_ok) return false;
+    for (int d = 0; d < dim; d++) out[d] = -g_pca_pmean[d];
+    for (int i = 0; i < nsw; i++) {
+        const float *restrict bp = g_pca_blob_proj[idx[i]];
+        const float wi = w[i];
+        for (int d = 0; d < dim; d++) out[d] += wi * bp[d];
+    }
+    return true;
+}
+
 void fce_sem_random_index(const char *token, fce_sem_vec_t *out) {
     memset(out, 0, sizeof(*out));
     if (!token) {
@@ -1280,21 +1403,23 @@ void fce_sem_random_index(const char *token, fce_sem_vec_t *out) {
             int idx = ptr_to_token_idx(idx_ptr);
             if (idx >= 0 && idx < FCE_PRETRAINED_TOKEN_COUNT) {
                 const int8_t *pvec = fce_pretrained_vec_at(idx);
-#ifdef FCE_SEM_DIM_256
-                /* PCA projection: center → multiply by 768x256 matrix.
-                 * Preserves 84.5% variance vs 65% for naive truncation. */
-                for (int d = 0; d < FCE_SEM_DIM; d++) {
-                    float sum = 0.0f;
-                    for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
-                        sum += ((float)pvec[k] / FCE_SEM_INT8_MAX - fce_pca_mean[k]) * fce_pca_proj[k][d];
+                const int dim = fce_sem_active_dim();
+                if (dim < FCE_PRETRAINED_DIM) {
+                    /* PCA projection (preserves 84.5% variance vs 65% for naive
+                     * truncation). Use the precomputed blob table; fall back to
+                     * the matmul only if the table failed to allocate. */
+                    if (!fce_pca_project_dense_idx(idx, out->v, dim)) {
+                        float full[FCE_PRETRAINED_DIM];
+                        for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
+                            full[k] = (float)pvec[k] / FCE_SEM_INT8_MAX;
+                        }
+                        fce_pca_project(full, out->v, dim);
                     }
-                    out->v[d] = sum;
+                } else {
+                    for (int d = 0; d < dim && d < FCE_PRETRAINED_DIM; d++) {
+                        out->v[d] = (float)pvec[d] / FCE_SEM_INT8_MAX;
+                    }
                 }
-#else
-                for (int d = 0; d < FCE_SEM_DIM && d < FCE_PRETRAINED_DIM; d++) {
-                    out->v[d] = (float)pvec[d] / FCE_SEM_INT8_MAX;
-                }
-#endif
                 atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
                 return;
             }
@@ -1304,21 +1429,25 @@ void fce_sem_random_index(const char *token, fce_sem_vec_t *out) {
         int nsw = fce_decompose_subwords(token, sw);
         if (nsw > 0) {
             float comb[FCE_PRETRAINED_DIM];
-            if (fce_subword_combine_f768(sw, nsw, comb, NULL)) {
-#ifdef FCE_SEM_DIM_256
-                /* Project the combined vector through the same PCA basis as a hit. */
-                for (int d = 0; d < FCE_SEM_DIM; d++) {
-                    float sum = 0.0f;
-                    for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
-                        sum += (comb[k] - fce_pca_mean[k]) * fce_pca_proj[k][d];
+            float inv_norm = 0.0f;
+            if (fce_subword_combine_f768(sw, nsw, comb, &inv_norm)) {
+                const int dim = fce_sem_active_dim();
+                if (dim < FCE_PRETRAINED_DIM) {
+                    /* Project through the same PCA basis as a hit, via the blob
+                     * table (per-piece weight = inv_norm/127, matching the corpus
+                     * subword storage); fall back to projecting the combined
+                     * vector if the table is unavailable. */
+                    float w[FCE_SEM_SPARSE_NNZE];
+                    const float wv = inv_norm / FCE_SEM_INT8_MAX;
+                    for (int i = 0; i < nsw; i++) w[i] = wv;
+                    if (!fce_pca_project_subword(sw, w, nsw, out->v, dim)) {
+                        fce_pca_project(comb, out->v, dim);
                     }
-                    out->v[d] = sum;
+                } else {
+                    for (int d = 0; d < dim && d < FCE_PRETRAINED_DIM; d++) {
+                        out->v[d] = comb[d];
+                    }
                 }
-#else
-                for (int d = 0; d < FCE_SEM_DIM && d < FCE_PRETRAINED_DIM; d++) {
-                    out->v[d] = comb[d];
-                }
-#endif
                 atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
                 return;
             }
@@ -1336,8 +1465,9 @@ void fce_sem_normalize(fce_sem_vec_t *v) {
     if (!v) {
         return;
     }
+    const int dim = fce_sem_active_dim();
     float mag = 0.0F;
-    for (int i = 0; i < FCE_SEM_DIM; i++) {
+    for (int i = 0; i < dim; i++) {
         mag += v->v[i] * v->v[i];
     }
     mag = sqrtf(mag);
@@ -1345,7 +1475,7 @@ void fce_sem_normalize(fce_sem_vec_t *v) {
         return;
     }
     float inv = FCE_SEM_UNIT_POS / mag;
-    for (int i = 0; i < FCE_SEM_DIM; i++) {
+    for (int i = 0; i < dim; i++) {
         v->v[i] *= inv;
     }
 }
@@ -1357,7 +1487,7 @@ void fce_sem_vec_add_scaled(fce_sem_vec_t *dst, const fce_sem_vec_t *src, float 
      * Hand-written SIMD axpy kernels were benchmarked and showed a ~10% finalize
      * regression — the compiler's code generation (unrolling, scheduling, register
      * allocation) outperforms the manual intrinsics in this context. */
-    for (int i = 0; i < FCE_SEM_DIM; i++) {
+    for (int i = 0; i < fce_sem_active_dim(); i++) {
         dst->v[i] += scale * src->v[i];
     }
 }
@@ -2006,18 +2136,65 @@ typedef struct {
     uint16_t indices[FCE_SEM_SPARSE_NNZE]; /* 8 * 2 = 16 bytes */
     float values[FCE_SEM_SPARSE_NNZE];     /* 8 * 4 = 32 bytes */
     const int8_t *dense_int8;              /* points into FCE_PRETRAINED_VECTOR_BLOB */
-#ifdef FCE_SEM_DIM_256
-    /* Cached PCA-projected 256-dim vector for dense entries.
-     * Computed once in build_src_entry so the hot enrichment loop
-     * avoids the O(256×768) PCA multiply per neighbor-add. */
-    fce_sem_vec_t projected;
-#endif
 } fce_sem_src_entry_t;
 
-/* Inline helper: initialize a target vector from a sparse/dense source.
- * In 256-dim mode, the dense path must use the same PCA
- * projection as fce_sem_random_index so that corpus vectors and RI queries
- * live in the same basis. Truncation would produce incompatible vectors. */
+/* Reconstruct the full 768-dim float source (dense or subword) for an entry.
+ * Matches the query-side construction in fce_sem_random_index: dense entries are
+ * the int8 blob row scaled by 1/127; subword entries are the unit-normalized sum
+ * of their pieces (the per-piece weight already folds in inv_norm/127, so the
+ * sum reproduces the same unit vector fce_subword_combine_f768 returns). */
+static inline void sem_src_full768(float *restrict full, const fce_sem_src_entry_t *src) {
+    if (src->is_subword) {
+        for (int d = 0; d < FCE_PRETRAINED_DIM; d++) full[d] = 0.0f;
+        for (int k = 0; k < src->nnz; k++) {
+            const int8_t *s = fce_pretrained_vec_at(src->indices[k]);
+            const float w = src->values[k];
+            for (int d = 0; d < FCE_PRETRAINED_DIM; d++) full[d] += w * (float)s[d];
+        }
+    } else {
+        const int8_t *s = src->dense_int8;
+        const float inv127 = FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX;
+        for (int d = 0; d < FCE_PRETRAINED_DIM; d++) full[d] = inv127 * (float)s[d];
+    }
+}
+
+/* Write the active-dim representation of a dense/subword source into `vec`
+ * (fce_sem_active_dim() floats). At 768 the source is materialized directly
+ * (no temp, no PCA). Below 768 the 768-dim source is PCA-projected with the
+ * SAME basis as fce_sem_random_index, so corpus and query vectors are
+ * comparable. The PCA projection is recomputed per call rather than cached:
+ * at the default RI-off finalize it runs once per token; only the RI-enabled +
+ * 256-dim combination pays it per neighbor-add. */
+static inline void sem_src_to_active(float *restrict vec, const fce_sem_src_entry_t *src) {
+    const int dim = fce_sem_active_dim();
+    if (dim >= FCE_PRETRAINED_DIM) {
+        if (src->is_subword) {
+            for (int d = 0; d < dim; d++) vec[d] = 0.0f;
+            for (int k = 0; k < src->nnz; k++) {
+                const int8_t *s = fce_pretrained_vec_at(src->indices[k]);
+                const float w = src->values[k];
+                for (int d = 0; d < dim; d++) vec[d] += w * (float)s[d];
+            }
+        } else {
+            const int8_t *s = src->dense_int8;
+            const float inv127 = FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX;
+            for (int d = 0; d < dim; d++) vec[d] = inv127 * (float)s[d];
+        }
+    } else {
+        /* Reduced dim: project via the precomputed blob table (cheap), falling
+         * back to the full matmul only if the table failed to allocate. */
+        if (src->is_subword) {
+            if (fce_pca_project_subword(src->indices, src->values, src->nnz, vec, dim)) return;
+        } else {
+            if (fce_pca_project_dense_idx(fce_pretrained_idx_of(src->dense_int8), vec, dim)) return;
+        }
+        float full[FCE_PRETRAINED_DIM];
+        sem_src_full768(full, src);
+        fce_pca_project(full, vec, dim);
+    }
+}
+
+/* Inline helper: initialize a target vector from a sparse/dense source. */
 static inline void sem_target_init_from_src(fce_sem_vec_t *dst, const fce_sem_src_entry_t *src) {
     memset(dst, 0, sizeof(*dst));
     if (src->is_sparse) {
@@ -2025,56 +2202,29 @@ static inline void sem_target_init_from_src(fce_sem_vec_t *dst, const fce_sem_sr
             dst->v[src->indices[k]] = src->values[k];
         }
     } else {
-#ifdef FCE_SEM_DIM_256
-        /* Use cached PCA-projected vector (computed once in build_src_entry). */
-        memcpy(dst->v, src->projected.v, sizeof(dst->v));
-#else
-        if (src->is_subword) {
-            /* Subword path: weighted sum of pretrained piece vectors. */
-            for (int k = 0; k < src->nnz; k++) {
-                const int8_t *s = fce_pretrained_vec_at(src->indices[k]);
-                const float w = src->values[k];
-                for (int d = 0; d < FCE_SEM_DIM; d++) {
-                    dst->v[d] += w * (float)s[d];
-                }
-            }
-        } else {
-            const int8_t *s = src->dense_int8;
-            const float inv127 = FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX;
-            /* Do NOT replace with fce_init_f32_from_i8_768() — see note in fce_sem_vec_add_scaled. */
-            for (int d = 0; d < FCE_SEM_DIM; d++) {
-                dst->v[d] = inv127 * (float)s[d];
-            }
-        }
-#endif
+        sem_src_to_active(dst->v, src);
     }
 }
 
 /* Inline helper: add weighted source into target.
- * In 256-dim mode, the dense path must apply PCA projection
- * so that corpus vectors and RI queries live in the same basis.
  * Sparse path: ~8 operations, ~48 bytes source memory traffic.
- * Dense path: 768 mul-adds with int8→float conversion, ~768 bytes traffic. */
+ * Dense path: dim mul-adds with int8→float conversion. */
 static inline void sem_vec_add_src_scaled(fce_sem_vec_t *dst, const fce_sem_src_entry_t *src,
                                           float scale) {
     if (src->is_sparse) {
         for (int k = 0; k < src->nnz; k++) {
             dst->v[src->indices[k]] += scale * src->values[k];
         }
-    } else {
-#ifdef FCE_SEM_DIM_256
-        /* Use cached PCA-projected vector, then scale-add. */
-        const float *proj = src->projected.v;
-        for (int d = 0; d < FCE_SEM_DIM; d++) {
-            dst->v[d] += scale * proj[d];
-        }
-#else
+        return;
+    }
+    const int dim = fce_sem_active_dim();
+    if (dim >= FCE_PRETRAINED_DIM) {
         if (src->is_subword) {
             /* Subword path: scaled weighted sum of pretrained piece vectors. */
             for (int k = 0; k < src->nnz; k++) {
                 const int8_t *s = fce_pretrained_vec_at(src->indices[k]);
                 const float w = scale * src->values[k];
-                for (int d = 0; d < FCE_SEM_DIM; d++) {
+                for (int d = 0; d < dim; d++) {
                     dst->v[d] += w * (float)s[d];
                 }
             }
@@ -2082,11 +2232,15 @@ static inline void sem_vec_add_src_scaled(fce_sem_vec_t *dst, const fce_sem_src_
             const int8_t *s = src->dense_int8;
             const float mul = scale * (FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX);
             /* Do NOT replace with fce_axpy_i8_768() — see note in fce_sem_vec_add_scaled. */
-            for (int d = 0; d < FCE_SEM_DIM; d++) {
+            for (int d = 0; d < dim; d++) {
                 dst->v[d] += mul * (float)s[d];
             }
         }
-#endif
+    } else {
+        /* 256-dim: project the source, then scale-add. */
+        float tmp[FCE_SEM_DIM];
+        sem_src_to_active(tmp, src);
+        for (int d = 0; d < dim; d++) dst->v[d] += scale * tmp[d];
     }
 }
 
@@ -2160,6 +2314,7 @@ static void cooccur_worker_sparse(int worker_id, void *ctx_ptr) {
      * would silently write OOB — this guard converts that into a safe return
      * instead of a heap corruption. */
     if (worker_id < 0 || worker_id >= cc->scratch_count) return;
+    const int dim = fce_sem_active_dim();
     while (true) {
         int ci =
             atomic_fetch_add_explicit(&cc->next_chunk, FCE_SEM_ATOMIC_INC, memory_order_relaxed);
@@ -2192,7 +2347,7 @@ static void cooccur_worker_sparse(int worker_id, void *ctx_ptr) {
                      * already neutralizes NaN/Inf lanes (simd_dot768.h).
                      * The fallback path (float32 enriched_vecs) has no such
                      * clamp and still needs its sweep. */
-                    fce_quantize_f32_768(&cc->pass1_q[(size_t)tid * FCE_SEM_DIM], scratch->v);
+                    fce_quantize_f32_768(&cc->pass1_q[(size_t)tid * dim], scratch->v, dim);
                 } else {
                     /* Fallback: accumulate into float32 enriched_vecs, normalize only.
                      * Quantization happens later in finalize_pass2. */
@@ -2207,7 +2362,7 @@ static void cooccur_worker_sparse(int worker_id, void *ctx_ptr) {
                      * survive into pass2 and poison the int8 quantizer. */
                     fce_sem_normalize(&cc->enriched_vecs[tid]);
                     bool nonfinite = false;
-                    for (int d = 0; d < FCE_SEM_DIM; d++) {
+                    for (int d = 0; d < dim; d++) {
                         if (!isfinite(cc->enriched_vecs[tid].v[d])) {
                             nonfinite = true;
                             break;
@@ -2243,8 +2398,9 @@ typedef struct {
 
 static inline void sem_vec_add_int8_scaled(fce_sem_vec_t *dst, const int8_t *src, float scale) {
     const float mul = scale * (FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX);
+    const int dim = fce_sem_active_dim();
     /* Do NOT replace with fce_axpy_i8_768() — see note in fce_sem_vec_add_scaled. */
-    for (int d = 0; d < FCE_SEM_DIM; d++) {
+    for (int d = 0; d < dim; d++) {
         dst->v[d] += mul * (float)src[d];
     }
 }
@@ -2272,7 +2428,7 @@ static void cooccur_int8_one_target(cooccur_int8_ctx_t *cc, int tid, fce_sem_vec
                 continue;
             }
             float weight = FCE_SEM_UNIT_POS / (float)abs(w);
-            sem_vec_add_int8_scaled(target, &cc->pass1_q[(size_t)nid * FCE_SEM_DIM], weight);
+            sem_vec_add_int8_scaled(target, &cc->pass1_q[(size_t)nid * fce_sem_active_dim()], weight);
         }
     }
 }
@@ -2285,6 +2441,7 @@ static void cooccur_worker_int8(int worker_id, void *ctx_ptr) {
      * confirms this parameter is unused. */
     (void)worker_id;
     cooccur_int8_ctx_t *cc = ctx_ptr;
+    const int dim = fce_sem_active_dim();
     while (true) {
         int ci =
             atomic_fetch_add_explicit(&cc->next_chunk, FCE_SEM_ATOMIC_INC, memory_order_relaxed);
@@ -2312,12 +2469,12 @@ static void cooccur_worker_int8(int worker_id, void *ctx_ptr) {
                      * normalize the blend, quantize to int8, write to enriched_vecs_q.
                      * Matches original code's exact order of operations. */
                     int8_t p2_q[FCE_SEM_DIM];
-                    fce_quantize_f32_768(p2_q, acc.v);
-                    const int8_t *p1 = &cc->pass1_q[(size_t)tid * FCE_SEM_DIM];
-                    int8_t *out = &cc->enriched_vecs_q[(size_t)tid * FCE_SEM_DIM];
+                    fce_quantize_f32_768(p2_q, acc.v, dim);
+                    const int8_t *p1 = &cc->pass1_q[(size_t)tid * dim];
+                    int8_t *out = &cc->enriched_vecs_q[(size_t)tid * dim];
                     /* Blend quantized pass2 with normalized pass1 in float32. */
                     fce_sem_vec_t blended = {0};
-                    for (int d = 0; d < FCE_SEM_DIM; d++) {
+                    for (int d = 0; d < dim; d++) {
                         blended.v[d] =
                             (FCE_SEM_RRI_BETA * (float)p1[d]) +
                             (FCE_SEM_RRI_ALPHA * (float)p2_q[d]);
@@ -2325,14 +2482,14 @@ static void cooccur_worker_int8(int worker_id, void *ctx_ptr) {
                     fce_sem_normalize(&blended);
                     /* redundant NaN/Inf sweep removed —
                      * fce_quantize_f32_768 already handles NaN/Inf lanes. */
-                    fce_quantize_f32_768(out, blended.v);
+                    fce_quantize_f32_768(out, blended.v, dim);
                 } else {
                     /* Fallback: quantize, blend with normalized pass1,
                      * normalize into float32 enriched_vecs. */
                     int8_t p2_q[FCE_SEM_DIM];
-                    fce_quantize_f32_768(p2_q, acc.v);
-                    const int8_t *p1 = &cc->pass1_q[(size_t)tid * FCE_SEM_DIM];
-                    for (int d = 0; d < FCE_SEM_DIM; d++) {
+                    fce_quantize_f32_768(p2_q, acc.v, dim);
+                    const int8_t *p1 = &cc->pass1_q[(size_t)tid * dim];
+                    for (int d = 0; d < dim; d++) {
                         cc->enriched_vecs[tid].v[d] =
                             (FCE_SEM_RRI_BETA * (float)p1[d]) +
                             (FCE_SEM_RRI_ALPHA * (float)p2_q[d]);
@@ -2379,20 +2536,10 @@ static void build_src_entry(const char *token, fce_sem_src_entry_t *out) {
         if (idx_ptr) {
             int idx = ptr_to_token_idx(idx_ptr);
             if (idx >= 0 && idx < FCE_PRETRAINED_TOKEN_COUNT) {
+                /* Store the raw int8 blob row; sem_src_to_active materializes
+                 * (and, at <768 dims, PCA-projects) it on demand. */
                 out->is_sparse = 0;
                 out->dense_int8 = fce_pretrained_vec_at(idx);
-#ifdef FCE_SEM_DIM_256
-                /* Cache PCA-projected 256-dim vector so the hot enrichment
-                 * loop avoids the O(256×768) PCA multiply per neighbor-add. */
-                const int8_t *pvec = out->dense_int8;
-                for (int d = 0; d < FCE_SEM_DIM; d++) {
-                    float sum = 0.0f;
-                    for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
-                        sum += ((float)pvec[k] / FCE_SEM_INT8_MAX - fce_pca_mean[k]) * fce_pca_proj[k][d];
-                    }
-                    out->projected.v[d] = sum;
-                }
-#endif
                 atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
                 return;
             }
@@ -2403,27 +2550,12 @@ static void build_src_entry(const char *token, fce_sem_src_entry_t *out) {
         uint16_t sw[FCE_SEM_SPARSE_NNZE];
         int nsw = fce_decompose_subwords(token, sw);
         if (nsw > 0) {
-#ifdef FCE_SEM_DIM_256
-            float comb[FCE_PRETRAINED_DIM];
-            if (fce_subword_combine_f768(sw, nsw, comb, NULL)) {
-                out->is_sparse = 0; /* 256-dim dense path reads `projected` */
-                out->dense_int8 = NULL;
-                for (int d = 0; d < FCE_SEM_DIM; d++) {
-                    float sum = 0.0f;
-                    for (int k = 0; k < FCE_PRETRAINED_DIM; k++) {
-                        sum += (comb[k] - fce_pca_mean[k]) * fce_pca_proj[k][d];
-                    }
-                    out->projected.v[d] = sum;
-                }
-                atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
-                return;
-            }
-#else
             float inv_norm;
             if (fce_subword_combine_f768(sw, nsw, NULL, &inv_norm)) {
                 /* Store the subword list; per-piece weight folds in the int8→float
-                 * scale and the unit-normalization of the combined vector, so the
-                 * dense hot path reconstructs the same unit vector. */
+                 * scale and the unit-normalization of the combined vector, so
+                 * sem_src_to_active reconstructs the same unit vector (and
+                 * PCA-projects it at <768 dims, matching the query side). */
                 out->is_sparse = 0;
                 out->is_subword = 1;
                 out->nnz = (uint8_t)nsw;
@@ -2436,7 +2568,6 @@ static void build_src_entry(const char *token, fce_sem_src_entry_t *out) {
                 atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
                 return;
             }
-#endif
         }
     }
     atomic_fetch_sub_explicit(&g_reader_count, 1, memory_order_seq_cst);
@@ -2616,7 +2747,7 @@ static void finalize_pass1(finalize_params_t *p) {
              * enriched_vecs_q rather than a throwaway pass1 buffer. */
             pass1_q = p->corpus->enriched_vecs_q;
         } else {
-            pass1_q = malloc((size_t)p->corpus->entry_count * FCE_SEM_DIM * sizeof(int8_t));
+            pass1_q = malloc((size_t)p->corpus->entry_count * fce_sem_active_dim() * sizeof(int8_t));
         }
         if (!scratch || !pass1_q) {
             free(scratch);
@@ -2686,15 +2817,16 @@ static void finalize_pass2(finalize_params_t *p) {
             fce_log(FCE_LOG_WARN, "pass1 failed and no enriched_vecs; skipping pass2", NULL);
             return;
         }
-        pass1_q = malloc((size_t)p->corpus->entry_count * FCE_SEM_DIM * sizeof(int8_t));
+        pass1_q = malloc((size_t)p->corpus->entry_count * fce_sem_active_dim() * sizeof(int8_t));
         if (!pass1_q) {
             fce_log(FCE_LOG_WARN, "OOM during pass2 quantization; using pass1 result", NULL);
             return;
         }
         local_alloc = true;
+        const int dim = fce_sem_active_dim();
         for (int i = 0; i < p->corpus->entry_count; i++) {
-            fce_quantize_f32_768(&pass1_q[(size_t)i * FCE_SEM_DIM],
-                                 p->corpus->enriched_vecs[i].v);
+            fce_quantize_f32_768(&pass1_q[(size_t)i * dim],
+                                 p->corpus->enriched_vecs[i].v, dim);
         }
     }
 
@@ -2756,9 +2888,10 @@ static void docvec_build_worker(int wid, void *ctx_ptr) {
                 if (dc->enriched_vecs_q) {
                     /* dequantize int8 on the fly — ~5 tokens × 768 dims
                      * per doc, negligible vs the normalize at the end. */
-                    const int8_t *src = &dc->enriched_vecs_q[(size_t)tid * FCE_SEM_DIM];
+                    const int dim = fce_sem_active_dim();
+                    const int8_t *src = &dc->enriched_vecs_q[(size_t)tid * dim];
                     const float mul = w / FCE_SEM_INT8_MAX;
-                    for (int i = 0; i < FCE_SEM_DIM; i++) {
+                    for (int i = 0; i < dim; i++) {
                         dv.v[i] += mul * (float)src[i];
                     }
                 } else {
@@ -2788,10 +2921,11 @@ static void docvec_quantize_worker(int wid, void *ctx_ptr) {
     for (;;) {
         int d = atomic_fetch_add_explicit(&dc->next_doc, 1, memory_order_relaxed);
         if (d >= dc->doc_count) break;
-        int8_t *dq = dc->doc_vectors_q + (size_t)d * FCE_SEM_DIM;
-        fce_quantize_f32_768(dq, dc->doc_vectors[d].v);
+        const int dim = fce_sem_active_dim();
+        int8_t *dq = dc->doc_vectors_q + (size_t)d * dim;
+        fce_quantize_f32_768(dq, dc->doc_vectors[d].v, dim);
         /* store reciprocal magnitude for multiply-only hot loop. */
-        int32_t mag_sq_i32 = fce_dot768_i8(dq, dq);
+        int32_t mag_sq_i32 = fce_dot768_i8(dq, dq, dim);
         float mag_sq = (float)mag_sq_i32;
         dc->doc_vectors_q_inv_mag[d] = (mag_sq > 0.0f) ? 1.0f / sqrtf(mag_sq) : 0.0f;
     }
@@ -2817,7 +2951,7 @@ static void docvec_center_worker(int wid, void *ctx_ptr) {
         int d = atomic_fetch_add_explicit(&dc->next_doc, 1, memory_order_relaxed);
         if (d >= dc->doc_count) break;
         fce_sem_vec_t *v = &dc->doc_vectors[d];
-        for (int i = 0; i < FCE_SEM_DIM; i++) v->v[i] -= dc->mean[i];
+        for (int i = 0; i < fce_sem_active_dim(); i++) v->v[i] -= dc->mean[i];
         fce_sem_normalize(v);
     }
 }
@@ -2828,11 +2962,11 @@ static bool fce_sparsify_topk(uint16_t *out_idx, int8_t *out_val,
 
 void fce_sem_corpus_set_sparse(fce_sem_corpus_t *corpus, int nnz) {
     if (!corpus || corpus->finalized) return;
-    /* clamp nnz to FCE_SEM_DIM — a vector cannot
+    /* clamp nnz to the active dimension — a vector cannot
      * have more non-zero entries than its dimension. Values above DIM are
      * pure 0xFFFF padding (wasted memory) and could be a memory-amplification
      * vector if set_sparse is reachable from untrusted configuration. */
-    if (nnz > FCE_SEM_DIM) nnz = FCE_SEM_DIM;
+    if (nnz > fce_sem_active_dim()) nnz = fce_sem_active_dim();
     corpus->sparse_nnz = nnz > 0 ? nnz : 0;
 }
 
@@ -2908,7 +3042,7 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
     /* Allocate int8 enriched_vecs_q directly (3 GB float32 eliminated).
      * If this allocation fails, fall back to float32 enriched_vecs and
      * quantize to int8 after pass2 (the old R1 path). */
-    corpus->enriched_vecs_q = malloc((size_t)corpus->entry_count * FCE_SEM_DIM * sizeof(int8_t));
+    corpus->enriched_vecs_q = malloc((size_t)corpus->entry_count * fce_sem_active_dim() * sizeof(int8_t));
     if (!corpus->enriched_vecs_q) {
         /* Fallback: allocate float32 enriched_vecs; pass1+pass2 write here,
          * then R1 quantizes to int8 and frees the float32 array. */
@@ -2965,11 +3099,12 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
      * correct pass1⊕pass2 blend. */
     if (corpus->enriched_vecs && corpus->entry_count > 0) {
         if (!corpus->enriched_vecs_q) {
-            corpus->enriched_vecs_q = malloc((size_t)corpus->entry_count * FCE_SEM_DIM * sizeof(int8_t));
+            const int dim = fce_sem_active_dim();
+            corpus->enriched_vecs_q = malloc((size_t)corpus->entry_count * dim * sizeof(int8_t));
             if (corpus->enriched_vecs_q) {
                 for (int i = 0; i < corpus->entry_count; i++) {
-                    fce_quantize_f32_768(&corpus->enriched_vecs_q[(size_t)i * FCE_SEM_DIM],
-                                         corpus->enriched_vecs[i].v);
+                    fce_quantize_f32_768(&corpus->enriched_vecs_q[(size_t)i * dim],
+                                         corpus->enriched_vecs[i].v, dim);
                 }
                 /* only free float32 after int8
                  * re-quantization succeeds. If malloc failed, keep enriched_vecs
@@ -3041,13 +3176,14 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
      * only doc and collapse it to zero). */
     corpus->has_doc_mean = false;
     if (corpus->doc_count >= 2) {
-        for (int i = 0; i < FCE_SEM_DIM; i++) corpus->doc_mean[i] = 0.0f;
+        const int dim = fce_sem_active_dim();
+        for (int i = 0; i < dim; i++) corpus->doc_mean[i] = 0.0f;
         for (int d = 0; d < corpus->doc_count; d++) {
             const float *v = corpus->doc_vectors[d].v;
-            for (int i = 0; i < FCE_SEM_DIM; i++) corpus->doc_mean[i] += v[i];
+            for (int i = 0; i < dim; i++) corpus->doc_mean[i] += v[i];
         }
         const float inv_n = 1.0f / (float)corpus->doc_count;
-        for (int i = 0; i < FCE_SEM_DIM; i++) corpus->doc_mean[i] *= inv_n;
+        for (int i = 0; i < dim; i++) corpus->doc_mean[i] *= inv_n;
         corpus->has_doc_mean = true;
 
         docvec_center_ctx_t cctx = {
@@ -3063,7 +3199,7 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
      * 4 bytes/doc → 1 byte/doc; SIMD int8 dot is ~4x faster than float32.
      * Also stores per-doc quantized magnitudes for proper cosine normalization. */
     if (corpus->doc_count > 0) {
-        corpus->doc_vectors_q = calloc((size_t)corpus->doc_count * FCE_SEM_DIM, sizeof(int8_t));
+        corpus->doc_vectors_q = calloc((size_t)corpus->doc_count * fce_sem_active_dim(), sizeof(int8_t));
         corpus->doc_vectors_q_inv_mag = calloc((size_t)corpus->doc_count, sizeof(float));
         if (corpus->doc_vectors_q && corpus->doc_vectors_q_inv_mag) {
             docvec_quant_ctx_t qctx = {
@@ -3113,7 +3249,7 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
      * sentinel value and all scores collapse to 0.5. */
     if (corpus->sparse_nnz > 0 && corpus->enriched_vecs_q && corpus->doc_vectors_q) {
         int nnz = corpus->sparse_nnz;
-        int dim = FCE_SEM_DIM;
+        int dim = fce_sem_active_dim();
         bool sparsify_ok = true;
         /* Sparsify enriched vectors. */
         corpus->enriched_sparse_idx = malloc((size_t)corpus->entry_count * nnz * sizeof(uint16_t));
@@ -3497,9 +3633,10 @@ const fce_sem_vec_t *fce_sem_corpus_ri_vec(const fce_sem_corpus_t *corpus, const
      * immediately (as in buildFunc / scoring), but NOT safe to store. */
     if (corpus->enriched_vecs_q) {
         static _Thread_local fce_sem_vec_t tl_dequant;
-        const int8_t *src = &corpus->enriched_vecs_q[(size_t)idx * FCE_SEM_DIM];
+        const int dim = fce_sem_active_dim();
+        const int8_t *src = &corpus->enriched_vecs_q[(size_t)idx * dim];
         const float inv127 = 1.0f / FCE_SEM_INT8_MAX;
-        for (int i = 0; i < FCE_SEM_DIM; i++) {
+        for (int i = 0; i < dim; i++) {
             tl_dequant.v[i] = inv127 * (float)src[i];
         }
         return &tl_dequant;
@@ -3540,9 +3677,10 @@ const char *fce_sem_corpus_token_at(const fce_sem_corpus_t *corpus, int index,
              * the same thread. Each function has its own _Thread_local scratch,
              * so calling fce_sem_corpus_ri_vec() does NOT invalidate this pointer. */
             static _Thread_local fce_sem_vec_t tl_dequant;
-            const int8_t *src = &corpus->enriched_vecs_q[(size_t)index * FCE_SEM_DIM];
+            const int dim = fce_sem_active_dim();
+            const int8_t *src = &corpus->enriched_vecs_q[(size_t)index * dim];
             const float inv127 = 1.0f / FCE_SEM_INT8_MAX;
-            for (int i = 0; i < FCE_SEM_DIM; i++) {
+            for (int i = 0; i < dim; i++) {
                 tl_dequant.v[i] = inv127 * (float)src[i];
             }
             *out_vec = &tl_dequant;
@@ -3830,13 +3968,13 @@ int fce_sem_corpus_save(const fce_sem_corpus_t *corpus, const char *path,
         sec[FCE_SEC_ENR_SPARSE_IDX] = (fce_sec_src_t){corpus->enriched_sparse_idx, (uint64_t)entry_count * nnz * sizeof(uint16_t)};
         sec[FCE_SEC_ENR_SPARSE_VAL] = (fce_sec_src_t){corpus->enriched_sparse_val, (uint64_t)entry_count * nnz};
     } else {
-        sec[FCE_SEC_ENR_DENSE] = (fce_sec_src_t){corpus->enriched_vecs_q, (uint64_t)entry_count * FCE_SEM_DIM};
+        sec[FCE_SEC_ENR_DENSE] = (fce_sec_src_t){corpus->enriched_vecs_q, (uint64_t)entry_count * fce_sem_active_dim()};
     }
     if (doc_sparse) {
         sec[FCE_SEC_DOC_SPARSE_IDX] = (fce_sec_src_t){corpus->doc_sparse_idx, (uint64_t)doc_count * nnz * sizeof(uint16_t)};
         sec[FCE_SEC_DOC_SPARSE_VAL] = (fce_sec_src_t){corpus->doc_sparse_val, (uint64_t)doc_count * nnz};
     } else {
-        sec[FCE_SEC_DOC_DENSE] = (fce_sec_src_t){corpus->doc_vectors_q, (uint64_t)doc_count * FCE_SEM_DIM};
+        sec[FCE_SEC_DOC_DENSE] = (fce_sec_src_t){corpus->doc_vectors_q, (uint64_t)doc_count * fce_sem_active_dim()};
     }
     if (corpus->doc_vectors_q_inv_mag) {
         sec[FCE_SEC_DOC_INVMAG] = (fce_sec_src_t){corpus->doc_vectors_q_inv_mag, (uint64_t)doc_count * sizeof(float)};
@@ -3850,7 +3988,7 @@ int fce_sem_corpus_save(const fce_sem_corpus_t *corpus, const char *path,
         sec[FCE_SEC_LABEL_BLOB] = (fce_sec_src_t){label_blob, label_off[doc_label_count]};
     }
     if (corpus->has_doc_mean) {
-        sec[FCE_SEC_DOC_MEAN] = (fce_sec_src_t){corpus->doc_mean, (uint64_t)FCE_SEM_DIM * sizeof(float)};
+        sec[FCE_SEC_DOC_MEAN] = (fce_sec_src_t){corpus->doc_mean, (uint64_t)fce_sem_active_dim() * sizeof(float)};
     }
 
     fce_cache_header_t hdr;
@@ -3858,7 +3996,7 @@ int fce_sem_corpus_save(const fce_sem_corpus_t *corpus, const char *path,
     memcpy(hdr.magic, "FCES", 4);
     hdr.version = FCE_CACHE_VERSION;
     hdr.endian_marker = FCE_CACHE_ENDIAN_MARKER;
-    hdr.dim = (uint32_t)FCE_SEM_DIM;
+    hdr.dim = (uint32_t)fce_sem_active_dim();
     hdr.flags = (enr_sparse ? FCE_CACHE_FLAG_ENR_SPARSE : 0u) |
                 (doc_sparse ? FCE_CACHE_FLAG_DOC_SPARSE : 0u) |
                 (corpus->has_doc_mean ? FCE_CACHE_FLAG_DOC_MEAN : 0u);
@@ -3987,14 +4125,21 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
 
     fce_cache_header_t hdr;
     memcpy(&hdr, base, sizeof(hdr));
+    /* The cache records its own embedding dimension. Accept any dimension the
+     * running binary can represent (256 or 768, and never above the compile-time
+     * max) and adopt it as the active dimension so subsequent queries stride and
+     * project consistently with the stored vectors. */
     if (memcmp(hdr.magic, "FCES", 4) != 0 ||
         hdr.version != FCE_CACHE_VERSION ||
         hdr.endian_marker != FCE_CACHE_ENDIAN_MARKER ||
-        hdr.dim != (uint32_t)FCE_SEM_DIM ||
+        (hdr.dim != 256u && hdr.dim != 768u) ||
+        hdr.dim > (uint32_t)FCE_SEM_DIM ||
         (hdr.flags & ~(uint32_t)FCE_CACHE_KNOWN_FLAGS) != 0) {
         fce_munmap(base, size);
         return NULL;
     }
+    const int cdim = (int)hdr.dim;
+    fce_sem_set_dim(cdim);
 
     const int entry_count = hdr.entry_count;
     const int doc_count = hdr.doc_count;
@@ -4006,7 +4151,7 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
 
     if (entry_count < 0 || entry_count > FCE_SEM_MAX_ENTRY_COUNT ||
         doc_count < 0 || doc_count > FCE_SEM_MAX_DOC_COUNT ||
-        nnz < 0 || nnz > FCE_SEM_DIM || label_count < 0 ||
+        nnz < 0 || nnz > cdim || label_count < 0 ||
         ((enr_sparse || doc_sparse) && nnz <= 0) ||
         (label_count > 0 && label_count != doc_count)) {
         fce_munmap(base, size);
@@ -4028,7 +4173,7 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
         ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_SPARSE_VAL, (uint64_t)entry_count * nnz, size);
         ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_DENSE, 0, size);
     } else {
-        ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_DENSE, (uint64_t)entry_count * FCE_SEM_DIM, size);
+        ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_DENSE, (uint64_t)entry_count * cdim, size);
         ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_SPARSE_IDX, 0, size);
         ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_ENR_SPARSE_VAL, 0, size);
     }
@@ -4037,7 +4182,7 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
         ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_SPARSE_VAL, (uint64_t)doc_count * nnz, size);
         ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_DENSE, 0, size);
     } else {
-        ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_DENSE, (uint64_t)doc_count * FCE_SEM_DIM, size);
+        ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_DENSE, (uint64_t)doc_count * cdim, size);
         ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_SPARSE_IDX, 0, size);
         ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_SPARSE_VAL, 0, size);
     }
@@ -4083,7 +4228,7 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
      * otherwise (length 0). The flag without a correctly-sized section is a
      * corrupt/forged file. */
     if (has_doc_mean) {
-        ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_MEAN, (uint64_t)FCE_SEM_DIM * sizeof(float), size);
+        ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_MEAN, (uint64_t)cdim * sizeof(float), size);
     } else {
         ok = ok && fce_cache_sec_ok(&hdr, FCE_SEC_DOC_MEAN, 0, size);
     }
@@ -4152,7 +4297,7 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
             const uint16_t *idx = (const uint16_t *)(vb + hdr.sections[FCE_SEC_ENR_SPARSE_IDX].offset);
             size_t n = (size_t)entry_count * (size_t)nnz;
             for (size_t i = 0; i < n; i++) {
-                if (idx[i] != 0xFFFFu && idx[i] >= FCE_SEM_DIM) {
+                if (idx[i] != 0xFFFFu && idx[i] >= cdim) {
                     fce_munmap(base, size);
                     return NULL;
                 }
@@ -4162,7 +4307,7 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
             const uint16_t *idx = (const uint16_t *)(vb + hdr.sections[FCE_SEC_DOC_SPARSE_IDX].offset);
             size_t n = (size_t)doc_count * (size_t)nnz;
             for (size_t i = 0; i < n; i++) {
-                if (idx[i] != 0xFFFFu && idx[i] >= FCE_SEM_DIM) {
+                if (idx[i] != 0xFFFFu && idx[i] >= cdim) {
                     fce_munmap(base, size);
                     return NULL;
                 }
@@ -4185,7 +4330,7 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
          * poison every score. Require each to be finite. */
         if (has_doc_mean) {
             const float *mu = (const float *)(vb + hdr.sections[FCE_SEC_DOC_MEAN].offset);
-            for (int i = 0; i < FCE_SEM_DIM; i++) {
+            for (int i = 0; i < cdim; i++) {
                 if (!isfinite(mu[i])) {
                     fce_munmap(base, size);
                     return NULL;
@@ -4284,7 +4429,7 @@ fce_sem_corpus_t *fce_sem_corpus_load(const char *path) {
      * exactly as it did in memory. has_doc_mean stays false if absent. */
     if (has_doc_mean) {
         memcpy(c->doc_mean, b + hdr.sections[FCE_SEC_DOC_MEAN].offset,
-               (size_t)FCE_SEM_DIM * sizeof(float));
+               (size_t)cdim * sizeof(float));
         c->has_doc_mean = true;
     }
     if (inv_off) {
@@ -4533,7 +4678,7 @@ static float score_combined_internal(const fce_sem_func_t *a, const fce_sem_func
     /* RI cosine — use precomputed query magnitude. */
     if (q_ri_mag_sq < 0.0F) {
         q_ri_mag_sq = 0.0F;
-        for (int i = 0; i < FCE_SEM_DIM; i++) {
+        for (int i = 0; i < fce_sem_active_dim(); i++) {
             q_ri_mag_sq += a->ri_vec.v[i] * a->ri_vec.v[i];
         }
     }
@@ -4542,7 +4687,7 @@ static float score_combined_internal(const fce_sem_func_t *a, const fce_sem_func
     /* API cosine — skip when query signal is zero (avoids 768 MACs). */
     if (q_api_mag_sq < 0.0F) {
         q_api_mag_sq = 0.0F;
-        for (int i = 0; i < FCE_SEM_DIM; i++) {
+        for (int i = 0; i < fce_sem_active_dim(); i++) {
             q_api_mag_sq += a->api_vec.v[i] * a->api_vec.v[i];
         }
     }
@@ -4552,7 +4697,7 @@ static float score_combined_internal(const fce_sem_func_t *a, const fce_sem_func
     /* Type cosine — skip when query signal is zero. */
     if (q_type_mag_sq < 0.0F) {
         q_type_mag_sq = 0.0F;
-        for (int i = 0; i < FCE_SEM_DIM; i++) {
+        for (int i = 0; i < fce_sem_active_dim(); i++) {
             q_type_mag_sq += a->type_vec.v[i] * a->type_vec.v[i];
         }
     }
@@ -4562,7 +4707,7 @@ static float score_combined_internal(const fce_sem_func_t *a, const fce_sem_func
     /* Decorator cosine — skip when query signal is zero. */
     if (q_deco_mag_sq < 0.0F) {
         q_deco_mag_sq = 0.0F;
-        for (int i = 0; i < FCE_SEM_DIM; i++) {
+        for (int i = 0; i < fce_sem_active_dim(); i++) {
             q_deco_mag_sq += a->deco_vec.v[i] * a->deco_vec.v[i];
         }
     }
@@ -4975,8 +5120,9 @@ static float sq_score(int i, void *ctx) {
         dot = (float)acc;
     } else {
         /* Dense path. */
+        const int dim = fce_sem_active_dim();
         const int8_t *dq = c->corpus->doc_vectors_q;
-        dot = (float)fce_dot768_i8(c->qvec_q, dq + (size_t)i * FCE_SEM_DIM);
+        dot = (float)fce_dot768_i8(c->qvec_q, dq + (size_t)i * dim, dim);
     }
     float inv_d_mag = c->corpus->doc_vectors_q_inv_mag ? c->corpus->doc_vectors_q_inv_mag[i] : 0.0f;
     return fce_cosine_unit_score(dot, c->qvec_q_inv_mag, inv_d_mag);
@@ -5046,7 +5192,7 @@ static float sf_score(int i, void *ctx) {
     const float *c_w = c->all_tfidf_weights + (size_t)i * c->max_tokens;
     int c_len = c->tfidf_lens ? c->tfidf_lens[i] : 0;
     if (c_len > c->max_tokens) c_len = c->max_tokens; /* defensive clamp (H1) */
-    const float *c_ri = c->all_ri_vecs + (size_t)i * FCE_SEM_DIM;
+    const float *c_ri = c->all_ri_vecs + (size_t)i * fce_sem_active_dim();
     const char *c_path = c->file_paths ? c->file_paths[i] : "";
     return fce_score_flat(c->q_tfidf_indices, c->q_tfidf_weights, c->q_tfidf_len,
                           c->q_ri_vec, c->q_ri_mag,
@@ -5132,7 +5278,7 @@ static void flat_worker(int wid, void *ctx) {
         const float *c_w = w->all_tfidf_weights + (size_t)f * w->max_tokens;
         int c_len = w->tfidf_lens ? w->tfidf_lens[f] : 0;
         if (c_len > w->max_tokens) c_len = w->max_tokens; /* defensive clamp (H1) */
-        const float *c_ri = w->all_ri_vecs + (size_t)f * FCE_SEM_DIM;
+        const float *c_ri = w->all_ri_vecs + (size_t)f * fce_sem_active_dim();
         const char *c_path = w->file_paths ? w->file_paths[f] : "";
         float s = fce_score_flat(w->q_tfidf_indices, w->q_tfidf_weights, w->q_tfidf_len,
                                  w->q_ri_vec, w->q_ri_mag,
@@ -5676,8 +5822,9 @@ static void rerank_worker(int wid, void *uctx) {
             }
             dot = (float)acc;
         } else {
+            const int dim = fce_sem_active_dim();
             dot = (float)fce_dot768_i8(w->qvec_q,
-                                       w->corpus->doc_vectors_q + (size_t)i * FCE_SEM_DIM);
+                                       w->corpus->doc_vectors_q + (size_t)i * dim, dim);
         }
         float inv_d_mag = w->corpus->doc_vectors_q_inv_mag ? w->corpus->doc_vectors_q_inv_mag[i] : 0.0f;
         float s = fce_cosine_unit_score(dot, w->qvec_q_inv_mag, inv_d_mag);
@@ -5760,8 +5907,9 @@ static void rerank_serial(const fce_sem_corpus_t *corpus,
             }
             dot = (float)acc;
         } else {
+            const int dim = fce_sem_active_dim();
             dot = (float)fce_dot768_i8(qvec_q,
-                                       corpus->doc_vectors_q + (size_t)i * FCE_SEM_DIM);
+                                       corpus->doc_vectors_q + (size_t)i * dim, dim);
         }
         float inv_d_mag = corpus->doc_vectors_q_inv_mag ? corpus->doc_vectors_q_inv_mag[i] : 0.0f;
         float s = fce_cosine_unit_score(dot, qvec_q_inv_mag, inv_d_mag);
@@ -5832,7 +5980,8 @@ static void bf_chunk_worker(int idx, void *ctx) {
             }
             dot = (float)acc;
         } else {
-            dot = (float)fce_dot768_i8(qvec_q, corpus->doc_vectors_q + (size_t)i * FCE_SEM_DIM);
+            const int dim = fce_sem_active_dim();
+            dot = (float)fce_dot768_i8(qvec_q, corpus->doc_vectors_q + (size_t)i * dim, dim);
         }
         float inv_d_mag = corpus->doc_vectors_q_inv_mag ? corpus->doc_vectors_q_inv_mag[i] : 0.0f;
         float s = fce_cosine_unit_score(dot, qvec_q_inv_mag, inv_d_mag);
@@ -5993,9 +6142,10 @@ static void bruteforce_precomputed(const fce_sem_corpus_t *corpus,
         qvec_q = qvec_q_pre;
         qvec_q_inv_mag = qvec_q_inv_mag_pre;
     } else if (corpus->doc_vectors_q || corpus->doc_sparse_idx) {
-        fce_quantize_f32_768(qvec_q_buf, qvec->v);
+        const int dim = fce_sem_active_dim();
+        fce_quantize_f32_768(qvec_q_buf, qvec->v, dim);
         float mag_sq = 0.0f;
-        for (int i = 0; i < FCE_SEM_DIM; i++) mag_sq += (float)qvec_q_buf[i] * (float)qvec_q_buf[i];
+        for (int i = 0; i < dim; i++) mag_sq += (float)qvec_q_buf[i] * (float)qvec_q_buf[i];
         qvec_q_inv_mag = (mag_sq > 0.0f) ? 1.0f / sqrtf(mag_sq) : 0.0f;
         qvec_q = qvec_q_buf;
     }
@@ -6005,7 +6155,7 @@ static void bruteforce_precomputed(const fce_sem_corpus_t *corpus,
      * Static chunking: each worker gets a contiguous doc range, zero atomics.
      * Heuristic: use parallel when scan > 50 MB (≈66K docs × 768B).
      * Default: total_cores / 4 (min 1). Env var FCE_BRUTE_WORKERS overrides. */
-    size_t scan_bytes = (size_t)n * FCE_SEM_DIM;
+    size_t scan_bytes = (size_t)n * fce_sem_active_dim();
 
     /* use cached value instead of calling
      * fce_safe_getenv on every search (not safe from concurrent threads). */
@@ -6083,10 +6233,11 @@ static void build_query_vector(const fce_sem_corpus_t *corpus,
         /* A zero query (no in-vocab tokens resolved) must stay zero — centering it
          * would fabricate a -μ direction and return spurious results for a query
          * that carries no signal. Only center a non-zero query. */
+        const int dim = fce_sem_active_dim();
         float m = 0.0f;
-        for (int i = 0; i < FCE_SEM_DIM; i++) m += out->v[i] * out->v[i];
+        for (int i = 0; i < dim; i++) m += out->v[i] * out->v[i];
         if (m > 0.0f) {
-            for (int i = 0; i < FCE_SEM_DIM; i++) out->v[i] -= corpus->doc_mean[i];
+            for (int i = 0; i < dim; i++) out->v[i] -= corpus->doc_mean[i];
             fce_sem_normalize(out);
         }
     }
@@ -6192,9 +6343,10 @@ void fce_sem_search_query(const fce_sem_corpus_t *corpus,
     float qvec_q_inv_mag = 0.0f;
     const int8_t *qvec_q = NULL;
     if (corpus->doc_vectors_q || corpus->doc_sparse_idx) {
-        fce_quantize_f32_768(qvec_q_buf, qvec.v);
+        const int dim = fce_sem_active_dim();
+        fce_quantize_f32_768(qvec_q_buf, qvec.v, dim);
         float mag_sq = 0.0f;
-        for (int i = 0; i < FCE_SEM_DIM; i++) mag_sq += (float)qvec_q_buf[i] * (float)qvec_q_buf[i];
+        for (int i = 0; i < dim; i++) mag_sq += (float)qvec_q_buf[i] * (float)qvec_q_buf[i];
         qvec_q_inv_mag = (mag_sq > 0.0f) ? 1.0f / sqrtf(mag_sq) : 0.0f;
         qvec_q = qvec_q_buf;
     }
@@ -6374,9 +6526,10 @@ static void tfidf_search_impl(const fce_sem_corpus_t *corpus,
     float qvec_q_inv_mag_tf = 0.0f;
     const int8_t *qvec_q_tf = NULL;
     if (corpus->doc_vectors_q || corpus->doc_sparse_idx) {
-        fce_quantize_f32_768(qvec_q_buf_tf, qvec.v);
+        const int dim = fce_sem_active_dim();
+        fce_quantize_f32_768(qvec_q_buf_tf, qvec.v, dim);
         float mag_sq = 0.0f;
-        for (int i = 0; i < FCE_SEM_DIM; i++) mag_sq += (float)qvec_q_buf_tf[i] * (float)qvec_q_buf_tf[i];
+        for (int i = 0; i < dim; i++) mag_sq += (float)qvec_q_buf_tf[i] * (float)qvec_q_buf_tf[i];
         qvec_q_inv_mag_tf = (mag_sq > 0.0f) ? 1.0f / sqrtf(mag_sq) : 0.0f;
         qvec_q_tf = qvec_q_buf_tf;
     }
@@ -6637,20 +6790,21 @@ void fce_sem_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
         }
         q_tfidf_mag_sq = m;
     }
+    const int qmag_dim = fce_sem_active_dim();
     float q_ri_mag_sq = 0.0F;
-    for (int i = 0; i < FCE_SEM_DIM; i++) {
+    for (int i = 0; i < qmag_dim; i++) {
         q_ri_mag_sq += query->ri_vec.v[i] * query->ri_vec.v[i];
     }
     float q_api_mag_sq = 0.0F;
-    for (int i = 0; i < FCE_SEM_DIM; i++) {
+    for (int i = 0; i < qmag_dim; i++) {
         q_api_mag_sq += query->api_vec.v[i] * query->api_vec.v[i];
     }
     float q_type_mag_sq = 0.0F;
-    for (int i = 0; i < FCE_SEM_DIM; i++) {
+    for (int i = 0; i < qmag_dim; i++) {
         q_type_mag_sq += query->type_vec.v[i] * query->type_vec.v[i];
     }
     float q_deco_mag_sq = 0.0F;
-    for (int i = 0; i < FCE_SEM_DIM; i++) {
+    for (int i = 0; i < qmag_dim; i++) {
         q_deco_mag_sq += query->deco_vec.v[i] * query->deco_vec.v[i];
     }
     float q_sp_mag_sq = 0.0F;
@@ -6702,7 +6856,7 @@ static float fce_score_simple_internal(fce_sem_func_t *a, fce_sem_func_t *b, flo
     float ri_mag = q_ri_mag_sq;
     if (ri_mag < 0.0f) {
         ri_mag = 0.0f;
-        for (int i = 0; i < FCE_SEM_DIM; i++) {
+        for (int i = 0; i < fce_sem_active_dim(); i++) {
             ri_mag += a->ri_vec.v[i] * a->ri_vec.v[i];
         }
     }
@@ -6833,7 +6987,7 @@ void fce_sem_simple_search(fce_sem_func_t *query, fce_sem_func_t *corpus,
 
     /* Precompute query-side RI magnitude once. */
     float q_ri_mag_sq = 0.0F;
-    for (int i = 0; i < FCE_SEM_DIM; i++) {
+    for (int i = 0; i < fce_sem_active_dim(); i++) {
         q_ri_mag_sq += query->ri_vec.v[i] * query->ri_vec.v[i];
     }
 
@@ -6941,7 +7095,7 @@ void fce_sem_simple_rank_flat(
     /* Precompute query-side RI magnitude once.
      * q_ri_vec is guaranteed non-NULL by the guard above. */
     float q_ri_mag = 0.0F;
-    for (int i = 0; i < FCE_SEM_DIM; i++) {
+    for (int i = 0; i < fce_sem_active_dim(); i++) {
         q_ri_mag += q_ri_vec[i] * q_ri_vec[i];
     }
 
@@ -7073,14 +7227,15 @@ void fce_sem_diffuse(fce_sem_vec_t *combined, const fce_sem_vec_t *neighbors, in
     /* use float accumulator instead of double to
      * reduce stack usage from ~9 KB to ~3 KB. The double accumulator bought
      * ~10 ULP extra precision, negligible after the final normalize(). */
+    const int dim = fce_sem_active_dim();
     fce_sem_vec_t mean;
-    for (int i = 0; i < FCE_SEM_DIM; i++) mean.v[i] = 0.0f;
+    for (int i = 0; i < dim; i++) mean.v[i] = 0.0f;
     int valid_count = 0;
     for (int n = 0; n < neighbor_count; n++) {
         /* skip aliased neighbors — including
          * combined in its own mean would corrupt the result. */
         if (neighbors[n].v == combined->v) continue;
-        for (int i = 0; i < FCE_SEM_DIM; i++) {
+        for (int i = 0; i < dim; i++) {
             mean.v[i] += neighbors[n].v[i];
         }
         valid_count++;
@@ -7089,7 +7244,7 @@ void fce_sem_diffuse(fce_sem_vec_t *combined, const fce_sem_vec_t *neighbors, in
     if (valid_count == 0) return;
     float inv_n = FCE_SEM_UNIT_POS / (float)valid_count;
     float one_minus_alpha = FCE_SEM_UNIT_POS - alpha;
-    for (int i = 0; i < FCE_SEM_DIM; i++) {
+    for (int i = 0; i < dim; i++) {
         combined->v[i] = (one_minus_alpha * combined->v[i]) + (alpha * mean.v[i] * inv_n);
     }
     fce_sem_normalize(combined);

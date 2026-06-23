@@ -260,8 +260,18 @@ int main(int argc, char **argv) {
     clock_gettime(CLOCK_MONOTONIC, &t_total);
 
     printf("fast-code-embed memory + query benchmark\n");
+    /* FCE_SEM_DIM=256 selects the reduced runtime dimension (default 768). */
+    {
+        const char *dimenv = getenv("FCE_SEM_DIM");
+        if (dimenv && dimenv[0]) {
+            int d = atoi(dimenv);
+            fce_sem_set_dim(d);
+        }
+    }
+
     printf("================================================\n");
     printf("Directory: %s\n", root_dir);
+    printf("Embedding dim: %d\n", fce_sem_active_dim());
     printf("Chunk size: %d bytes\n", chunk_size);
     if (sparse_nnz > 0)
         printf("Mode: sparse (nnz=%d)\n\n", sparse_nnz);

@@ -37,12 +37,40 @@ public final class FastCodeEmbed {
     }
 
     /**
-     * Runtime dimension of the native embedding vectors.
-     * Usually 768; 256 if the native library was compiled with
-     * {@code -DFCE_SEM_DIM_256}. All RI vectors passed to/from the library
-     * must match this dimension.
+     * Compile-time <b>maximum</b> embedding dimension supported by the loaded
+     * native library: 768 for the standard build, or 256 if it was compiled
+     * with {@code -DFCE_SEM_DIM_256}. Use this as a safe upper bound for buffer
+     * sizing; the <em>active</em> dimension (see {@link #activeDim()}) may be
+     * smaller when {@link #setDim(int)} has selected 256 at runtime.
      */
     public static final int SEM_DIM = nGetDim();
+
+    /**
+     * Select the active embedding dimension at runtime: {@code 256} or
+     * {@code 768} (and never above {@link #SEM_DIM}). 256 stores ~3x less per
+     * vector (large memory savings on big corpora) at some quality cost; 768 is
+     * the default. Invalid values are ignored.
+     *
+     * <p>This is <b>process-global</b> state. Call it once at startup, before
+     * creating, finalizing, loading, or querying any {@link Corpus}; changing it
+     * after vectors exist yields undefined results. {@link Corpus#load} adopts
+     * the dimension recorded in the cache file automatically.</p>
+     *
+     * @param dim 256 or 768
+     * @since 0.0.15
+     */
+    public static void setDim(int dim) { nSetDim(dim); }
+
+    /**
+     * The currently active embedding dimension (256 or 768). This is the length
+     * of the RI vectors returned by {@link Corpus#getRiVec} and expected by the
+     * scoring APIs. Defaults to {@link #SEM_DIM} until {@link #setDim(int)} is
+     * called.
+     *
+     * @return the active dimension
+     * @since 0.0.15
+     */
+    public static int activeDim() { return nActiveDim(); }
 
     private FastCodeEmbed() {}
 
@@ -366,4 +394,6 @@ public final class FastCodeEmbed {
 
     /** Returns the native library's compile-time embedding dimension. */
     private static native int nGetDim();
+    private static native int nActiveDim();
+    private static native void nSetDim(int dim);
 }

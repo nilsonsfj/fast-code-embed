@@ -77,6 +77,18 @@ For `V` vocabulary tokens, `D` documents (measured at 193 K docs, ~1 M vocab):
 ~4.9 GB (transient). After `malloc_trim`: converges to live set (~1.1 GB).
 Run with `make bench` to build the `bench_mem_query` benchmark tool.
 
+The two int8 arrays above (`enriched_vecs_q`, `doc_vectors_q`) are sized by the
+**active dimension**, selectable at runtime via `fce_sem_set_dim(256|768)`
+(`FastCodeEmbed.setDim` in Java; `FCE_SEM_DIM=256` for the benchmark). At 256
+they shrink ~3×, the dominant resident saving on a large corpus — e.g. indexing
+the Linux kernel drops from ~1.2 GB to ~0.8 GB total RSS from the same binary.
+256 uses a baked PCA projection (preserves ~84% variance); it trades some
+ranking quality for the memory win. The projection is precomputed once over the
+pretrained table (`g_pca_blob_proj`, ~42 MB, reduced-dim mode only) and then
+applied per token as a cheap linear combine — so 256 finalize is only modestly
+slower than 768 rather than several times slower. A cache file records its
+dimension and `load` adopts it automatically.
+
 ### Retrieval quality vs. a general static embedding
 
 For an end-to-end comparison of retrieval quality and indexing/query performance
