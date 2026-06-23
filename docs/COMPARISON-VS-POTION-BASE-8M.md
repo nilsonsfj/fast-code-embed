@@ -219,6 +219,6 @@ judgments (P@10, strict P@10, nDCG@10, MRR).
 - **potion usage.** A general-English static model embedding raw code is its
   intended off-the-shelf mode; it has no code-specific pretraining — which is
   precisely the contrast being measured.
-- **Configuration.** FCE was built at its default 768 dims; a 256-dim FCE build
-  would narrow the indexing-time and memory gap with potion while remaining the
-  higher-quality retriever.
+- **Configuration.** FCE ran at its default 768 dims; selecting 256 dims at
+  runtime (`fce_sem_set_dim(256)`) would narrow the indexing-time and memory gap
+  with potion while remaining the higher-quality retriever.

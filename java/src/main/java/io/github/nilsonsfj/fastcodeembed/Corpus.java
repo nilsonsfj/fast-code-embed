@@ -1,8 +1,9 @@
 package io.github.nilsonsfj.fastcodeembed;
 
 /**
- * Wraps a native {@code fce_sem_corpus_t} for building IDF weights and
- * enriched Random Indexing vectors from a collection of tokenized documents.
+ * Wraps a native {@code fce_sem_corpus_t} for building IDF weights and token
+ * vectors (optionally co-occurrence-enriched; see {@link #setRiEnrichment})
+ * from a collection of tokenized documents.
  *
  * <p>Workflow: create → add docs → {@link #complete()} → query.</p>
  *
@@ -17,7 +18,7 @@ package io.github.nilsonsfj.fastcodeembed;
  *     corp.complete();
  *
  *     float idf = corp.getIdf("handle");      // log(N/df)
- *     float[] vec = corp.getRiVec("handle");   // enriched {@link FastCodeEmbed#SEM_DIM}-dim vector
+ *     float[] vec = corp.getRiVec("handle");   // {@link FastCodeEmbed#activeDim()}-dim token vector
  *
  *     FuncDescriptor a = corp.buildFunc("src/handler.c", new String[]{"handle", "request"});
  *     FuncDescriptor b = corp.buildFunc("src/auth.c", new String[]{"validate", "user"});
@@ -112,10 +113,10 @@ public class Corpus implements AutoCloseable {
      * memory map. The returned corpus is already finalized and ready to query;
      * its document paths are restored from the cache file.
      *
-     * <p>The cache file is a <b>same-build</b> artifact: it is tied to the host
-     * byte order and to the native library's embedding dimension
-     * ({@link FastCodeEmbed#SEM_DIM}). A file produced by a different build is
-     * rejected with an {@link java.io.IOException}.</p>
+     * <p>The cache file records its host byte order and embedding dimension.
+     * Loading adopts the stored dimension (256 or 768) automatically, as long
+     * as the running library supports it; a file with an incompatible byte order
+     * or dimension is rejected with an {@link java.io.IOException}.</p>
      *
      * @param path path to a cache file written by {@link #save(String)}
      * @return a finalized, queryable corpus backed by the mapped file
@@ -468,10 +469,11 @@ public class Corpus implements AutoCloseable {
     }
 
     /**
-     * Get the enriched Random Indexing vector for a token (after co-occurrence).
+     * Get the token vector for a token (co-occurrence-enriched only if RI
+     * enrichment was enabled before {@link #complete()}).
      *
      * @param token the token to look up
-     * @return {@link FastCodeEmbed#SEM_DIM}-dimensional float array, or null if token is unknown
+     * @return {@link FastCodeEmbed#activeDim()}-dimensional float array, or null if token is unknown
      * @throws IllegalStateException if {@link #complete()} has not been called
      */
     public float[] getRiVec(String token) {
@@ -573,7 +575,7 @@ public class Corpus implements AutoCloseable {
         }
 
         int n = funcs.length;
-        /* n * maxTokens and n * SEM_DIM are computed in long
+        /* n * maxTokens and n * activeDim are computed in long
          * arithmetic so very large query-side corpora fail loudly with an
          * IllegalArgumentException instead of silently corrupting the flat
          * layout via 32-bit overflow. */
@@ -682,7 +684,7 @@ public class Corpus implements AutoCloseable {
      * Pre-extracted flat arrays for batch ranking.
      * Created by {@link #extractFlat(FuncDescriptor[])}.
      * Reusable across multiple queries.
-     * RI vectors are laid out as {@code [func * FastCodeEmbed.SEM_DIM + dim]}.
+     * RI vectors are laid out as {@code [func * FastCodeEmbed.activeDim() + dim]}.
      */
     public static class FlatCorpus {
         public final float[] allWeights;
