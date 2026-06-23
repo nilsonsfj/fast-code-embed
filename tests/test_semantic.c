@@ -90,6 +90,54 @@ static void test_tokenize_dot_separated(void) {
     PASS();
 }
 
+static void test_tokenize_whitespace_delimiters(void) {
+    TEST(newline / tab / CR split tokens instead of merging them);
+    char *tokens[32];
+    /* Without newline as a delimiter "foo\nbar" merged into "foobar". */
+    int n = fce_sem_tokenize("foo\nbar\tbaz\rqux", tokens, 32);
+    ASSERT(n == 4);
+    ASSERT(strcmp(tokens[0], "foo") == 0);
+    ASSERT(strcmp(tokens[1], "bar") == 0);
+    ASSERT(strcmp(tokens[2], "baz") == 0);
+    ASSERT(strcmp(tokens[3], "qux") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+    PASS();
+}
+
+static void test_tokenize_punctuation_delimiters(void) {
+    TEST(braces / brackets / operators split tokens);
+    char *tokens[32];
+    int n = fce_sem_tokenize("foo{bar}[baz]=qux;quux", tokens, 32);
+    ASSERT(n == 5);
+    ASSERT(strcmp(tokens[0], "foo") == 0);
+    ASSERT(strcmp(tokens[1], "bar") == 0);
+    ASSERT(strcmp(tokens[2], "baz") == 0);
+    ASSERT(strcmp(tokens[3], "qux") == 0);
+    ASSERT(strcmp(tokens[4], "quux") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+    PASS();
+}
+
+static void test_tokenize_single_char_filter(void) {
+    TEST(single-character tokens are dropped);
+    char *tokens[32];
+    /* "a" and the numeric literal "1" carry no signal and are filtered. */
+    int n = fce_sem_tokenize("validate a number return 1 now", tokens, 32);
+    for (int i = 0; i < n; i++) {
+        ASSERT(strlen(tokens[i]) > 1);
+    }
+    /* The multi-char words survive. */
+    bool has_validate = false, has_number = false;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(tokens[i], "validate") == 0) has_validate = true;
+        if (strcmp(tokens[i], "number") == 0) has_number = true;
+    }
+    ASSERT(has_validate);
+    ASSERT(has_number);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+    PASS();
+}
+
 static void test_tokenize_pascal_case(void) {
     TEST(tokenize PascalCase);
     char *tokens[32];
@@ -2372,6 +2420,9 @@ int main(void) {
     test_tokenize_camel_case();
     test_tokenize_snake_case();
     test_tokenize_dot_separated();
+    test_tokenize_whitespace_delimiters();
+    test_tokenize_punctuation_delimiters();
+    test_tokenize_single_char_filter();
     test_tokenize_pascal_case();
     test_tokenize_empty();
     test_tokenize_null();

@@ -257,15 +257,21 @@ bool fce_sem_is_enabled(void) {
 /* ── Token extraction ────────────────────────────────────────────── */
 
 /* True for characters that terminate a token regardless of case.
+ * Covers whitespace (incl. newline/tab/CR) and the common source-code
+ * punctuation so multi-line input tokenizes correctly: without newline as a
+ * delimiter, "foo\nbar" merges into "foobar" because the newline is neither a
+ * delimiter nor alphanumeric and is silently dropped mid-token.
  * LIMITATIONS:
- * - Does NOT include `'`, `@`, `|` (rare in source code but present in
- * template strings, decorators, and bitwise-or patterns respectively).
  * - Only ASCII alphanumeric bytes [a-zA-Z0-9] are accepted into tokens;
  * non-ASCII bytes (>= 0x80) are dropped (not kept as part of the token).
  * Add additional delimiters here if your target corpus uses them. */
 static bool is_token_delim(char c) {
     return c == '.' || c == '/' || c == '_' || c == '-' || c == ' ' || c == '(' || c == ')' ||
-           c == ',' || c == ':';
+           c == ',' || c == ':' || c == '\n' || c == '\t' || c == '\r' ||
+           c == '{' || c == '}' || c == '[' || c == ']' || c == '=' || c == ';' ||
+           c == '$' || c == '@' || c == '%' || c == '#' || c == '>' || c == '<' ||
+           c == '&' || c == '|' || c == '!' || c == '"' || c == '\'' || c == '`' ||
+           c == '+' || c == '*' || c == '?' || c == '^' || c == '~' || c == '\\';
 }
 
 /* True for a token break point at position i in an identifier.
@@ -304,9 +310,11 @@ static bool is_camel_break(const char *name, int i) {
     return false;
 }
 
-/* Flush the current buffer as a token into out[]. */
+/* Flush the current buffer as a token into out[]. Single-character tokens are
+ * dropped (blen > 1): stray alphanumerics like "a", "i", "1" carry no useful
+ * signal and only add noise to scoring. */
 static void fce_flush_token(char *buf, int *blen, char **out, int *count, int max_out) {
-    if (*blen > 0 && *blen < FCE_TOKEN_BUF_LEN && *count < max_out) {
+    if (*blen > 1 && *blen < FCE_TOKEN_BUF_LEN && *count < max_out) {
         buf[*blen] = '\0';
         char *tok = strdup(buf);
         if (tok) out[(*count)++] = tok;
