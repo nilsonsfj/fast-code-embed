@@ -111,7 +111,7 @@ public class FuncDescriptor {
     /** @return TF-IDF weights, or null if not set */
     public float[] getTfidfWeights() { return tfidfWeights; }
 
-    /** @return {@link FastCodeEmbed#SEM_DIM}-dimensional RI vector, or null if not set */
+    /** @return active-dimension ({@link FastCodeEmbed#activeDim()}) RI vector, or null if not set */
     public float[] getRiVec() { return riVec; }
 
     /** @return number of TF-IDF entries, or 0 if not set */
