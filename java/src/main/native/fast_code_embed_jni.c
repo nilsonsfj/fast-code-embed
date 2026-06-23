@@ -282,6 +282,7 @@ static fce_sem_func_t marshal_func(JNIEnv *env, jobject obj, char **path_out,
         if (!p || (*env)->ExceptionCheck(env)) {
             if (p) (*env)->ReleaseStringUTFChars(env, jpath, p);
             (*env)->DeleteLocalRef(env, jpath);
+            *path_out = NULL;
             if (jindices_out) *jindices_out = NULL;
             if (jweights_out) *jweights_out = NULL;
             /* throw OOM so callers see the failure

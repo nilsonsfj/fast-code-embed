@@ -1,7 +1,6 @@
 /* simd_dot768.h — SIMD-accelerated dot products (768 or 256 dim).
  *
  * Variants:
- * fce_dot768(a, b) — pure dot product (float32)
  * fce_dot768_mags3(a, b, dim, &dot, &ma, &mb) — dot + both magnitudes (cosine)
  * fce_dot768_add_mag_b(a, b, dim, &dot, &mb) — dot + b magnitude (precomputed a mag)
  * fce_dot768_i8(a, b, dim) — int8 dot product (for P0 quantized scan)
@@ -20,8 +19,7 @@
  *
  * FCE_SIMD_DIM remains the compile-time MAXIMUM dimension (768 by default, 256
  * if built with -DFCE_SEM_DIM_256), used only for fixed-size buffers; the hot
- * loops iterate over the runtime `dim`. The unused float/axpy helpers below are
- * still compiled against FCE_SIMD_DIM but are not on any active code path. */
+ * loops iterate over the runtime `dim`. */
 
 #ifndef FCE_SIMD_DOT768_H
 #define FCE_SIMD_DOT768_H
@@ -70,29 +68,6 @@ static inline int fce_has_avx2(void) {
 #else
     return __builtin_cpu_supports("avx2");
 #endif
-}
-
-__attribute__((target("avx2,fma"))) static inline float fce_dot768_avx2(const float *restrict a,
-                                                                        const float *restrict b) {
-    __m256 acc0 = _mm256_setzero_ps(), acc1 = _mm256_setzero_ps();
-    __m256 acc2 = _mm256_setzero_ps(), acc3 = _mm256_setzero_ps();
-    for (int i = 0; i < FCE_SIMD_DIM; i += 32) {
-        acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i),
-                               _mm256_loadu_ps(b + i), acc0);
-        acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 8),
-                               _mm256_loadu_ps(b + i + 8), acc1);
-        acc2 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 16),
-                               _mm256_loadu_ps(b + i + 16), acc2);
-        acc3 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 24),
-                               _mm256_loadu_ps(b + i + 24), acc3);
-    }
-    acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
-    __m128 lo = _mm256_castps256_ps128(acc0);
-    __m128 hi = _mm256_extractf128_ps(acc0, 1);
-    __m128 sum = _mm_add_ps(lo, hi);
-    sum = _mm_hadd_ps(sum, sum);
-    sum = _mm_hadd_ps(sum, sum);
-    return _mm_cvtss_f32(sum);
 }
 
 __attribute__((target("avx2,fma"))) static inline void fce_dot768_mags3_avx2(const float *restrict a,
@@ -175,50 +150,6 @@ __attribute__((target("avx2,fma"))) static inline void fce_dot768_add_mag_b_avx2
     ms = _mm_hadd_ps(ms, ms);
     *out_dot = _mm_cvtss_f32(ds);
     *out_mb = _mm_cvtss_f32(ms);
-}
-
-/* ── AXPY kernels (P6/P7): dst[i] += scale * src[i] ─────────────── */
-
-__attribute__((target("avx2,fma"))) static inline void fce_axpy_f32_768_avx2(float *dst, const float *src, float scale) {
-    __m256 s = _mm256_set1_ps(scale);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 32) {
-        _mm256_storeu_ps(dst + i, _mm256_fmadd_ps(s, _mm256_loadu_ps(src + i), _mm256_loadu_ps(dst + i)));
-        _mm256_storeu_ps(dst + i + 8, _mm256_fmadd_ps(s, _mm256_loadu_ps(src + i + 8), _mm256_loadu_ps(dst + i + 8)));
-        _mm256_storeu_ps(dst + i + 16, _mm256_fmadd_ps(s, _mm256_loadu_ps(src + i + 16), _mm256_loadu_ps(dst + i + 16)));
-        _mm256_storeu_ps(dst + i + 24, _mm256_fmadd_ps(s, _mm256_loadu_ps(src + i + 24), _mm256_loadu_ps(dst + i + 24)));
-    }
-}
-
-__attribute__((target("avx2,fma"))) static inline void fce_axpy_i8_768_avx2(float *dst, const int8_t *src, float scale) {
-    __m256 s = _mm256_set1_ps(scale);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 32) {
-        __m128i lo_i8 = _mm_loadl_epi64((const __m128i *)(src + i));
-        __m128i hi_i8 = _mm_loadl_epi64((const __m128i *)(src + i + 8));
-        __m256i lo_i32 = _mm256_cvtepi8_epi32(lo_i8);
-        __m256i hi_i32 = _mm256_cvtepi8_epi32(hi_i8);
-        _mm256_storeu_ps(dst + i, _mm256_fmadd_ps(s, _mm256_cvtepi32_ps(lo_i32), _mm256_loadu_ps(dst + i)));
-        _mm256_storeu_ps(dst + i + 8, _mm256_fmadd_ps(s, _mm256_cvtepi32_ps(hi_i32), _mm256_loadu_ps(dst + i + 8)));
-        __m128i lo2_i8 = _mm_loadl_epi64((const __m128i *)(src + i + 16));
-        __m128i hi2_i8 = _mm_loadl_epi64((const __m128i *)(src + i + 24));
-        __m256i lo2_i32 = _mm256_cvtepi8_epi32(lo2_i8);
-        __m256i hi2_i32 = _mm256_cvtepi8_epi32(hi2_i8);
-        _mm256_storeu_ps(dst + i + 16, _mm256_fmadd_ps(s, _mm256_cvtepi32_ps(lo2_i32), _mm256_loadu_ps(dst + i + 16)));
-        _mm256_storeu_ps(dst + i + 24, _mm256_fmadd_ps(s, _mm256_cvtepi32_ps(hi2_i32), _mm256_loadu_ps(dst + i + 24)));
-    }
-}
-
-__attribute__((target("avx2,fma"))) static inline void fce_init_f32_from_i8_768_avx2(float *dst, const int8_t *src, float scale) {
-    __m256 s = _mm256_set1_ps(scale);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 32) {
-        __m128i lo_i8 = _mm_loadl_epi64((const __m128i *)(src + i));
-        __m128i hi_i8 = _mm_loadl_epi64((const __m128i *)(src + i + 8));
-        _mm256_storeu_ps(dst + i, _mm256_mul_ps(s, _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(lo_i8))));
-        _mm256_storeu_ps(dst + i + 8, _mm256_mul_ps(s, _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(hi_i8))));
-        __m128i lo2_i8 = _mm_loadl_epi64((const __m128i *)(src + i + 16));
-        __m128i hi2_i8 = _mm_loadl_epi64((const __m128i *)(src + i + 24));
-        _mm256_storeu_ps(dst + i + 16, _mm256_mul_ps(s, _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(lo2_i8))));
-        _mm256_storeu_ps(dst + i + 24, _mm256_mul_ps(s, _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(hi2_i8))));
-    }
 }
 
 /* ── int8 dot product + quantization ───────────────────────── */
@@ -337,22 +268,6 @@ __attribute__((target("avx2,fma"))) static inline void fce_quantize_f32_768_avx2
 #define FCE_HAS_NEON 1
 #include <arm_neon.h>
 
-static inline float fce_dot768_neon(const float *restrict a,
-                                    const float *restrict b) {
-    float32x4_t acc0 = vdupq_n_f32(0), acc1 = vdupq_n_f32(0);
-    float32x4_t acc2 = vdupq_n_f32(0), acc3 = vdupq_n_f32(0);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 16) {
-        acc0 = vmlaq_f32(acc0, vld1q_f32(a + i), vld1q_f32(b + i));
-        acc1 = vmlaq_f32(acc1, vld1q_f32(a + i + 4), vld1q_f32(b + i + 4));
-        acc2 = vmlaq_f32(acc2, vld1q_f32(a + i + 8), vld1q_f32(b + i + 8));
-        acc3 = vmlaq_f32(acc3, vld1q_f32(a + i + 12), vld1q_f32(b + i + 12));
-    }
-    acc0 = vaddq_f32(vaddq_f32(acc0, acc1), vaddq_f32(acc2, acc3));
-    float32x2_t sum = vadd_f32(vget_low_f32(acc0), vget_high_f32(acc0));
-    sum = vpadd_f32(sum, sum);
-    return vget_lane_f32(sum, 0);
-}
-
 static inline void fce_dot768_mags3_neon(const float *restrict a,
                                          const float *restrict b,
                                          int dim,
@@ -426,30 +341,6 @@ static inline void fce_dot768_add_mag_b_neon(const float *restrict a,
     ms = vpadd_f32(ms, ms);
     *out_dot = vget_lane_f32(ds, 0);
     *out_mb = vget_lane_f32(ms, 0);
-}
-
-/* ── AXPY kernels (P6/P7): dst[i] += scale * src[i] ─────────────── */
-
-static inline void fce_axpy_f32_768_neon(float *dst, const float *src, float scale) {
-    float32x4_t s = vdupq_n_f32(scale);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 16) {
-        vst1q_f32(dst + i, vmlaq_f32(vld1q_f32(dst + i), s, vld1q_f32(src + i)));
-        vst1q_f32(dst + i + 4, vmlaq_f32(vld1q_f32(dst + i + 4), s, vld1q_f32(src + i + 4)));
-        vst1q_f32(dst + i + 8, vmlaq_f32(vld1q_f32(dst + i + 8), s, vld1q_f32(src + i + 8)));
-        vst1q_f32(dst + i + 12, vmlaq_f32(vld1q_f32(dst + i + 12), s, vld1q_f32(src + i + 12)));
-    }
-}
-
-static inline void fce_axpy_i8_768_neon(float *dst, const int8_t *src, float scale) {
-    float32x4_t s = vdupq_n_f32(scale);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 16) {
-        int8x8_t i8_lo = vld1_s8(src + i);
-        int8x8_t i8_hi = vld1_s8(src + i + 8);
-        vst1q_f32(dst + i, vmlaq_f32(vld1q_f32(dst + i), s, vcvtq_f32_s32(vmovl_s16(vget_low_s16(vmovl_s8(i8_lo))))));
-        vst1q_f32(dst + i + 4, vmlaq_f32(vld1q_f32(dst + i + 4), s, vcvtq_f32_s32(vmovl_s16(vget_high_s16(vmovl_s8(i8_lo))))));
-        vst1q_f32(dst + i + 8, vmlaq_f32(vld1q_f32(dst + i + 8), s, vcvtq_f32_s32(vmovl_s16(vget_low_s16(vmovl_s8(i8_hi))))));
-        vst1q_f32(dst + i + 12, vmlaq_f32(vld1q_f32(dst + i + 12), s, vcvtq_f32_s32(vmovl_s16(vget_high_s16(vmovl_s8(i8_hi))))));
-    }
 }
 
 /* ── int8 dot product + quantization ───────────────────────── */
@@ -553,29 +444,10 @@ static inline void fce_quantize_f32_768_neon(int8_t *restrict out,
     }
 }
 
-static inline void fce_init_f32_from_i8_768_neon(float *dst, const int8_t *src, float scale) {
-    float32x4_t s = vdupq_n_f32(scale);
-    for (int i = 0; i < FCE_SIMD_DIM; i += 16) {
-        int8x8_t i8_lo = vld1_s8(src + i);
-        int8x8_t i8_hi = vld1_s8(src + i + 8);
-        vst1q_f32(dst + i, vmulq_f32(s, vcvtq_f32_s32(vmovl_s16(vget_low_s16(vmovl_s8(i8_lo))))));
-        vst1q_f32(dst + i + 4, vmulq_f32(s, vcvtq_f32_s32(vmovl_s16(vget_high_s16(vmovl_s8(i8_lo))))));
-        vst1q_f32(dst + i + 8, vmulq_f32(s, vcvtq_f32_s32(vmovl_s16(vget_low_s16(vmovl_s8(i8_hi))))));
-        vst1q_f32(dst + i + 12, vmulq_f32(s, vcvtq_f32_s32(vmovl_s16(vget_high_s16(vmovl_s8(i8_hi))))));
-    }
-}
-
 #endif /* __ARM_NEON */
 #endif /* aarch64 */
 
 /* ── Scalar fallback ───────────────────────────────────────────── */
-
-static inline float fce_dot768_scalar(const float *restrict a,
-                                      const float *restrict b) {
-    float acc = 0.0f;
-    for (int i = 0; i < FCE_SIMD_DIM; i++) acc += a[i] * b[i];
-    return acc;
-}
 
 static inline void fce_dot768_mags3_scalar(const float *restrict a,
                                            const float *restrict b,
@@ -604,18 +476,6 @@ static inline void fce_dot768_add_mag_b_scalar(const float *restrict a,
     }
     *out_dot = dot;
     *out_mb = mb;
-}
-
-static inline void fce_axpy_f32_768_scalar(float *dst, const float *src, float scale) {
-    for (int i = 0; i < FCE_SIMD_DIM; i++) dst[i] += scale * src[i];
-}
-
-static inline void fce_axpy_i8_768_scalar(float *dst, const int8_t *src, float scale) {
-    for (int i = 0; i < FCE_SIMD_DIM; i++) dst[i] += scale * (float)src[i];
-}
-
-static inline void fce_init_f32_from_i8_768_scalar(float *dst, const int8_t *src, float scale) {
-    for (int i = 0; i < FCE_SIMD_DIM; i++) dst[i] = scale * (float)src[i];
 }
 
 static inline int32_t fce_dot768_i8_scalar(const int8_t *restrict a,
@@ -662,16 +522,6 @@ static inline void fce_quantize_f32_768_scalar(int8_t *restrict out,
 
 /* ── Dispatch ──────────────────────────────────────────────────── */
 
-static inline float fce_dot768(const float *restrict a,
-                               const float *restrict b) {
-#if FCE_HAS_AVX2
-    if (fce_has_avx2()) return fce_dot768_avx2(a, b);
-#elif FCE_HAS_NEON
-    return fce_dot768_neon(a, b);
-#endif
-    return fce_dot768_scalar(a, b);
-}
-
 static inline void fce_dot768_mags3(const float *restrict a,
                                     const float *restrict b,
                                     int dim,
@@ -703,45 +553,6 @@ static inline void fce_dot768_add_mag_b(const float *restrict a,
     return;
 #endif
     fce_dot768_add_mag_b_scalar(a, b, dim, out_dot, out_mb);
-}
-
-static inline void fce_axpy_f32_768(float *dst, const float *src, float scale) {
-#if FCE_HAS_AVX2
-    if (fce_has_avx2()) {
-        fce_axpy_f32_768_avx2(dst, src, scale);
-        return;
-    }
-#elif FCE_HAS_NEON
-    fce_axpy_f32_768_neon(dst, src, scale);
-    return;
-#endif
-    fce_axpy_f32_768_scalar(dst, src, scale);
-}
-
-static inline void fce_axpy_i8_768(float *dst, const int8_t *src, float scale) {
-#if FCE_HAS_AVX2
-    if (fce_has_avx2()) {
-        fce_axpy_i8_768_avx2(dst, src, scale);
-        return;
-    }
-#elif FCE_HAS_NEON
-    fce_axpy_i8_768_neon(dst, src, scale);
-    return;
-#endif
-    fce_axpy_i8_768_scalar(dst, src, scale);
-}
-
-static inline void fce_init_f32_from_i8_768(float *dst, const int8_t *src, float scale) {
-#if FCE_HAS_AVX2
-    if (fce_has_avx2()) {
-        fce_init_f32_from_i8_768_avx2(dst, src, scale);
-        return;
-    }
-#elif FCE_HAS_NEON
-    fce_init_f32_from_i8_768_neon(dst, src, scale);
-    return;
-#endif
-    fce_init_f32_from_i8_768_scalar(dst, src, scale);
 }
 
 static inline int32_t fce_dot768_i8(const int8_t *restrict a,

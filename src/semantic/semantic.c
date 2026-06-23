@@ -1482,11 +1482,11 @@ void fce_sem_normalize(fce_sem_vec_t *v) {
 
 void fce_sem_vec_add_scaled(fce_sem_vec_t *dst, const fce_sem_vec_t *src, float scale) {
     if (!dst || !src) return;
-    /* Do NOT replace with fce_axpy_f32_768() here.
-     * Clang -O2 auto-vectorizes this scalar loop into NEON/AVX2 at compile time.
-     * Hand-written SIMD axpy kernels were benchmarked and showed a ~10% finalize
-     * regression — the compiler's code generation (unrolling, scheduling, register
-     * allocation) outperforms the manual intrinsics in this context. */
+    /* Keep this as a plain scalar loop. Clang -O2 auto-vectorizes it into
+     * NEON/AVX2 at compile time. Hand-written SIMD axpy kernels were
+     * benchmarked and showed a ~10% finalize regression — the compiler's code
+     * generation (unrolling, scheduling, register allocation) outperforms the
+     * manual intrinsics in this context. */
     for (int i = 0; i < fce_sem_active_dim(); i++) {
         dst->v[i] += scale * src->v[i];
     }
@@ -2231,7 +2231,7 @@ static inline void sem_vec_add_src_scaled(fce_sem_vec_t *dst, const fce_sem_src_
         } else {
             const int8_t *s = src->dense_int8;
             const float mul = scale * (FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX);
-            /* Do NOT replace with fce_axpy_i8_768() — see note in fce_sem_vec_add_scaled. */
+            /* Keep scalar — see note in fce_sem_vec_add_scaled. */
             for (int d = 0; d < dim; d++) {
                 dst->v[d] += mul * (float)s[d];
             }
@@ -2399,7 +2399,7 @@ typedef struct {
 static inline void sem_vec_add_int8_scaled(fce_sem_vec_t *dst, const int8_t *src, float scale) {
     const float mul = scale * (FCE_SEM_UNIT_POS / FCE_SEM_INT8_MAX);
     const int dim = fce_sem_active_dim();
-    /* Do NOT replace with fce_axpy_i8_768() — see note in fce_sem_vec_add_scaled. */
+    /* Keep scalar — see note in fce_sem_vec_add_scaled. */
     for (int d = 0; d < dim; d++) {
         dst->v[d] += mul * (float)src[d];
     }
@@ -4898,8 +4898,11 @@ static void quickselect_topk(cand_t *scored, int n, int k, int depth) {
             scored[mid] = scored[hi];
             scored[hi] = tmp;
         }
-        /* swap median-of-three pivot with a random position in [lo, hi]
-         * to break adversarial patterns that exploit deterministic pivot. */
+        /* Replace the median-of-three pivot at hi with a uniformly random
+         * element from [lo, hi]: pick r in range and move scored[r] to hi.
+         * The partition is value-agnostic, so a random pivot suffices to
+         * break adversarial patterns that exploit a deterministic pivot;
+         * the depth guard still bounds the worst case via the qsort fallback. */
         if (hi - lo > 2) {
             int range = hi - lo + 1;
             int r = lo + (int)(qs_xorshift32(&rng_state) % (uint32_t)range);
