@@ -253,18 +253,33 @@ warning, and embedding quality may degrade slightly.
 | Linux | aarch64 | Supported | ARMv8.2+ recommended (DotProd) |
 | macOS | arm64 (Apple Silicon) | Fully supported | ARMv8.2+ with DotProd |
 | macOS | x86_64 | Supported | AVX2 runtime dispatch |
-| Windows | x86_64 | Partial | mingw-w64 build validated in CI; not MSVC-tested |
+| Windows | x86_64 | ⚠️ Alpha / best-effort | mingw-w64 compile+link only; never executed in CI; no MSVC, no prebuilt binaries |
 
 Pre-built binaries (GitHub release assets and the Maven Central JAR) are
 provided for **Linux x86_64**, **Linux aarch64**, and **macOS arm64**. The
 other supported platforms build cleanly from source (`make` / `cd java &&
 ./build.sh`) but are not shipped as prebuilt artifacts.
 
-Windows support is exercised continuously by a mingw-w64 cross-compile job
-(`make windows-cross`) that compiles and links the `_WIN32` code paths for a
-Windows target on every push. This validates compilation and linking only — it
-is a GCC-based (mingw) build, not MSVC, and the resulting binaries are not run
-in CI or shipped.
+> [!WARNING]
+> **Windows support is alpha and best-effort.** It is developed and maintained
+> primarily for macOS/Linux; the Windows code paths exist but receive no runtime
+> testing. What is actually guaranteed today is narrow:
+>
+> - A mingw-w64 cross-compile job (`make windows-cross`) compiles and links the
+>   `_WIN32` code paths for a Windows target on every push. **This proves the
+>   code builds — nothing more.** The resulting binaries are never *executed* in
+>   CI (no Windows runner, no Wine), so runtime behavior on Windows is
+>   unverified.
+> - It is a **GCC-based (mingw) build, not MSVC.** A clean mingw build does not
+>   guarantee an MSVC build, and MSVC is not tested.
+> - Some Windows paths are known-degraded — e.g. thread-local scratch buffers
+>   are leaked at thread exit (no TLS destructor), so Windows is best treated as
+>   read-only, single-threaded use.
+> - No Windows binaries are shipped in any release.
+>
+> Treat any Windows use as experimental and verify it yourself for your
+> workload. Issues and PRs improving Windows support are welcome, but it is not
+> a tier-1 target.
 
 ### ARM builds
 

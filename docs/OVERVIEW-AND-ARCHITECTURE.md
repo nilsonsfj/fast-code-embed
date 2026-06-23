@@ -134,18 +134,25 @@ kernel source, see [COMPARISON-VS-POTION-BASE-8M.md](COMPARISON-VS-POTION-BASE-8
   warning-clean under `-Wall -Wextra -Wpedantic` on both GCC and Clang.
 - **`_Thread_local`** (used in `src/semantic/semantic.c` for scratch
   buffers, RI dequant, and candidate scratch): supported by GCC, Clang, and
-  MSVC in C11 mode (`/std:c11` or `/std:c++17`). For MSVC builds, ensure
-  the compile flag is at least `/std:c11`.
-- **Windows TLS destructors** (`src/semantic/semantic.c` `tls_cand_scratch`
-  and the RI dequant scratch): the pthread key destructor is gated by
-  `#ifndef _WIN32`. On Windows, the scratch buffers are leaked at thread
-  exit. The library is targeted primarily at macOS/Linux; Windows is
-  supported for read-only single-threaded use.
+  MSVC in C11 mode (`/std:c11` or `/std:c++17`). Any MSVC build would need at
+  least `/std:c11`, but note MSVC is **not built or tested** (see the Windows
+  note below) — the validated Windows toolchain is mingw-w64.
+- **Windows: alpha / best-effort.** The library is targeted primarily at
+  macOS/Linux. Windows code paths exist and are compile+link validated on every
+  push by a mingw-w64 cross-compile job (`make windows-cross`), but they are
+  **never executed in CI** (no Windows runner, no Wine) and the build is **mingw
+  (GCC), not MSVC** — so runtime behavior and MSVC compatibility are unverified.
+  No Windows binaries are shipped. Known-degraded paths include the **TLS
+  destructors** (`src/semantic/semantic.c` `tls_cand_scratch` and the RI dequant
+  scratch): the pthread key destructor is gated by `#ifndef _WIN32`, so on
+  Windows those scratch buffers are leaked at thread exit. Treat Windows as
+  read-only, single-threaded, experimental use.
 - **macOS 10.12+** required for `malloc_zone_pressure_relief` (used in
   `fce_sem_corpus_finalize` to release transient memory after the final
   big allocation). Building on a newer SDK and deploying to < 10.12 will
   fail at first call to `fce_sem_corpus_finalize`.
 - **`arc4random`** for hash-table seed (in `src/foundation/hash_table.c`):
-  real `arc4random` on macOS, glibc ≥ 2.36, and BSDs; portable
-  `clock_gettime`-based fallback elsewhere (with documented lower-quality
-  seeding — sufficient for hash-flooding mitigation, not for crypto).
+  real `arc4random` on macOS, glibc ≥ 2.36, and BSDs; a `QueryPerformanceCounter`
+  + process-id seed on Windows; portable `getentropy`/`clock_gettime`-based
+  fallback elsewhere (with documented lower-quality seeding — sufficient for
+  hash-flooding mitigation, not for crypto).
