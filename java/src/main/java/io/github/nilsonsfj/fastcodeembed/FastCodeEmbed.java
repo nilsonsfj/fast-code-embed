@@ -72,6 +72,35 @@ public final class FastCodeEmbed {
      */
     public static int activeDim() { return nActiveDim(); }
 
+    /**
+     * Enable or disable abbreviation expansion during tokenization. When enabled
+     * (the default), {@link #tokenize} appends the expanded form of common code
+     * abbreviations (e.g. {@code "err"} also yields {@code "error"}), improving
+     * recall on abbreviated identifiers. Disable it to tokenize verbatim — useful
+     * for reproducible comparisons or corpora where the built-in English-leaning
+     * expansions are inappropriate.
+     *
+     * <p>The default can also be set via the {@code FCE_SEM_NO_ABBREV}
+     * environment variable ({@code 1}/{@code true}/{@code yes} disables); an
+     * explicit call here always overrides the environment.</p>
+     *
+     * <p>This is <b>process-global</b> state. Call it once at startup, before
+     * tokenizing or building a {@link Corpus}; toggling it concurrently with
+     * tokenization is unsafe.</p>
+     *
+     * @param enabled true to expand abbreviations, false to tokenize verbatim
+     * @since 0.2.0
+     */
+    public static void setAbbrevExpansion(boolean enabled) { nSetAbbrevExpansion(enabled); }
+
+    /**
+     * Whether abbreviation expansion is currently enabled.
+     *
+     * @return true if abbreviations are expanded during tokenization
+     * @since 0.2.0
+     */
+    public static boolean abbrevExpansion() { return nAbbrevExpansion(); }
+
     private FastCodeEmbed() {}
 
     // ── Initialization ────────────────────────────────────────────
@@ -396,4 +425,6 @@ public final class FastCodeEmbed {
     private static native int nGetDim();
     private static native int nActiveDim();
     private static native void nSetDim(int dim);
+    private static native void nSetAbbrevExpansion(boolean enabled);
+    private static native boolean nAbbrevExpansion();
 }

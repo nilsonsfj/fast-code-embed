@@ -1359,6 +1359,21 @@ JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSet
     fce_sem_set_dim((int)dim);
 }
 
+JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSetAbbrevExpansion(
+    JNIEnv *env, jclass cls, jboolean enabled) {
+    (void)env;
+    (void)cls;
+    /* Process-global; set once at startup before tokenizing. */
+    fce_sem_set_abbrev_expansion(enabled == JNI_TRUE);
+}
+
+JNIEXPORT jboolean JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nAbbrevExpansion(
+    JNIEnv *env, jclass cls) {
+    (void)env;
+    (void)cls;
+    return fce_sem_abbrev_expansion() ? JNI_TRUE : JNI_FALSE;
+}
+
 /* ── Static Nomic Search JNI ────────────────────────────────────── */
 
 JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_init(

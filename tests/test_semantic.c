@@ -172,6 +172,50 @@ static void test_tokenize_abbreviations_hash_table(void) {
     PASS();
 }
 
+static void test_tokenize_abbreviations_toggle(void) {
+    TEST(abbreviation expansion can be disabled and re-enabled);
+    char *tokens[32];
+    int n;
+
+    /* Enabled by default. */
+    ASSERT(fce_sem_abbrev_expansion());
+
+    /* Disable: tokens are returned verbatim, no expansion appended. */
+    fce_sem_set_abbrev_expansion(false);
+    ASSERT(!fce_sem_abbrev_expansion());
+    n = fce_sem_tokenize("ctx", tokens, 32);
+    ASSERT(n == 1);
+    ASSERT(strcmp(tokens[0], "ctx") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+
+    /* Camel/snake splitting still works while expansion is off. */
+    n = fce_sem_tokenize("handleRequest", tokens, 32);
+    ASSERT(n == 2);
+    ASSERT(strcmp(tokens[0], "handle") == 0);
+    ASSERT(strcmp(tokens[1], "request") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+
+    /* Re-enable: expansion returns. */
+    fce_sem_set_abbrev_expansion(true);
+    ASSERT(fce_sem_abbrev_expansion());
+    n = fce_sem_tokenize("ctx", tokens, 32);
+    ASSERT(n == 2);
+    ASSERT(strcmp(tokens[1], "context") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+
+    PASS();
+}
+
+static void test_tokenize_abbreviations_sub_removed(void) {
+    TEST(sub no longer expands to subscriber);
+    char *tokens[32];
+    int n = fce_sem_tokenize("sub", tokens, 32);
+    ASSERT(n == 1);
+    ASSERT(strcmp(tokens[0], "sub") == 0);
+    for (int i = 0; i < n; i++) free(tokens[i]);
+    PASS();
+}
+
 static void test_simple_score_deterministic(void) {
     TEST(simple score is deterministic across repeated calls(magnitude caching));
     fce_sem_func_t a = {0}, b = {0};
@@ -2333,6 +2377,8 @@ int main(void) {
     test_tokenize_null();
     test_tokenize_abbreviations();
     test_tokenize_abbreviations_hash_table();
+    test_tokenize_abbreviations_sub_removed();
+    test_tokenize_abbreviations_toggle();
 
     /* Random indexing */
     printf("\nRandom Indexing:\n");

@@ -174,6 +174,38 @@ int fce_sem_active_dim(void) {
     return atomic_load_explicit(&g_sem_dim, memory_order_relaxed);
 }
 
+/* ── Abbreviation expansion toggle ───────────────────────────────── */
+
+/* Tri-state: -1 = unresolved (consult FCE_SEM_NO_ABBREV on first use), 0 =
+ * disabled, 1 = enabled. Default (no env, no setter) is enabled. Relaxed
+ * atomics: like g_sem_dim this is effectively set-once at startup, so the
+ * atomic only guards against torn access. */
+static _Atomic int g_abbrev_enabled = -1;
+
+static bool abbrev_expansion_enabled(void) {
+    int v = atomic_load_explicit(&g_abbrev_enabled, memory_order_relaxed);
+    if (v < 0) {
+        /* Resolve the env default once. Concurrent first-callers race
+         * harmlessly: they compute the same value and store it idempotently.
+         * fce_safe_getenv is used instead of raw getenv for the same
+         * thread-safety reason as elsewhere in this file. */
+        char buf[8];
+        const char *no = fce_safe_getenv("FCE_SEM_NO_ABBREV", buf, sizeof(buf), NULL);
+        v = (no && (no[0] == '1' || no[0] == 't' || no[0] == 'T' ||
+                    no[0] == 'y' || no[0] == 'Y')) ? 0 : 1;
+        atomic_store_explicit(&g_abbrev_enabled, v, memory_order_relaxed);
+    }
+    return v != 0;
+}
+
+void fce_sem_set_abbrev_expansion(bool enabled) {
+    atomic_store_explicit(&g_abbrev_enabled, enabled ? 1 : 0, memory_order_relaxed);
+}
+
+bool fce_sem_abbrev_expansion(void) {
+    return abbrev_expansion_enabled();
+}
+
 /* ── Configuration ───────────────────────────────────────────────── */
 
 fce_sem_config_t fce_sem_get_config(void) {
@@ -477,7 +509,6 @@ int fce_sem_tokenize(const char *name, char **out, int max_out) {
         {"wg", "waitgroup"},
         {"sig", "signal"},
         {"evt", "event"},
-        {"sub", "subscriber"},
         {"pub", "publisher"},
         /* Testing */
         {"spec", "specification"},
@@ -514,6 +545,11 @@ int fce_sem_tokenize(const char *name, char **out, int max_out) {
     };
     _Static_assert(sizeof(abbrevs) / sizeof(abbrevs[0]) - 1 <= ABBREV_HT_SIZE * 3 / 4,
                    "abbrev table load factor too high — grow ABBREV_HT_BITS");
+    if (!abbrev_expansion_enabled()) {
+        /* Expansion disabled: return the verbatim tokens, skipping both the
+         * one-shot table build and the per-token lookup. */
+        return count;
+    }
     ensure_abbrev_ht(abbrevs);
 
     /* g_abbrev_ht is freed by fce_sem_shutdown

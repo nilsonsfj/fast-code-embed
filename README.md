@@ -200,6 +200,13 @@ corpus.complete(true);
 The environment variable `FCE_SEM_SKIP_RI` overrides the per-corpus setting
 globally: `=1` forces enrichment off, `=0` forces it on.
 
+Tokenization expands common code abbreviations by default (e.g. `err` → also
+`error`, `ctx` → `context`), improving recall on abbreviated identifiers. Turn
+this off to tokenize verbatim — useful for reproducible comparisons or corpora
+where the built-in English-leaning expansions are inappropriate — via
+`fce_sem_set_abbrev_expansion(false)` (Java: `FastCodeEmbed.setAbbrevExpansion(false)`)
+or the `FCE_SEM_NO_ABBREV=1` environment variable.
+
 For advanced use, you can also wire in your own call graph, type system, or AST
 via the `api_vec`, `type_vec`, `decorator_vec`, and `struct_profile[25]` fields
 in `fce_sem_func_t`. Search path is configurable via `fce_query_mode_t`

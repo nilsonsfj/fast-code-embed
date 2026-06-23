@@ -145,6 +145,20 @@ enum { FCE_SEM_MAX_TOKENS = 512 };
  * bracket. */
 int fce_sem_tokenize(const char *name, char **out, int max_out);
 
+/* Abbreviation expansion: when enabled (the default), tokenization appends the
+ * expanded form of common code abbreviations (e.g. "err" → also "error",
+ * "ctx" → "context"), improving recall on abbreviated identifiers. Disable it
+ * to tokenize names verbatim — useful for reproducible comparisons or corpora
+ * where the built-in English-leaning expansions are inappropriate.
+ *
+ * The default can also be set via the FCE_SEM_NO_ABBREV environment variable
+ * (=1/true/yes disables); an explicit fce_sem_set_abbrev_expansion call always
+ * overrides the environment. Like fce_sem_set_dim this is global process state
+ * intended to be set ONCE at startup; it is not safe to toggle concurrently
+ * with tokenization. */
+void fce_sem_set_abbrev_expansion(bool enabled);
+bool fce_sem_abbrev_expansion(void);
+
 /* Batch tokenize: tokenize count names in one call.
  * all_tokens_out is a flat array: all_tokens_out[f * max_out + t] = token string.
  * token_counts_out[f] = number of tokens for name f.
