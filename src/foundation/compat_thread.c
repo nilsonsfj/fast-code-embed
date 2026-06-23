@@ -14,6 +14,7 @@
 
 #include <pthread.h>
 #include <stdlib.h>
+#include <limits.h> /* PTHREAD_STACK_MIN */
 
 /* Default 1MB stack for all threads. Embedding workloads need far less
  * than AST recursion; override via stack_size parameter or FCE_STACK_SIZE. */
@@ -80,9 +81,27 @@ int fce_thread_create(fce_thread_t *t, size_t stack_size, void *(*fn)(void *), v
         stack_size = FCE_DEFAULT_STACK_SIZE;
     }
     pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, stack_size);
-    int rc = pthread_create(&t->handle, &attr, fn, arg);
+    int rc = pthread_attr_init(&attr);
+    if (rc != 0) {
+        return rc;
+    }
+    /* Honor the requested stack size. If the platform rejects it (EINVAL for a
+     * size below PTHREAD_STACK_MIN or not suitably aligned), clamp up to the
+     * platform minimum and retry once so the request is not silently dropped
+     * onto the default stack. If it still fails, surface the error rather than
+     * spawning a thread with an unexpected stack size. */
+    rc = pthread_attr_setstacksize(&attr, stack_size);
+    if (rc != 0) {
+        size_t min_stack = (size_t)PTHREAD_STACK_MIN;
+        if (stack_size < min_stack) {
+            rc = pthread_attr_setstacksize(&attr, min_stack);
+        }
+        if (rc != 0) {
+            pthread_attr_destroy(&attr);
+            return rc;
+        }
+    }
+    rc = pthread_create(&t->handle, &attr, fn, arg);
     pthread_attr_destroy(&attr);
     return rc;
 }
