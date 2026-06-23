@@ -207,6 +207,16 @@ where the built-in English-leaning expansions are inappropriate — via
 `fce_sem_set_abbrev_expansion(false)` (Java: `FastCodeEmbed.setAbbrevExpansion(false)`)
 or the `FCE_SEM_NO_ABBREV=1` environment variable.
 
+Document and query vectors are IDF-weighted sums of their token vectors by
+default, so ubiquitous tokens are down-weighted and discriminating ones
+dominate. You can switch to an unweighted ("EmbeddingBag"-style) sum via
+`fce_sem_set_idf_weighting(false)` (Java: `FastCodeEmbed.setIdfWeighting(false)`)
+or `FCE_SEM_NO_IDF=1`. This is global state that bakes into the document vectors
+at finalize and must match at query time, so set it once before building the
+corpus. On code corpora IDF weighting generally retrieves better — disabling it
+tends to collapse multi-word queries onto their most common term — so the
+default is recommended unless you are experimenting.
+
 For advanced use, you can also wire in your own call graph, type system, or AST
 via the `api_vec`, `type_vec`, `decorator_vec`, and `struct_profile[25]` fields
 in `fce_sem_func_t`. Search path is configurable via `fce_query_mode_t`

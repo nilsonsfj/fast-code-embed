@@ -206,6 +206,42 @@ bool fce_sem_abbrev_expansion(void) {
     return abbrev_expansion_enabled();
 }
 
+/* ── IDF weighting toggle ────────────────────────────────────────── */
+
+/* Tri-state: -1 = unresolved (consult FCE_SEM_NO_IDF on first use), 0 =
+ * disabled, 1 = enabled. Default (no env, no setter) is enabled. When disabled,
+ * doc and query vectors are unweighted sums of their token vectors (an
+ * "EmbeddingBag"-style mean) instead of IDF-weighted sums: docs are built with
+ * idf = NULL (uniform 1.0) and the query side uses weight 1.0 per token. Like
+ * g_sem_dim this is effectively set-once at startup; the relaxed atomic only
+ * guards against torn access.
+ *
+ * IMPORTANT: this must hold the same value at finalize and at query time —
+ * docs bake the weighting into doc_vectors_q, and the query path must mirror it
+ * so both live in the same space. It is global process state; set it once
+ * before finalizing and do not change it between finalize and query. */
+static _Atomic int g_idf_enabled = -1;
+
+static bool idf_weighting_enabled(void) {
+    int v = atomic_load_explicit(&g_idf_enabled, memory_order_relaxed);
+    if (v < 0) {
+        char buf[8];
+        const char *no = fce_safe_getenv("FCE_SEM_NO_IDF", buf, sizeof(buf), NULL);
+        v = (no && (no[0] == '1' || no[0] == 't' || no[0] == 'T' ||
+                    no[0] == 'y' || no[0] == 'Y')) ? 0 : 1;
+        atomic_store_explicit(&g_idf_enabled, v, memory_order_relaxed);
+    }
+    return v != 0;
+}
+
+void fce_sem_set_idf_weighting(bool enabled) {
+    atomic_store_explicit(&g_idf_enabled, enabled ? 1 : 0, memory_order_relaxed);
+}
+
+bool fce_sem_idf_weighting(void) {
+    return idf_weighting_enabled();
+}
+
 /* ── Configuration ───────────────────────────────────────────────── */
 
 fce_sem_config_t fce_sem_get_config(void) {
@@ -3188,12 +3224,18 @@ int fce_sem_corpus_finalize(fce_sem_corpus_t *corpus) {
      * ubiquitous tokens keeps them from dominating every doc vector (the
      * anisotropy that collapses cosine discrimination). NULL on OOM → the worker
      * falls back to uniform weighting. The query side mirrors this weighting via
-     * fce_sem_corpus_idf so queries and docs live in the same weighted space. */
-    float *doc_idf = malloc((size_t)corpus->entry_count * sizeof(float));
-    if (doc_idf) {
-        for (int i = 0; i < corpus->entry_count; i++) {
-            int df = corpus->entries[i].doc_freq;
-            doc_idf[i] = df > 0 ? logf((float)corpus->doc_count / (float)df) : 0.0f;
+     * fce_sem_corpus_idf so queries and docs live in the same weighted space.
+     * When IDF weighting is disabled (fce_sem_set_idf_weighting(false)) doc_idf
+     * stays NULL and the worker uses uniform 1.0 — an unweighted EmbeddingBag
+     * sum; the query path mirrors this in build_query_vector. */
+    float *doc_idf = NULL;
+    if (idf_weighting_enabled()) {
+        doc_idf = malloc((size_t)corpus->entry_count * sizeof(float));
+        if (doc_idf) {
+            for (int i = 0; i < corpus->entry_count; i++) {
+                int df = corpus->entries[i].doc_freq;
+                doc_idf[i] = df > 0 ? logf((float)corpus->doc_count / (float)df) : 0.0f;
+            }
         }
     }
     docvec_ctx_t dctx = {
@@ -6271,9 +6313,13 @@ static void build_query_vector(const fce_sem_corpus_t *corpus,
                                char *const *q_toks, int q_ntok,
                                fce_sem_vec_t *out) {
     memset(out, 0, sizeof(*out));
+    const bool use_idf = idf_weighting_enabled();
     for (int t = 0; t < q_ntok; t++) {
         const fce_sem_vec_t *rv = fce_sem_corpus_ri_vec(corpus, q_toks[t]);
-        if (rv) fce_sem_vec_add_scaled(out, rv, fce_sem_corpus_idf(corpus, q_toks[t]));
+        /* Mirror the doc side: IDF weight when enabled, else uniform 1.0
+         * (EmbeddingBag). Keeps queries and docs in the same space. */
+        if (rv) fce_sem_vec_add_scaled(out, rv,
+                                       use_idf ? fce_sem_corpus_idf(corpus, q_toks[t]) : 1.0f);
     }
     fce_sem_normalize(out);
     if (corpus->has_doc_mean) {

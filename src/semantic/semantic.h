@@ -159,6 +159,21 @@ int fce_sem_tokenize(const char *name, char **out, int max_out);
 void fce_sem_set_abbrev_expansion(bool enabled);
 bool fce_sem_abbrev_expansion(void);
 
+/* IDF weighting: when enabled (the default), document and query vectors are
+ * IDF-weighted sums of their token vectors, down-weighting ubiquitous tokens.
+ * When disabled, they are unweighted sums (an "EmbeddingBag"-style mean) — docs
+ * are built with idf = NULL (uniform 1.0) and queries weight every token 1.0.
+ *
+ * The default can also be set via the FCE_SEM_NO_IDF environment variable
+ * (=1/true/yes disables); an explicit fce_sem_set_idf_weighting call always
+ * overrides the environment. This is global process state: it bakes into
+ * doc_vectors_q at finalize and must hold the SAME value at query time so docs
+ * and queries share one space. Set it ONCE before finalizing and do not change
+ * it between finalize and query. Affects the dense RI/brute path; the TF-IDF
+ * candidate query mode is inherently IDF-based and is unaffected. */
+void fce_sem_set_idf_weighting(bool enabled);
+bool fce_sem_idf_weighting(void);
+
 /* Batch tokenize: tokenize count names in one call.
  * all_tokens_out is a flat array: all_tokens_out[f * max_out + t] = token string.
  * token_counts_out[f] = number of tokens for name f.

@@ -1374,6 +1374,22 @@ JNIEXPORT jboolean JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_
     return fce_sem_abbrev_expansion() ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nSetIdfWeighting(
+    JNIEnv *env, jclass cls, jboolean enabled) {
+    (void)env;
+    (void)cls;
+    /* Process-global; set once before finalizing and keep it the same at query
+     * time (it bakes into doc vectors and the query path must mirror it). */
+    fce_sem_set_idf_weighting(enabled == JNI_TRUE);
+}
+
+JNIEXPORT jboolean JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_nIdfWeighting(
+    JNIEnv *env, jclass cls) {
+    (void)env;
+    (void)cls;
+    return fce_sem_idf_weighting() ? JNI_TRUE : JNI_FALSE;
+}
+
 /* ── Static Nomic Search JNI ────────────────────────────────────── */
 
 JNIEXPORT void JNICALL Java_io_github_nilsonsfj_fastcodeembed_FastCodeEmbed_init(

@@ -101,6 +101,38 @@ public final class FastCodeEmbed {
      */
     public static boolean abbrevExpansion() { return nAbbrevExpansion(); }
 
+    /**
+     * Enable or disable IDF weighting of document and query vectors. When enabled
+     * (the default), both are IDF-weighted sums of their token vectors, so
+     * ubiquitous tokens are down-weighted and discriminating tokens dominate.
+     * When disabled, they are unweighted sums (an "EmbeddingBag"-style mean);
+     * this tends to collapse multi-word queries onto their most common term, so
+     * the default is recommended for general use.
+     *
+     * <p>The default can also be set via the {@code FCE_SEM_NO_IDF} environment
+     * variable ({@code 1}/{@code true}/{@code yes} disables); an explicit call
+     * here always overrides the environment.</p>
+     *
+     * <p>This is <b>process-global</b> state that bakes into the document vectors
+     * at {@link Corpus#complete}. It must hold the <b>same</b> value when you
+     * query, since the query path mirrors it. Set it once before finalizing and
+     * do not change it between finalizing and querying. Affects the dense
+     * RI/brute-force path; the TF-IDF candidate query mode is inherently
+     * IDF-based and is unaffected.</p>
+     *
+     * @param enabled true for IDF weighting, false for an unweighted sum
+     * @since 0.2.0
+     */
+    public static void setIdfWeighting(boolean enabled) { nSetIdfWeighting(enabled); }
+
+    /**
+     * Whether IDF weighting of document and query vectors is currently enabled.
+     *
+     * @return true if vectors are IDF-weighted
+     * @since 0.2.0
+     */
+    public static boolean idfWeighting() { return nIdfWeighting(); }
+
     private FastCodeEmbed() {}
 
     // ── Initialization ────────────────────────────────────────────
@@ -427,4 +459,6 @@ public final class FastCodeEmbed {
     private static native void nSetDim(int dim);
     private static native void nSetAbbrevExpansion(boolean enabled);
     private static native boolean nAbbrevExpansion();
+    private static native void nSetIdfWeighting(boolean enabled);
+    private static native boolean nIdfWeighting();
 }

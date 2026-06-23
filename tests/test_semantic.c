@@ -579,6 +579,60 @@ static void test_corpus_token_at(void) {
     PASS();
 }
 
+/* IDF weighting toggle: setter/getter round-trips and the choice actually
+ * changes scoring (docs/queries become unweighted EmbeddingBag sums when off).
+ * IDF bakes in at finalize, so each mode builds its own corpus. */
+static void test_idf_weighting_toggle(void) {
+    TEST(idf weighting toggle round-trips and changes scoring);
+    ASSERT(fce_sem_idf_weighting()); /* enabled by default */
+
+    /* Skewed term frequencies so IDF actually matters: "common" is ubiquitous
+     * (low IDF), the per-doc terms are rare (high IDF). */
+    const char *docs[6][2] = {
+        {"common", "alpha"}, {"common", "beta"},  {"common", "gamma"},
+        {"common", "delta"}, {"common", "epsilon"}, {"rare", "alpha"},
+    };
+
+    fce_sem_set_idf_weighting(true);
+    ASSERT(fce_sem_idf_weighting());
+    fce_sem_corpus_t *c_on = fce_sem_corpus_new();
+    for (int i = 0; i < 6; i++) fce_sem_corpus_add_doc(c_on, docs[i], 2);
+    ASSERT(fce_sem_corpus_finalize(c_on) == 0);
+    fce_sem_ranked_t r_on[6];
+    uint32_t n_on = 0;
+    fce_sem_search_query_bruteforce(c_on, "common alpha", 6, r_on, &n_on);
+
+    fce_sem_set_idf_weighting(false);
+    ASSERT(!fce_sem_idf_weighting());
+    fce_sem_corpus_t *c_off = fce_sem_corpus_new();
+    for (int i = 0; i < 6; i++) fce_sem_corpus_add_doc(c_off, docs[i], 2);
+    ASSERT(fce_sem_corpus_finalize(c_off) == 0);
+    fce_sem_ranked_t r_off[6];
+    uint32_t n_off = 0;
+    fce_sem_search_query_bruteforce(c_off, "common alpha", 6, r_off, &n_off);
+
+    fce_sem_corpus_free(c_on);
+    fce_sem_corpus_free(c_off);
+    /* Restore the default BEFORE any assert that might early-return, so later
+     * tests always run with IDF enabled. */
+    fce_sem_set_idf_weighting(true);
+    ASSERT(fce_sem_idf_weighting());
+
+    /* The two weightings must produce a measurably different ranking — compare
+     * the full (index, score) sequences; proof the toggle reaches both the doc
+     * and query vector construction. */
+    ASSERT(n_on > 0 && n_off > 0);
+    bool differs = (n_on != n_off);
+    for (uint32_t i = 0; i < n_on && i < n_off && !differs; i++) {
+        if (r_on[i].index != r_off[i].index ||
+            fabsf(r_on[i].score - r_off[i].score) > 1e-6f) {
+            differs = true;
+        }
+    }
+    ASSERT(differs);
+    PASS();
+}
+
 /* Regression: out_idf is optional. On a non-empty corpus the second IDF write
  * was previously unguarded and crashed when out_idf == NULL. */
 static void test_corpus_token_at_null_out_idf(void) {
@@ -2463,6 +2517,7 @@ int main(void) {
     test_corpus_batch_add();
     test_corpus_token_at();
     test_corpus_token_at_null_out_idf();
+    test_idf_weighting_toggle();
     test_corpus_add_null_elements();
     test_corpus_save_load_roundtrip();
     test_mean_centering_spreads_cosines();
