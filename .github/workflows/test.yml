@@ -38,6 +38,19 @@ jobs:
       - name: Build and test with sanitizers
         run: make clean && make test-asan
 
+  windows-cross:
+    runs-on: ubuntu-latest
+    name: Windows cross-compile (mingw-w64)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Cross-compile and link for Windows
+        run: make clean && make -j4 windows-cross
+
   java:
     strategy:
       fail-fast: false

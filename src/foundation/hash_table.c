@@ -21,8 +21,11 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
-/* getentropy() is declared in <unistd.h> on Linux/BSD. */
-#if defined(__linux__) || defined(__OpenBSD__) || defined(__FreeBSD__)
+/* getentropy()/getpid() are declared in <unistd.h> on every Unix; it does not
+ * exist on Windows (getpid is _getpid in <process.h>, handled in the _WIN32
+ * branch below). Include it for all non-Windows targets so generic-Unix builds
+ * (e.g. illumos) that fall into the __unix__ seed path still see getpid(). */
+#ifndef _WIN32
 #include <unistd.h>
 #endif
 
@@ -55,6 +58,24 @@ static uint32_t ht_random_seed(void) {
     return s ^ (ns * 2654435761U) ^ 0x9E3779B9U ^ (uint32_t)getpid();
 }
 #define arc4random ht_random_seed
+#elif defined(_WIN32)
+/* Windows: no getentropy/clock_gettime/getpid. Seed from the
+ * high-resolution performance counter mixed with the process id and tick
+ * count — mirrors the QueryPerformanceCounter idiom used in platform.c.
+ * This is for hash-flood mitigation, not cryptographic use. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+static uint32_t ht_random_seed_win32(void) {
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    uint32_t lo = (uint32_t)qpc.QuadPart;
+    uint32_t hi = (uint32_t)(qpc.QuadPart >> 32);
+    return lo ^ (hi * 2654435761U) ^ 0x9E3779B9U
+           ^ (uint32_t)GetCurrentProcessId() ^ (uint32_t)GetTickCount();
+}
+#define arc4random ht_random_seed_win32
 #else
 /* Last-resort fallback: try getentropy (glibc 2.25+ / musl) for better
  * hash-flood resistance, then fall back to time-based seeding. */

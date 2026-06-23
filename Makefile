@@ -61,7 +61,7 @@ LIB = $(BUILDDIR)/libfast_code_embed.a
 TEST_SRC  = tests/test_semantic.c
 TEST_BIN  = $(BUILDDIR)/test_semantic
 
-.PHONY: all lib test test-asan bench bench-256 loadquery install uninstall clean extract
+.PHONY: all lib test test-asan bench bench-256 loadquery windows-cross install uninstall clean extract
 
 all: lib
 
@@ -159,6 +159,42 @@ $(BENCH256): $(BENCH_SRC) $(LIB256)
 	$(CC) $(CFLAGS) -DFCE_SEM_DIM_256 -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed_256 -lpthread -lm -o $@
 
 bench-256: $(BENCH256)
+
+# ── Windows cross-compile validation (mingw-w64) ────────────────
+# Compiles and links the library for a Windows target using a mingw-w64 cross
+# toolchain on a Linux/macOS host, exercising the _WIN32 code paths (native
+# Win32 threads, QueryPerformanceCounter timing, the COFF vector blob). Nothing
+# is executed — the artifacts are PE binaries; the value is that compile+link
+# succeed, so a broken Windows path is caught in CI without a Windows runner.
+# This is a mingw (GCC) build, not MSVC; a clean build here does not by itself
+# guarantee an MSVC build. Override CROSS to select the toolchain prefix.
+# -fPIC is omitted: all code is position-independent on Windows by default.
+CROSS        ?= x86_64-w64-mingw32-
+WIN_CC       = $(CROSS)gcc
+WIN_AR       = $(CROSS)ar
+WIN_CFLAGS   = -O2 -Wall -Wextra -Wpedantic -std=c11 $(TUNE) -DNDEBUG
+WIN_BUILDDIR = $(BUILDDIR)/windows
+WIN_OBJS     = $(SRCS:$(SRCDIR)/%.c=$(WIN_BUILDDIR)/%.o)
+WIN_OBJS     := $(WIN_OBJS:$(SRCDIR)/%.S=$(WIN_BUILDDIR)/%.o)
+WIN_LIB      = $(WIN_BUILDDIR)/libfast_code_embed.a
+WIN_SMOKE    = $(WIN_BUILDDIR)/smoke.exe
+
+$(WIN_BUILDDIR)/%.o: $(SRCDIR)/%.c
+	@mkdir -p $(dir $@)
+	$(WIN_CC) $(WIN_CFLAGS) -I$(INCDIR) -c $< -o $@
+
+$(WIN_BUILDDIR)/%.o: $(SRCDIR)/%.S
+	@mkdir -p $(dir $@)
+	$(WIN_CC) -c $< -o $@
+
+$(WIN_LIB): $(WIN_OBJS)
+	@mkdir -p $(dir $@)
+	$(WIN_AR) $(ARFLAGS) $@ $^
+	@echo "Built $@ (Windows cross)"
+
+windows-cross: $(WIN_LIB)
+	$(WIN_CC) $(WIN_CFLAGS) -I$(INCDIR) tests/smoke_windows.c $(WIN_LIB) -lm -o $(WIN_SMOKE)
+	@echo "Linked $(WIN_SMOKE) — Windows _WIN32 paths compile and link"
 
 # ── Auto-generated dependency files ─────────────────────────────
 -include $(OBJS:.o=.d)

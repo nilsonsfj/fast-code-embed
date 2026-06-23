@@ -253,12 +253,18 @@ warning, and embedding quality may degrade slightly.
 | Linux | aarch64 | Supported | ARMv8.2+ recommended (DotProd) |
 | macOS | arm64 (Apple Silicon) | Fully supported | ARMv8.2+ with DotProd |
 | macOS | x86_64 | Supported | AVX2 runtime dispatch |
-| Windows | x86_64 | Partial | Single-threaded recommended |
+| Windows | x86_64 | Partial | mingw-w64 build validated in CI; not MSVC-tested |
 
 Pre-built binaries (GitHub release assets and the Maven Central JAR) are
 provided for **Linux x86_64**, **Linux aarch64**, and **macOS arm64**. The
 other supported platforms build cleanly from source (`make` / `cd java &&
 ./build.sh`) but are not shipped as prebuilt artifacts.
+
+Windows support is exercised continuously by a mingw-w64 cross-compile job
+(`make windows-cross`) that compiles and links the `_WIN32` code paths for a
+Windows target on every push. This validates compilation and linking only — it
+is a GCC-based (mingw) build, not MSVC, and the resulting binaries are not run
+in CI or shipped.
 
 ### ARM builds
 

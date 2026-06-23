@@ -101,7 +101,7 @@ static fce_system_info_t detect_system_bsd(void) {
     return info;
 }
 
-#else /* Linux */
+#elif !defined(_WIN32) /* Linux / generic Unix (Windows uses detect_system_windows below) */
 
 static fce_system_info_t detect_system_linux(void) {
     fce_system_info_t info;
