@@ -1,8 +1,11 @@
-/* mkstemp()/ftruncate() are POSIX.1-2001; request the feature macro before any
- * header so they are declared under strict -std=c11 (glibc hides them
- * otherwise, unlike Apple's headers). */
+/* mkstemp()/ftruncate() need a POSIX feature macro to be declared under strict
+ * -std=c11 (glibc hides them otherwise, unlike Apple's headers). glibc only
+ * exposes mkstemp at _POSIX_C_SOURCE >= 200809L, so request that level. */
 #ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200112L
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
 #endif
 
 /* libFuzzer harness for fce_sem_corpus_load — the untrusted-cache parser.
