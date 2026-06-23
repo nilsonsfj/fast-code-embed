@@ -51,6 +51,30 @@ jobs:
       - name: Cross-compile and link for Windows
         run: make clean && make -j4 windows-cross
 
+  fuzz:
+    runs-on: ubuntu-latest
+    name: Fuzz cache loader (libFuzzer)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build fuzzer and generate seed
+        run: make fuzz CC=clang FUZZ_CC=clang
+
+      - name: Fuzz the cache loader (bounded)
+        run: ./build/fuzz/fuzz_corpus_load -max_total_time=120 -print_final_stats=1 build/fuzz/corpus
+
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            oom-*
+            timeout-*
+          if-no-files-found: ignore
+
   java:
     strategy:
       fail-fast: false

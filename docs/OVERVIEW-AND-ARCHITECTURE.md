@@ -124,6 +124,12 @@ kernel source, see [COMPARISON-VS-POTION-BASE-8M.md](COMPARISON-VS-POTION-BASE-8
     lengths; other entry points validate array bounds before native dispatch.
 - **No secrets** in the repository; the pretrained embedding blob contains only
     public model weights (Apache 2.0).
+- **Untrusted cache files** — `fce_sem_corpus_load` mmaps and parses a binary
+    cache that may be attacker-influenced. Every offset, length, count, index,
+    and float read from the file is range-validated before use, and malformed
+    files are rejected rather than mapped. This is continuously verified by a
+    libFuzzer harness (`make fuzz`) that mutates real cache files through the
+    loader under ASan/UBSan; it runs bounded in CI on every push.
 
 ## Build / platform support
 

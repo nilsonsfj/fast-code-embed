@@ -61,7 +61,7 @@ LIB = $(BUILDDIR)/libfast_code_embed.a
 TEST_SRC  = tests/test_semantic.c
 TEST_BIN  = $(BUILDDIR)/test_semantic
 
-.PHONY: all lib test test-asan bench bench-256 loadquery windows-cross install uninstall clean extract
+.PHONY: all lib test test-asan bench bench-256 loadquery windows-cross fuzz install uninstall clean extract
 
 all: lib
 
@@ -195,6 +195,48 @@ $(WIN_LIB): $(WIN_OBJS)
 windows-cross: $(WIN_LIB)
 	$(WIN_CC) $(WIN_CFLAGS) -I$(INCDIR) tests/smoke_windows.c $(WIN_LIB) -lm -o $(WIN_SMOKE)
 	@echo "Linked $(WIN_SMOKE) — Windows _WIN32 paths compile and link"
+
+# ── Fuzzing: cache loader (libFuzzer + ASan/UBSan) ──────────────
+# Continuously exercises fce_sem_corpus_load (the untrusted-cache parser) with
+# mutated bytes. Requires clang (libFuzzer is bundled with clang/LLVM). The
+# library sources are recompiled with coverage instrumentation into a separate
+# build dir; the harness links in the libFuzzer runtime (which provides main).
+# The seed generator links the normal (uninstrumented) static library, so it
+# avoids the fuzzer runtime and provides its own main.
+#   make fuzz
+#   ./build/fuzz/fuzz_corpus_load build/fuzz/corpus      # run until Ctrl-C
+#   ./build/fuzz/fuzz_corpus_load -max_total_time=60 build/fuzz/corpus
+FUZZ_CC       ?= clang
+FUZZ_SAN       = -fsanitize=address,undefined -fno-sanitize-recover=undefined
+FUZZ_CFLAGS    = -O1 -g -std=c11 -fsanitize=fuzzer-no-link $(FUZZ_SAN) -I$(INCDIR)
+FUZZ_BUILDDIR  = $(BUILDDIR)/fuzz
+FUZZ_OBJS      = $(SRCS:$(SRCDIR)/%.c=$(FUZZ_BUILDDIR)/%.o)
+FUZZ_OBJS      := $(FUZZ_OBJS:$(SRCDIR)/%.S=$(FUZZ_BUILDDIR)/%.o)
+FUZZ_BIN       = $(FUZZ_BUILDDIR)/fuzz_corpus_load
+FUZZ_SEEDGEN   = $(FUZZ_BUILDDIR)/gen_seed
+FUZZ_CORPUSDIR = $(FUZZ_BUILDDIR)/corpus
+
+$(FUZZ_BUILDDIR)/%.o: $(SRCDIR)/%.c
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -c $< -o $@
+
+$(FUZZ_BUILDDIR)/%.o: $(SRCDIR)/%.S
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) -c $< -o $@
+
+$(FUZZ_BIN): fuzz/fuzz_corpus_load.c $(FUZZ_OBJS)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) -O1 -g -std=c11 -fsanitize=fuzzer $(FUZZ_SAN) -I$(INCDIR) $^ -lpthread -lm -o $@
+
+$(FUZZ_SEEDGEN): fuzz/gen_seed.c $(LIB)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(INCDIR) $< -L$(BUILDDIR) -lfast_code_embed -lpthread -lm -o $@
+
+fuzz: $(FUZZ_BIN) $(FUZZ_SEEDGEN)
+	@mkdir -p $(FUZZ_CORPUSDIR)
+	$(FUZZ_SEEDGEN) $(FUZZ_CORPUSDIR)/seed_valid.cache
+	@echo "Fuzzer built. Run:"
+	@echo "  $(FUZZ_BIN) $(FUZZ_CORPUSDIR)"
 
 # ── Auto-generated dependency files ─────────────────────────────
 -include $(OBJS:.o=.d)
