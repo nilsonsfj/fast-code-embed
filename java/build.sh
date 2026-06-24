@@ -19,9 +19,16 @@ OS="$(uname -s)"
 if [ "$OS" = "Darwin" ]; then
     JNI_PLATFORM_INCLUDE="$JNI_INCLUDE/darwin"
     LIB_SUFFIX=".dylib"
+    # Pin the deployment target so the dylib's minimum-OS load requirement is
+    # decoupled from whichever macOS the build host runs. 11.0 (Big Sur) is the
+    # first Apple-Silicon release, so it is the lowest floor an arm64 dylib can
+    # have. Without this, clang stamps minos to the build host's OS version,
+    # which would stop the shipped dylib from loading on older macOS.
+    PLATFORM_FLAGS="-mmacosx-version-min=11.0"
 else
     JNI_PLATFORM_INCLUDE="$JNI_INCLUDE/linux"
     LIB_SUFFIX=".so"
+    PLATFORM_FLAGS=""
 fi
 
 # The uninitialized-variable warning has a different name on GCC vs Clang;
@@ -45,6 +52,7 @@ echo ""
 echo "=== Compiling JNI native code ==="
 "$CC" -shared -fPIC -O2 -Wall -Wextra -Werror \
    -Werror=uninitialized "$UNINIT_FLAG" \
+   $PLATFORM_FLAGS \
    -DNDEBUG \
    -I"$PROJECT_ROOT/src" \
    -I"$JNI_INCLUDE" -I"$JNI_PLATFORM_INCLUDE" \

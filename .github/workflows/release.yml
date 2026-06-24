@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Validate version strings match tag
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate version strings
         run: ./scripts/check_version.sh "${GITHUB_REF_NAME}"
 
@@ -42,7 +42,7 @@ jobs:
     name: Build (${{ matrix.arch }})
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build static library
         run: |
@@ -50,7 +50,7 @@ jobs:
           cp build/libfast_code_embed.a "build/libfast_code_embed.a-${{ matrix.arch }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libfast_code_embed.a-${{ matrix.arch }}
           path: build/libfast_code_embed.a-${{ matrix.arch }}
@@ -83,7 +83,7 @@ jobs:
     name: Java JNI (${{ matrix.arch }})
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # In the manylinux container, install a JDK with JNI headers via dnf;
       # build.sh autodetects JAVA_HOME from `which java`. macOS has no container,
@@ -94,7 +94,7 @@ jobs:
 
       - name: Set up JDK 11 (macOS)
         if: matrix.container == ''
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '11'
           distribution: 'temurin'
@@ -121,7 +121,7 @@ jobs:
           fi
 
       - name: Upload JNI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.libname }}-${{ matrix.arch }}
           path: java/lib/native/${{ matrix.libname }}-${{ matrix.arch }}
@@ -132,10 +132,10 @@ jobs:
     name: Create GitHub Release
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -156,7 +156,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: release_notes.md
           generate_release_notes: false
@@ -170,16 +170,16 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up JDK 11
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '11'
           distribution: 'temurin'
 
       - name: Download JNI artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: jni-artifacts
 

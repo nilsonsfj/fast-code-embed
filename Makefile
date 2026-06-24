@@ -29,6 +29,17 @@ endif
 # -Wall -Wextra -Wpedantic on both GCC and Clang (-std=c11, no C23 features).
 CFLAGS       ?= -O2 -Wall -Wextra -Wpedantic -std=c11 $(TUNE) -DNDEBUG -fPIC
 CFLAGS_DEBUG ?= -O0 -Wall -Wextra -Wpedantic -std=c11 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
+
+# On macOS, pin the deployment target so the shipped library's minimum-OS floor
+# is decoupled from whichever macOS the build host runs. 11.0 (Big Sur) is the
+# first Apple-Silicon release, so it is the lowest floor an arm64 build can have.
+# Without this, the compiler stamps the floor to the build host's OS version,
+# which would stop the redistributed .a (and any dylib linking it) from loading
+# on older macOS and emit "built for newer macOS" link warnings.
+ifeq ($(shell uname -s),Darwin)
+MACOS_MIN := -mmacosx-version-min=11.0
+CFLAGS += $(MACOS_MIN)
+endif
 AR      ?= ar
 ARFLAGS ?= rcs
 
@@ -79,7 +90,7 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.c
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.S
 	@mkdir -p $(dir $@)
-	$(CC) -fPIC -c $< -o $@
+	$(CC) $(MACOS_MIN) -fPIC -c $< -o $@
 
 # ── Tests ────────────────────────────────────────────────────────
 test: $(TEST_BIN)
@@ -101,7 +112,7 @@ $(BUILDDIR)/asan/%.o: $(SRCDIR)/%.c
 
 $(BUILDDIR)/asan/%.o: $(SRCDIR)/%.S
 	@mkdir -p $(dir $@)
-	$(CC) -c $< -o $@
+	$(CC) $(MACOS_MIN) -c $< -o $@
 
 $(LIB_ASAN): $(OBJS_ASAN)
 	@mkdir -p $(dir $@)
@@ -147,7 +158,7 @@ $(BUILDDIR)/dim256/%.o: $(SRCDIR)/%.c
 
 $(BUILDDIR)/dim256/%.o: $(SRCDIR)/%.S
 	@mkdir -p $(dir $@)
-	$(CC) -c $< -o $@
+	$(CC) $(MACOS_MIN) -c $< -o $@
 
 $(LIB256): $(OBJS256)
 	@mkdir -p $(dir $@)
