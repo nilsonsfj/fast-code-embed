@@ -38,6 +38,27 @@ passes (co-occurrence blending) run only when enabled via
 `fce_sem_corpus_set_ri_enrichment(corpus, true)` (Java: `Corpus.setRiEnrichment` /
 `complete(true)`) or `FCE_SEM_SKIP_RI=0`. Skipping them finalizes ~3–4× faster.
 
+**IDF weighting is on by default.** Document and query vectors are IDF-weighted
+sums of their token vectors, so ubiquitous tokens are down-weighted and the
+discriminating ones steer retrieval. It can be switched off — yielding unweighted
+("EmbeddingBag"-style) sums — via `fce_sem_set_idf_weighting(false)` (Java:
+`FastCodeEmbed.setIdfWeighting`) or `FCE_SEM_NO_IDF=1`. The choice bakes into the
+document vectors at finalize and must hold the same value at query time, so set it
+once before finalizing. It applies to the dense RI/brute path; the TF-IDF
+candidate query mode is inherently IDF-based and is unaffected. On code corpora
+IDF weighting generally retrieves better (disabling it tends to collapse
+multi-word queries onto their single most common term), so the default is
+recommended.
+
+**Tokenization** (the `Tokenize` stage above) splits identifiers on
+camelCase/snake_case/dot boundaries plus whitespace and common source-code
+punctuation (`{ } [ ] = ; & | + * ? …`), lowercases, and drops single-character
+tokens (noise like `a`, `i`, `1`). By default it also appends expanded forms of
+common code abbreviations (`err` → also `error`, `ctx` → `context`) to improve
+recall on abbreviated identifiers; this can be disabled to tokenize verbatim via
+`fce_sem_set_abbrev_expansion(false)` (Java: `FastCodeEmbed.setAbbrevExpansion`)
+or `FCE_SEM_NO_ABBREV=1`.
+
 | Layer | Role | Notes |
 |-------|------|-------|
 | `semantic.c` | TF-IDF, RRI, scoring, ranking, corpus | Largest module; the core of the library |

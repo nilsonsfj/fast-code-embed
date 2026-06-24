@@ -200,6 +200,12 @@ corpus.complete(true);
 The environment variable `FCE_SEM_SKIP_RI` overrides the per-corpus setting
 globally: `=1` forces enrichment off, `=0` forces it on.
 
+Tokenization splits identifiers on camelCase/snake_case/dot boundaries as well as
+whitespace and common source-code punctuation (`{ } [ ] = ; & | + * ? …`),
+lowercases, and drops single-character tokens (noise like `a`, `i`, `1`) — so
+multi-line source chunks tokenize cleanly rather than merging words across line
+breaks.
+
 Tokenization expands common code abbreviations by default (e.g. `err` → also
 `error`, `ctx` → `context`), improving recall on abbreviated identifiers. Turn
 this off to tokenize verbatim — useful for reproducible comparisons or corpora
