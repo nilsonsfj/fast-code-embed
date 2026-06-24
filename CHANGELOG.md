@@ -7,10 +7,6 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-- Add toggle for IDF weighting of document and query vectors (`FCE_SEM_NO_IDF`)
-- Tokenize on whitespace/punctuation and drop single-char tokens
-- Add toggle for tokenizer abbreviation expansion (`FCE_SEM_NO_ABBREV`)
-
 ## [0.1.0] — 2026-06-23
 
 - Use _POSIX_C_SOURCE 200809L plus _DEFAULT_SOURCE so glibc declares mkstemp

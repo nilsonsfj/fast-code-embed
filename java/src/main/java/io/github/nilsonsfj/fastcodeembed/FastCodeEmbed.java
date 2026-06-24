@@ -89,7 +89,7 @@ public final class FastCodeEmbed {
      * tokenization is unsafe.</p>
      *
      * @param enabled true to expand abbreviations, false to tokenize verbatim
-     * @since 0.2.0
+     * @since 0.1.1
      */
     public static void setAbbrevExpansion(boolean enabled) { nSetAbbrevExpansion(enabled); }
 
@@ -97,7 +97,7 @@ public final class FastCodeEmbed {
      * Whether abbreviation expansion is currently enabled.
      *
      * @return true if abbreviations are expanded during tokenization
-     * @since 0.2.0
+     * @since 0.1.1
      */
     public static boolean abbrevExpansion() { return nAbbrevExpansion(); }
 
@@ -121,7 +121,7 @@ public final class FastCodeEmbed {
      * IDF-based and is unaffected.</p>
      *
      * @param enabled true for IDF weighting, false for an unweighted sum
-     * @since 0.2.0
+     * @since 0.1.1
      */
     public static void setIdfWeighting(boolean enabled) { nSetIdfWeighting(enabled); }
 
@@ -129,7 +129,7 @@ public final class FastCodeEmbed {
      * Whether IDF weighting of document and query vectors is currently enabled.
      *
      * @return true if vectors are IDF-weighted
-     * @since 0.2.0
+     * @since 0.1.1
      */
     public static boolean idfWeighting() { return nIdfWeighting(); }
 
