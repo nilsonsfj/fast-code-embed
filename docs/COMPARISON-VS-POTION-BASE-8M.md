@@ -41,6 +41,17 @@ model — both systems index the **exact same document units**.
 Both systems were run at their strongest retrieval setting. potion was used as
 intended off-the-shelf: embedding raw code as text.
 
+> **Note on RI enrichment (read before reproducing).** FCE's document vectors
+> here use Reflective Random Indexing (co-occurrence) enrichment, which was FCE's
+> default when this comparison was run. It became **opt-in in 0.0.15** — the
+> current default is pretrained-direct (no RI), chosen for ~3–4× faster finalize.
+> The quality figures in this document reflect **RI enabled**; reproduce them with
+> `FCE_SEM_SKIP_RI=0` (C) or `Corpus.setRiEnrichment(true)` / `complete(true)`
+> (Java). With the current default (no RI) FCE still wins on every metric but by a
+> smaller margin — roughly **nDCG ≈ 0.77** vs the 0.84 shown here — trading some
+> ranking quality for much faster indexing. The tokenizer changes since this was
+> first measured are quality-neutral here; RI on/off is the dominant factor.
+
 ### Queries
 
 The 8 queries shipped in the FCE benchmark plus 6 added for subsystem coverage
@@ -202,7 +213,8 @@ judgments (P@10, strict P@10, nDCG@10, MRR).
 - **FCE** is driven through its public C API — `fce_sem_tokenize_batch` +
   `fce_sem_corpus_add_docs_batch`, then `fce_sem_corpus_finalize`, querying via
   `fce_sem_search_query_bruteforce` (and `fce_sem_search_query_fast` for the
-  fast-path latency figure).
+  fast-path latency figure). RI enrichment is **enabled** for these results
+  (`FCE_SEM_SKIP_RI=0`); see the note in Section 1.
 - **potion-base-8M** is loaded with [model2vec](https://github.com/MinishLab/model2vec)
   (`StaticModel.from_pretrained("minishlab/potion-base-8M")`), encoding each
   chunk's raw text, then ranked by dense cosine.
@@ -219,6 +231,9 @@ judgments (P@10, strict P@10, nDCG@10, MRR).
 - **potion usage.** A general-English static model embedding raw code is its
   intended off-the-shelf mode; it has no code-specific pretraining — which is
   precisely the contrast being measured.
-- **Configuration.** FCE ran at its default 768 dims; selecting 256 dims at
+- **Configuration.** FCE ran at 768 dims with RI enrichment enabled (the default
+  when measured; now opt-in — see the Section 1 note). Selecting 256 dims at
   runtime (`fce_sem_set_dim(256)`) would narrow the indexing-time and memory gap
-  with potion while remaining the higher-quality retriever.
+  with potion while remaining the higher-quality retriever; running without RI
+  (the current default) trades some ranking quality (nDCG ≈ 0.77) for ~3–4×
+  faster finalize.
