@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-06-24
+
+- Set @since to 0.1.1 on the abbreviation and IDF toggle API
+- Docs: note RI enrichment is opt-in in the potion comparison
+- Docs: document tokenizer changes and the abbreviation/IDF toggles
+- Add toggle for IDF weighting of document and query vectors
+- Tokenize on whitespace/punctuation and drop single-char tokens
+- Add toggle for tokenizer abbreviation expansion
+- README: update status line from 0.0.x to 0.x
+
 ## [0.1.0] — 2026-06-23
 
 - Use _POSIX_C_SOURCE 200809L plus _DEFAULT_SOURCE so glibc declares mkstemp
