@@ -55,6 +55,17 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# --- Require a clean tree when committing, so the post-commit guard below can
+# reliably tell that every bumped file was actually committed (any leftover
+# tracked modification then means a file was edited but not staged). ---
+if [ "$DO_COMMIT" = true ] && \
+   ! { git -C "$REPO_ROOT" diff --quiet && git -C "$REPO_ROOT" diff --cached --quiet; }; then
+    echo "ERROR: working tree has uncommitted changes to tracked files."
+    echo "       Commit or stash them first, or run with --no-commit."
+    git -C "$REPO_ROOT" status --porcelain | grep -vE '^\?\?' | sed 's/^/         /'
+    exit 1
+fi
+
 # --- Derive current version from source files ---
 CURRENT_VERSION="$(grep -oE 'FCE_VERSION_MAJOR [0-9]+' "$REPO_ROOT/src/version.h" | awk '{print $2}').$(grep -oE 'FCE_VERSION_MINOR [0-9]+' "$REPO_ROOT/src/version.h" | awk '{print $2}').$(grep -oE 'FCE_VERSION_PATCH [0-9]+' "$REPO_ROOT/src/version.h" | awk '{print $2}')"
 
@@ -204,6 +215,17 @@ if [ "$DO_COMMIT" = true ]; then
         python/pyproject.toml \
         CHANGELOG.md
     git -C "$REPO_ROOT" commit -m "bump version to $TARGET_VERSION"
+
+    # Guard: every file the sed steps edited must have been committed. A file
+    # that was bumped but missing from the `git add` list above stays modified
+    # in the working tree after the commit — fail here, before tagging/pushing,
+    # instead of shipping a half-bumped release that only CI would catch.
+    if ! { git -C "$REPO_ROOT" diff --quiet && git -C "$REPO_ROOT" diff --cached --quiet; }; then
+        echo "ERROR: the version bump left tracked files uncommitted (a bumped"
+        echo "       file is probably missing from the add list). NOT tagging."
+        git -C "$REPO_ROOT" status --porcelain | grep -vE '^\?\?' | sed 's/^/         /'
+        exit 1
+    fi
     echo ""
 fi
 
