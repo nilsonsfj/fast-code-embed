@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-06-25
+
+- Fix Python release publish job skipped on manual runs
+- Add Python wheel release workflow and version wiring
+- Add experimental Python binding (cffi)
+- Update CI actions to Node 24 majors and pin macOS deployment target to 11.0
+
 ## [0.1.1] — 2026-06-24
 
 - Set @since to 0.1.1 on the abbreviation and IDF toggle API

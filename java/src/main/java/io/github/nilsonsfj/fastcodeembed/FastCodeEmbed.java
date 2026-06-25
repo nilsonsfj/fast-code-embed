@@ -30,7 +30,7 @@ package io.github.nilsonsfj.fastcodeembed;
 public final class FastCodeEmbed {
 
     /** Library version string. */
-    public static final String VERSION = "0.1.1";
+    public static final String VERSION = "0.1.2";
 
     static {
         NativeLibrary.load();
