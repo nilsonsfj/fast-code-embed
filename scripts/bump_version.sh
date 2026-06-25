@@ -201,6 +201,7 @@ if [ "$DO_COMMIT" = true ]; then
         java/pom.xml \
         java/README.md \
         java/src/main/java/io/github/nilsonsfj/fastcodeembed/FastCodeEmbed.java \
+        python/pyproject.toml \
         CHANGELOG.md
     git -C "$REPO_ROOT" commit -m "bump version to $TARGET_VERSION"
     echo ""
