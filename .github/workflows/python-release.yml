@@ -127,6 +127,14 @@ jobs:
   # ── Publish all collected wheels via Trusted Publishing (OIDC). ──────────────
   publish:
     needs: [wheels-linux, wheels-macos]
+    # Explicit condition: run whenever both wheel jobs succeeded. Without this,
+    # the default success() condition is poisoned by the skipped `validate` job
+    # on a workflow_dispatch run (a skipped ancestor makes downstream jobs skip),
+    # so the publish step never ran on the TestPyPI dry run.
+    if: >-
+      always() &&
+      needs.wheels-linux.result == 'success' &&
+      needs.wheels-macos.result == 'success'
     runs-on: ubuntu-latest
     name: Publish wheels
     environment: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'pypi' || 'testpypi' }}
