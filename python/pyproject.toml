@@ -39,8 +39,10 @@ build = "cp39-*"
 # Run from the repo root context so `make lib` can see the Makefile.
 before-all = "cd {project}/.. && make clean && make -j4 lib"
 test-command = "python -c \"import fast_code_embed as fce; c=fce.Corpus(); c.add_doc('x','def parse_config(path): ...'); c.finalize(); print(c.search('config', k=1)); c.close()\""
-# Skip 32-bit and musl until validated; ship the same arches as the JAR plus
-# the two reach gaps (Windows, Intel macOS) that PyPI users expect.
+# Skip 32-bit and musl until validated. Ship Linux (x86_64, aarch64) and macOS
+# (arm64, x86_64). Windows is a follow-up: the C build is bash/GNU-assembler
+# based (code_vectors_blob.S is GAS syntax), so it needs a mingw-w64 path before
+# it can produce a Windows wheel.
 skip = ["*-musllinux_i686", "*_i686", "pp*"]
 
 [tool.cibuildwheel.macos]
@@ -53,6 +55,3 @@ archs = ["x86_64", "aarch64"]
 # Build inside manylinux_2_34 to match the release floor (glibc >= 2.34).
 manylinux-x86_64-image = "quay.io/pypa/manylinux_2_34_x86_64"
 manylinux-aarch64-image = "quay.io/pypa/manylinux_2_34_aarch64"
-
-[tool.cibuildwheel.windows]
-archs = ["AMD64"]

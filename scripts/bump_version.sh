@@ -129,6 +129,10 @@ echo "  java/README.md"
 "${SED_INPLACE[@]}" "s/\"$CURRENT_VERSION\"/\"$TARGET_VERSION\"/" "$REPO_ROOT/java/src/main/java/io/github/nilsonsfj/fastcodeembed/FastCodeEmbed.java"
 echo "  FastCodeEmbed.java"
 
+# 5b. python/pyproject.toml — version = "X.Y.Z"
+"${SED_INPLACE[@]}" "s/^version = \"$CURRENT_VERSION\"/version = \"$TARGET_VERSION\"/" "$REPO_ROOT/python/pyproject.toml"
+echo "  python/pyproject.toml"
+
 # 6. CHANGELOG.md — auto-generate the new version section from commit history.
 # The release notes are the commit subjects since the previous release tag, so no
 # manual changelog editing is ever required. The generated section is inserted

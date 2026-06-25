@@ -71,6 +71,10 @@ check "java/src/main/java/io/github/nilsonsfj/fastcodeembed/FastCodeEmbed.java" 
     "\"$VERSION\"" \
     "FastCodeEmbed.java VERSION"
 
+check "python/pyproject.toml" \
+    "^version = \"$VERSION\"" \
+    "python/pyproject.toml"
+
 check "README.md" \
     "<version>$VERSION</version>" \
     "README.md (Maven snippet)"
