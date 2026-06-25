@@ -133,6 +133,24 @@ kernel source, see [COMPARISON-VS-POTION-BASE-8M.md](COMPARISON-VS-POTION-BASE-8
   AUTO/BRUTE/FAST/TFIDF mode dispatch.
 - Memory measurement: `getPeakRssBytes()`, `getCurrentRssBytes()`.
 
+## Python layer (experimental)
+
+- A [cffi](https://cffi.readthedocs.io/) API-mode wrapper under `python/` that
+  links the prebuilt static archive directly (the embedded blob ships inside it,
+  so there is no model download). Built against CPython's stable ABI
+  (`cp39-abi3`), so one wheel per platform serves every Python >= 3.9.
+- Mirrors the Java surface with Python idioms: a `Corpus` builder
+  (`add_doc` / `add_docs` / `add_files`), a single `search(query, k, mode=Mode.…)`
+  over the FAST/TFIDF/BRUTEFORCE/AUTO C entry points, `save()`/`load()`, and the
+  module-level `set_dim` / `set_idf_weighting` / `set_abbrev_expansion` toggles.
+- Honors the C contracts defensively: the native handle is owned by `Corpus`
+  (context manager + `__del__`); the global toggles are snapshotted at
+  `finalize()` and a divergence at query time raises rather than returning
+  silently wrong scores; embedded NUL bytes, closed/zombie corpora, cross-thread
+  builds, and non-positive `k` are all rejected explicitly.
+- Not yet published to PyPI — build from source (`make lib && cd python &&
+  pip install -e .`). See [python/README.md](../python/README.md).
+
 ---
 
 ## Security considerations

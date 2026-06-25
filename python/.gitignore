@@ -1,0 +1,22 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# cffi-generated extension sources/objects/libraries
+fast_code_embed/_fast_code_embed.c
+fast_code_embed/_fast_code_embed.o
+*.so
+*.dylib
+*.pyd
+
+# wheels
+wheelhouse/
+*.whl
+
+# local virtualenvs
+.venv/
+venv/

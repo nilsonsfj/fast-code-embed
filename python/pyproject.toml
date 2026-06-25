@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=77", "cffi>=1.16"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fast-code-embed"
+version = "0.1.1"
+description = "Algorithmic code embeddings — TF-IDF + pretrained nomic-embed-code vectors. No GPU, no API keys, no model download."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "Nilson Santos" }]
+keywords = ["embeddings", "code-search", "semantic-search", "tf-idf", "nomic"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Text Processing :: Indexing",
+]
+dependencies = ["cffi>=1.16"]
+
+[project.urls]
+Homepage = "https://github.com/nilsonsfj/fast-code-embed"
+Source = "https://github.com/nilsonsfj/fast-code-embed"
+Changelog = "https://github.com/nilsonsfj/fast-code-embed/blob/main/CHANGELOG.md"
+
+# The extension is built out-of-line by cffi via the `cffi_modules` kwarg in
+# setup.py (cffi has no native pyproject table). packages are declared there too.
+
+# ── cibuildwheel ────────────────────────────────────────────────────────────
+# Build native wheels per platform. `make lib` must run first so the static
+# archive (with the embedded blob) exists for cffi to link against.
+[tool.cibuildwheel]
+build-frontend = "build"
+# The extension targets the stable ABI (cp39-abi3), so one build per platform
+# serves every Python >= 3.9 — build only on CPython 3.9 instead of once per
+# interpreter minor version.
+build = "cp39-*"
+# Run from the repo root context so `make lib` can see the Makefile.
+before-all = "cd {project}/.. && make clean && make -j4 lib"
+test-command = "python -c \"import fast_code_embed as fce; c=fce.Corpus(); c.add_doc('x','def parse_config(path): ...'); c.finalize(); print(c.search('config', k=1)); c.close()\""
+# Skip 32-bit and musl until validated; ship the same arches as the JAR plus
+# the two reach gaps (Windows, Intel macOS) that PyPI users expect.
+skip = ["*-musllinux_i686", "*_i686", "pp*"]
+
+[tool.cibuildwheel.macos]
+# Match the deployment-target floor pinned in the Makefile / build.sh.
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+archs = ["arm64", "x86_64"]
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64", "aarch64"]
+# Build inside manylinux_2_34 to match the release floor (glibc >= 2.34).
+manylinux-x86_64-image = "quay.io/pypa/manylinux_2_34_x86_64"
+manylinux-aarch64-image = "quay.io/pypa/manylinux_2_34_aarch64"
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]

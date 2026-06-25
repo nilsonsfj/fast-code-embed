@@ -26,6 +26,7 @@ change between minor versions; pin a specific version in production and check th
 - 🧠 **Meaningful signals** — Combines TF-IDF, pretrained nomic-embed-code vectors, and module proximity into a single [0, 1] score. Optional co-occurrence (Random Indexing) enrichment can be toggled on per corpus.
 - 🔌 **Drop-in C API** — Link `build/libfast_code_embed.a`, include a header, score functions.
 - ☕ **Java JNI binding** — Works from JVM environments via `FastCodeEmbed`.
+- 🐍 **Python binding (experimental)** — A cffi wrapper under `python/`; build from source (not yet on PyPI).
 - ✅ **Sanitizer-clean** — ASan and UBSan pass (run in CI on every push).
 
 ## ⚡ Quick Start
@@ -160,6 +161,37 @@ try (Corpus corp = new Corpus()) {
 
 All classes are in `io.github.nilsonsfj.fastcodeembed`:
 `FastCodeEmbed`, `Corpus`, `FuncDescriptor`, `SearchResult`, `NativeLibrary`.
+
+## 🐍 Python Binding (experimental)
+
+A Python binding lives under `python/` — a [cffi](https://cffi.readthedocs.io/)
+wrapper that links the prebuilt static library (the 30 MB blob is compiled in, so
+there is no model download). It is **experimental and not yet published to PyPI**;
+build it from source. Full details in [python/README.md](python/README.md).
+
+**From source:**
+
+```bash
+# Build the C library first, then install the binding
+make lib
+cd python && pip install -e .
+```
+
+```python
+import fast_code_embed as fce
+
+with fce.Corpus() as corpus:
+    corpus.add_doc("parse_config", "def parse_config(path): ...")
+    corpus.add_doc("retry_request", "def retry_request(url, attempts): ...")
+    corpus.finalize()
+
+    for hit in corpus.search("load configuration from disk", k=10):
+        print(f"{hit.score:.3f}  {hit.label}")
+```
+
+The wrapper mirrors the Java surface: a `Corpus` builder, a `search(..., mode=)`
+family (`Mode.FAST` / `TFIDF` / `BRUTEFORCE` / `DEFAULT`), `save()`/`load()`, and
+the global `set_dim` / `set_idf_weighting` / `set_abbrev_expansion` toggles.
 
 ## How it works
 
@@ -356,6 +388,7 @@ src/
 └── xxhash/            Vendored xxHash (header-only)
 
 java/                  JNI binding — see java/README.md
+python/                Python binding (experimental, cffi) — see python/README.md
 ```
 
 ## License
